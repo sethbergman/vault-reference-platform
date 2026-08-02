@@ -1,0 +1,7 @@
+---
+- name: Configure Vault cluster nodes
+  hosts: vault_nodes
+  become: true
+  roles:
+    - vault
+    - vault-hardening

@@ -1,0 +1,26 @@
+---
+- name: Create vault system user
+  ansible.builtin.user:
+    name: vault
+    system: true
+    shell: /usr/sbin/nologin
+
+- name: Install Vault package
+  ansible.builtin.package:
+    name: "vault={{ vault_version }}"
+    state: present
+
+- name: Deploy Vault configuration
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: /etc/vault.d/vault.hcl
+    owner: vault
+    group: vault
+    mode: "0640"
+  notify: restart vault
+
+- name: Enable and start Vault service
+  ansible.builtin.systemd:
+    name: vault
+    enabled: true
+    state: started

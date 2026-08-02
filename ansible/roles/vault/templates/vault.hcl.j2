@@ -1,0 +1,17 @@
+cluster_name = "{{ vault_cluster_name }}"
+
+storage "raft" {
+  path    = "/opt/vault/data"
+  node_id = "{{ inventory_hostname }}"
+}
+
+listener "tcp" {
+  address       = "0.0.0.0:8200"
+  tls_cert_file = "/etc/vault.d/tls/vault.crt"
+  tls_key_file  = "/etc/vault.d/tls/vault.key"
+}
+
+api_addr     = "https://{{ ansible_default_ipv4.address }}:8200"
+cluster_addr = "https://{{ ansible_default_ipv4.address }}:8201"
+
+# seal "awskms" { ... }  # enabled in production profiles via group_vars

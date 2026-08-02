@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  vault-0:
+    build: ../vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_CLUSTER_ADDR: "http://vault-0:8201"
+
+  vault-1:
+    build: ../vault
+    ports:
+      - "8210:8200"
+    environment:
+      VAULT_CLUSTER_ADDR: "http://vault-1:8201"
+
+  vault-2:
+    build: ../vault
+    ports:
+      - "8220:8200"
+    environment:
+      VAULT_CLUSTER_ADDR: "http://vault-2:8201"

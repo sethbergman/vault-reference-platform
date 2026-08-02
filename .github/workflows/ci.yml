@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  terraform:
+    name: Terraform fmt/validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform fmt
+        run: terraform fmt -check -recursive terraform/
+      - name: terraform validate (aws)
+        run: |
+          cd terraform/aws
+          terraform init -backend=false
+          terraform validate
+      - name: terraform validate (azure)
+        run: |
+          cd terraform/azure
+          terraform init -backend=false
+          terraform validate
+
+  ansible-lint:
+    name: Ansible lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ansible-lint
+      - run: ansible-lint ansible/
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh
+
+  markdownlint:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v17
+        with:
+          globs: "**/*.md"

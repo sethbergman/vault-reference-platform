@@ -1,0 +1,4 @@
+---
+vault_version: "1.17.2"
+vault_cluster_name: vault-reference
+vault_storage_backend: raft
