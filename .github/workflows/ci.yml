@@ -54,3 +54,50 @@ jobs:
       - uses: DavidAnson/markdownlint-cli2-action@v17
         with:
           globs: "**/*.md"
+
+  smoke-test:
+    name: Deploy + smoke test (Docker Compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring up local HA-shaped Vault cluster
+        run: |
+          cd docker/dev
+          docker compose up -d
+          echo "Waiting for containers to settle..."
+          sleep 10
+
+      - name: Wait for Vault nodes to respond
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsSk -o /dev/null https://127.0.0.1:8200/v1/sys/health; then
+              echo "Vault node is responding."
+              break
+            fi
+            echo "Waiting for Vault to come up... ($i/30)"
+            sleep 5
+          done
+
+      - name: Verify cluster health
+        run: |
+          STATUS=$(curl -fsSk -o /dev/null -w '%{http_code}' https://127.0.0.1:8200/v1/sys/health)
+          echo "Health endpoint returned: $STATUS"
+          # 200 = initialized+unsealed+active, 429 = unsealed+standby,
+          # 472/473 = DR/perf standby — all indicate a working node.
+          case "$STATUS" in
+            200|429|472|473) echo "Cluster is healthy." ;;
+            *) echo "Unexpected health status: $STATUS"; exit 1 ;;
+          esac
+
+      - name: Smoke test — write and read a secret
+        run: |
+          docker compose exec -T vault-1 vault login -no-print "$VAULT_DEV_ROOT_TOKEN" || true
+          docker compose exec -T vault-1 vault kv put secret/ci-smoke-test value=ok
+          docker compose exec -T vault-1 vault kv get secret/ci-smoke-test
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v
