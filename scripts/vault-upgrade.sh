@@ -8,11 +8,13 @@
 # Example:
 #   ./vault-upgrade.sh https://releases.hashicorp.com/vault/1.17.2/vault_1.17.2_linux_amd64.zip \
 #       --nodes vault-node-1,vault-node-2,vault-node-3 \
-#       --ssh-user deploy
+#       --ssh-user deploy \
+#       --sha256 abc123...  (recommended — see: https://releases.hashicorp.com/vault/1.17.2/vault_1.17.2_SHA256SUMS)
 #
 # What it does, per node, one at a time:
 #   1. Downloads the release archive from the given URL
-#   2. Verifies the archive is a valid zip and extracts the vault binary
+#   2. Verifies the archive is a valid zip, optionally checks its SHA256
+#      checksum against --sha256, then extracts the vault binary
 #   3. If the node is the current active (leader) node, steps it down first
 #      so it becomes a standby before being touched
 #   4. Stops the vault service, swaps the binary, restarts the service
@@ -21,8 +23,14 @@
 #   6. Aborts the whole run if any node fails to come back healthy —
 #      it will NOT continue upgrading remaining nodes in that case
 #
+# Checksum verification (--sha256) is optional but strongly recommended.
+# Without it, the script has no way to detect a corrupted download or a
+# tampered artifact before installing it across the cluster. HashiCorp
+# publishes a SHA256SUMS file alongside every release — copy the hash for
+# your platform's archive from there.
+#
 # Requirements on the machine running this script:
-#   - bash, curl, unzip, ssh, jq
+#   - bash, curl, unzip, ssh, jq, sha256sum
 #   - SSH key-based access to every node in --nodes
 #   - The remote user must be able to sudo systemctl for the vault service
 #
@@ -45,6 +53,7 @@ VAULT_ADDR="https://127.0.0.1:8200"
 HEALTH_TIMEOUT=120        # seconds to wait for a node to come back healthy
 HEALTH_INTERVAL=5         # seconds between health checks
 SKIP_TLS_VERIFY=false
+EXPECTED_SHA256=""
 WORKDIR=""
 
 # ---------------------------------------------------------------------------
@@ -83,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         --vault-addr)        VAULT_ADDR="$2"; shift 2 ;;
         --health-timeout)    HEALTH_TIMEOUT="$2"; shift 2 ;;
         --skip-tls-verify)   SKIP_TLS_VERIFY=true; shift ;;
+        --sha256)             EXPECTED_SHA256="$2"; shift 2 ;;
         -h|--help)           usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -90,6 +100,9 @@ done
 
 [[ -z "$NODES" ]] && die "--nodes is required, e.g. --nodes host1,host2,host3"
 [[ "$SKIP_TLS_VERIFY" == true ]] && curl_opts+=(-k)
+if [[ -z "$EXPECTED_SHA256" ]]; then
+    log "WARNING: --sha256 not provided — skipping checksum verification. This is not recommended for production upgrades."
+fi
 
 IFS=',' read -r -a NODE_LIST <<< "$NODES"
 [[ ${#NODE_LIST[@]} -lt 1 ]] && die "No nodes parsed from --nodes"
@@ -114,6 +127,16 @@ curl "${curl_opts[@]}" -o "$ARCHIVE_PATH" "$DOWNLOAD_URL" \
 
 file "$ARCHIVE_PATH" | grep -qi 'zip archive' \
     || die "Downloaded file does not look like a valid zip archive — refusing to proceed"
+
+if [[ -n "$EXPECTED_SHA256" ]]; then
+    log "Verifying SHA256 checksum"
+    ACTUAL_SHA256="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
+    # Normalize case for comparison since some SHA256SUMS files use uppercase
+    if [[ "${ACTUAL_SHA256,,}" != "${EXPECTED_SHA256,,}" ]]; then
+        die "Checksum mismatch — refusing to install. Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}. The download may be corrupted or tampered with."
+    fi
+    log "Checksum verified OK (${ACTUAL_SHA256})"
+fi
 
 log "Extracting archive"
 unzip -o -q "$ARCHIVE_PATH" -d "$WORKDIR" \
