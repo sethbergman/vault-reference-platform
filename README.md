@@ -95,6 +95,12 @@ Terraform + Ansible.
 See [`docs/security.md`](docs/security.md) for the threat model, auto-unseal
 approach, TLS handling, and policy structure.
 
+## Secret rotation
+
+See [`docs/secret-rotation.md`](docs/secret-rotation.md) for bootstrapping
+AppRole roles and rotating `secret_id`s on a recurring cadence via
+`scripts/bootstrap-approle.sh` and `scripts/rotate-secret-id.sh`.
+
 ## Disaster recovery
 
 See [`docs/disaster-recovery.md`](docs/disaster-recovery.md) for backup and

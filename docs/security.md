@@ -24,6 +24,15 @@ the internal CA under `examples/pki/`.
 - Policies are least-privilege and scoped per application/environment;
   see `examples/policies/` for the starting set.
 
+## Secret rotation
+
+AppRole `secret_id`s are treated as short-lived credentials, not
+set-once config: `scripts/bootstrap-approle.sh` creates the role once,
+and `scripts/rotate-secret-id.sh` is run on a recurring cadence to issue a
+new `secret_id` and revoke the previous one. See
+[`docs/secret-rotation.md`](secret-rotation.md) for setup, rotation
+cadence, and rollback guidance.
+
 ## Audit
 
 The file audit device is enabled by default in all profiles; production

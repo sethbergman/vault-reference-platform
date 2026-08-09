@@ -101,3 +101,100 @@ jobs:
         run: |
           cd docker/dev
           docker compose down -v
+
+  secret-rotation-test:
+    name: AppRole bootstrap + secret_id rotation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          curl -fsSL -o SHA256SUMS "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS"
+          EXPECTED=$(grep "vault_${VAULT_VERSION}_linux_amd64.zip" SHA256SUMS | awk '{print $1}')
+          ACTUAL=$(sha256sum vault.zip | awk '{print $1}')
+          [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo "Checksum mismatch or missing entry"; exit 1; }
+          unzip -o -q vault.zip vault
+          sudo mv vault /usr/local/bin/vault
+          vault version
+
+      - name: Start a single Vault node
+        run: |
+          cd docker/dev
+          docker compose up -d vault-0
+
+      - name: Wait for Vault to respond
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/seal-status; then
+              echo "Vault is listening."
+              break
+            fi
+            echo "Waiting for Vault to come up... ($i/30)"
+            sleep 2
+          done
+
+      - name: Initialize and unseal (single key share — CI only, never for production)
+        run: |
+          echo "VAULT_ADDR=http://127.0.0.1:8200" >> "$GITHUB_ENV"
+          export VAULT_ADDR=http://127.0.0.1:8200
+          vault operator init -key-shares=1 -key-threshold=1 -format=json > init.json
+          vault operator unseal "$(jq -r '.unseal_keys_b64[0]' init.json)"
+          echo "VAULT_TOKEN=$(jq -r '.root_token' init.json)" >> "$GITHUB_ENV"
+          rm -f init.json
+
+      - name: Enable KV v2 and seed a test secret
+        run: |
+          vault secrets enable -path=secret -version=2 kv
+          vault kv put secret/app/config greeting=hello
+
+      - name: Bootstrap AppRole role
+        run: |
+          ./scripts/bootstrap-approle.sh \
+            --role app \
+            --policy-file examples/policies/app-readonly.hcl \
+            --secret-id-ttl 1h \
+            --token-ttl 15m \
+            --token-max-ttl 30m
+
+      - name: First rotation — issue and use a secret_id
+        run: |
+          ROLE_ID=$(vault read -field=role_id auth/approle/role/app/role-id)
+          echo "ROLE_ID=$ROLE_ID" >> "$GITHUB_ENV"
+
+          SECRET_ID_1=$(./scripts/rotate-secret-id.sh --role app 2>rotate1.log)
+          cat rotate1.log
+          echo "::add-mask::$SECRET_ID_1"
+          echo "SECRET_ID_1=$SECRET_ID_1" >> "$GITHUB_ENV"
+
+          CLIENT_TOKEN_1=$(vault write -field=token auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID_1")
+          echo "::add-mask::$CLIENT_TOKEN_1"
+          VAULT_TOKEN="$CLIENT_TOKEN_1" vault kv get secret/app/config
+
+      - name: Second rotation — old secret_id must be rejected, new one must work
+        run: |
+          SECRET_ID_2=$(./scripts/rotate-secret-id.sh --role app 2>rotate2.log)
+          cat rotate2.log
+          echo "::add-mask::$SECRET_ID_2"
+
+          echo "Confirming the first secret_id no longer authenticates..."
+          if vault write auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID_1" >should_fail.log 2>&1; then
+            echo "ERROR: old secret_id still authenticated after rotation"
+            cat should_fail.log
+            exit 1
+          fi
+          echo "Old secret_id correctly rejected."
+
+          echo "Confirming the new secret_id authenticates and can read the seeded secret..."
+          CLIENT_TOKEN_2=$(vault write -field=token auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID_2")
+          echo "::add-mask::$CLIENT_TOKEN_2"
+          VAULT_TOKEN="$CLIENT_TOKEN_2" vault kv get secret/app/config
+          echo "Rotation verified end to end."
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v

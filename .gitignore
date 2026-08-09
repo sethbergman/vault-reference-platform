@@ -5,3 +5,6 @@
 .terraform.lock.hcl
 *.snap
 .DS_Store
+
+# Vault rotation script state (accessors only, not secrets — but keep out of the repo)
+.vault-rotation-state/

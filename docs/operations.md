@@ -68,6 +68,24 @@ script to every node in `--nodes`; the remote user must be able to
    service.
 4. Re-run the script once the node is healthy, starting from that node.
 
+## Secret rotation
+
+AppRole `secret_id`s are rotated on a recurring cadence, not issued once
+and forgotten:
+
+```bash
+./scripts/rotate-secret-id.sh --role app
+```
+
+Each run issues a fresh `secret_id` and revokes the one from the previous
+run (tracked by accessor under `.vault-rotation-state/`), so at most one
+`secret_id` per role is live at a time. Roles themselves are created once
+via `scripts/bootstrap-approle.sh`. See `docs/secret-rotation.md` for
+full usage, the `--wrap-ttl` handoff option, and rollback guidance.
+
+**Schedule rotation comfortably inside the role's `secret_id_ttl`** — the
+whole point is for rotation to always beat natural expiry.
+
 ## Capacity planning
 
 Track: request latency (p99), open file descriptors, Raft log size/growth
