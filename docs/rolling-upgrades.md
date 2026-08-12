@@ -1,11 +1,11 @@
-## Rolling upgrades
+# Rolling upgrades
 
 [#rolling-upgrades](#rolling-upgrades)
 
 Vault version upgrades are performed with `scripts/vault-upgrade.sh`, which
 upgrades an HA cluster one node at a time with zero downtime.
 
-### What it does
+## What it does
 
 1. Downloads and validates the release archive from a given URL.
 2. For each node, in order:
@@ -19,7 +19,7 @@ upgrades an HA cluster one node at a time with zero downtime.
    rather than continuing to upgrade the rest of the cluster. Manual
    intervention is required on the failed node before re-running.
 
-### Usage
+## Usage
 
 ```bash
 ./scripts/vault-upgrade.sh <download-url> \
@@ -38,7 +38,7 @@ upgrades an HA cluster one node at a time with zero downtime.
 | `--health-timeout` | `120` | Seconds to wait for a node to report healthy after restart |
 | `--skip-tls-verify` | off | Skip TLS verification on health-check requests |
 
-### Prerequisites
+## Prerequisites
 
 - SSH key-based access from the machine running the script to every node
   in `--nodes`.
@@ -46,7 +46,7 @@ upgrades an HA cluster one node at a time with zero downtime.
   without a password prompt.
 - `bash`, `curl`, `unzip`, `ssh`, and `jq` on the machine running the script.
 
-### Rollback
+## Rollback
 
 The script does not automatically roll back a failed node. If a node fails
 its post-upgrade health check:

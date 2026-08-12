@@ -17,8 +17,8 @@ variable "node_count" {
 }
 
 variable "vault_version" {
-  type        = string
-  default     = "1.17.2"
+  type    = string
+  default = "1.17.2"
 }
 
 locals {

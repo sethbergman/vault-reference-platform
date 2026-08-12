@@ -2,7 +2,7 @@
 
 ## Health checks
 
-```
+```bash
 vault status
 vault operator raft list-peers
 curl -s https://<node>:8200/v1/sys/health | jq

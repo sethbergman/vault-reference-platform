@@ -23,6 +23,7 @@ terraform apply plan.tfplan
 ```
 
 Provisions:
+
 - 3x EC2 instances (or ASG, depending on module config) for Vault nodes
 - Application Load Balancer with health checks against `/v1/sys/health`
 - KMS key for auto-unseal

@@ -112,6 +112,9 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 
 remote() {
     local host="$1"; shift
+    # Callers pass an already-composed command string with local variables
+    # (e.g. $VAULT_ADDR) that are meant to expand here, before it reaches ssh.
+    # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "${SSH_USER}@${host}" "$@"
 }
 
