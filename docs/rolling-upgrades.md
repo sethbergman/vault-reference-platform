@@ -1,4 +1,4 @@
-## Rolling upgrades
+# Rolling upgrades
 
 [#rolling-upgrades](#rolling-upgrades)
 

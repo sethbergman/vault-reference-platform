@@ -17,9 +17,11 @@ timestamped key.
 1. Provision (or reuse) a Vault node with the same storage config.
 2. Stop the Vault service on the target node.
 3. Restore the snapshot:
+
    ```bash
    vault operator raft snapshot restore /path/to/vault.snap
    ```
+
 4. Restart Vault and confirm seal/unseal status.
 5. Verify peer list and re-join any additional nodes if restoring into a
    multi-node cluster.

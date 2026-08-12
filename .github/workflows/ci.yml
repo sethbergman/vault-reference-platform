@@ -35,6 +35,8 @@ jobs:
           python-version: "3.12"
       - run: pip install ansible-lint
       - run: ansible-lint ansible/
+        env:
+          ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible/roles
 
   shellcheck:
     name: Shellcheck

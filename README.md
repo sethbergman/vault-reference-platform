@@ -36,7 +36,7 @@ that part down.
 See [`diagrams/architecture.md`](diagrams/architecture.md) for the full
 diagram. At a high level:
 
-```
+```text
                 Users
                   │
            Load Balancer
@@ -54,7 +54,7 @@ diagram. At a high level:
 
 ## Repository structure
 
-```
+```text
 vault-reference-platform/
 ├── terraform/
 │   ├── aws/        # AWS provider implementation

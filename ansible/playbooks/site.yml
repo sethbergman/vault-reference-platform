@@ -4,4 +4,4 @@
   become: true
   roles:
     - vault
-    - vault-hardening
+    - vault_hardening

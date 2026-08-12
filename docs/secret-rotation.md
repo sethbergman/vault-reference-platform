@@ -1,4 +1,4 @@
-## Secret rotation
+# Secret rotation
 
 [#secret-rotation](#secret-rotation)
 
