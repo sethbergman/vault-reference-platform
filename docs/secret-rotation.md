@@ -8,7 +8,7 @@ are set up once with `scripts/bootstrap-approle.sh`; the `secret_id`
 credential issued to workloads is rotated on a recurring basis with
 `scripts/rotate-secret-id.sh`.
 
-### Why rotate `secret_id`s
+## Why rotate `secret_id`s
 
 A `secret_id` is a long-lived bearer credential — anything that can present
 a valid `role_id` + `secret_id` pair gets a Vault token with that role's
@@ -16,7 +16,7 @@ policies. Rotating it regularly, and revoking the previous one at rotation
 time, bounds how long a leaked or stale `secret_id` remains usable, without
 requiring any changes to the workload's `role_id` or policy.
 
-### One-time setup: `bootstrap-approle.sh`
+## One-time setup: `bootstrap-approle.sh`
 
 ```bash
 export VAULT_ADDR=https://vault.internal:8200
@@ -43,7 +43,7 @@ it once per role (re-running is safe and just updates the role's config).
 | `--token-ttl` | `1h` | TTL of tokens obtained via this role |
 | `--token-max-ttl` | `4h` | Max TTL of those tokens, including renewals |
 
-### Recurring rotation: `rotate-secret-id.sh`
+## Recurring rotation: `rotate-secret-id.sh`
 
 ```bash
 ./scripts/rotate-secret-id.sh --role app
@@ -89,14 +89,14 @@ event; it just means the next rotation can't clean up the prior
 `secret_id` automatically, and that credential is left to expire on its
 own per `secret_id_ttl`.
 
-### Prerequisites
+## Prerequisites
 
 - `vault` CLI and `jq` on the machine running the script.
 - `VAULT_ADDR` / `VAULT_TOKEN` (or `--vault-addr` / `--vault-token`) with
   a token authorized on the role's `secret-id` and
   `secret-id-accessor/destroy` endpoints.
 
-### Rollback / troubleshooting
+## Rollback / troubleshooting
 
 - **Revoke failed ("could not revoke previous accessor")**: the script
   logs a warning and continues rather than aborting — the old `secret_id`
