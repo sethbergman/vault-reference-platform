@@ -79,6 +79,12 @@ jobs:
             sleep 5
           done
 
+      - name: DEBUG - dump container state and logs
+        run: |
+          cd docker/dev
+          docker compose ps -a
+          docker compose logs
+
       - name: Initialize and unseal vault-0
         run: |
           cd docker/dev
@@ -147,6 +153,12 @@ jobs:
             echo "Waiting for Vault to come up... ($i/30)"
             sleep 2
           done
+
+      - name: DEBUG - dump container state and logs
+        run: |
+          cd docker/dev
+          docker compose ps -a
+          docker compose logs
 
       - name: Initialize and unseal (single key share — CI only, never for production)
         run: |
