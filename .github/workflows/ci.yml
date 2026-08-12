@@ -71,7 +71,7 @@ jobs:
       - name: Wait for Vault nodes to respond
         run: |
           for i in $(seq 1 30); do
-            if curl -fsSk -o /dev/null https://127.0.0.1:8200/v1/sys/health; then
+            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/seal-status; then
               echo "Vault node is responding."
               break
             fi
@@ -79,9 +79,20 @@ jobs:
             sleep 5
           done
 
+      - name: Initialize and unseal vault-0
+        run: |
+          cd docker/dev
+          docker compose exec -T vault-0 vault operator init -key-shares=1 -key-threshold=1 -format=json > init.json
+          UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' init.json)
+          ROOT_TOKEN=$(jq -r '.root_token' init.json)
+          docker compose exec -T vault-0 vault operator unseal "$UNSEAL_KEY"
+          echo "::add-mask::$ROOT_TOKEN"
+          echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
+          rm -f init.json
+
       - name: Verify cluster health
         run: |
-          STATUS=$(curl -fsSk -o /dev/null -w '%{http_code}' https://127.0.0.1:8200/v1/sys/health)
+          STATUS=$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:8200/v1/sys/health)
           echo "Health endpoint returned: $STATUS"
           # 200 = initialized+unsealed+active, 429 = unsealed+standby,
           # 472/473 = DR/perf standby — all indicate a working node.
@@ -92,9 +103,10 @@ jobs:
 
       - name: Smoke test — write and read a secret
         run: |
-          docker compose exec -T vault-1 vault login -no-print "$VAULT_DEV_ROOT_TOKEN" || true
-          docker compose exec -T vault-1 vault kv put secret/ci-smoke-test value=ok
-          docker compose exec -T vault-1 vault kv get secret/ci-smoke-test
+          cd docker/dev
+          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault secrets enable -path=secret -version=2 kv
+          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault kv put secret/ci-smoke-test value=ok
+          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault kv get secret/ci-smoke-test
 
       - name: Tear down
         if: always()
