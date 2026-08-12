@@ -7,6 +7,7 @@ services:
       - "8200:8200"
     environment:
       VAULT_CLUSTER_ADDR: "http://vault-0:8201"
+      VAULT_ADDR: "http://127.0.0.1:8200"
 
   vault-1:
     build: ../vault
@@ -14,6 +15,7 @@ services:
       - "8210:8200"
     environment:
       VAULT_CLUSTER_ADDR: "http://vault-1:8201"
+      VAULT_ADDR: "http://127.0.0.1:8200"
 
   vault-2:
     build: ../vault
@@ -21,3 +23,4 @@ services:
       - "8220:8200"
     environment:
       VAULT_CLUSTER_ADDR: "http://vault-2:8201"
+      VAULT_ADDR: "http://127.0.0.1:8200"
