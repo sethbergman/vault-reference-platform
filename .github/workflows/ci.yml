@@ -63,86 +63,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bring up local HA-shaped Vault cluster
+      - name: Bring up the local HA Vault cluster (Transit auto-unseal)
         run: |
-          cd docker/dev
-          docker compose up -d
-          echo "Waiting for containers to settle..."
-          sleep 10
-
-      - name: Wait for Vault nodes to respond
-        run: |
-          for i in $(seq 1 30); do
-            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/seal-status; then
-              echo "Vault node is responding."
-              break
-            fi
-            echo "Waiting for Vault to come up... ($i/30)"
-            sleep 5
-          done
-
-      - name: Initialize and unseal vault-0
-        run: |
-          cd docker/dev
-          docker compose exec -T vault-0 vault operator init -key-shares=1 -key-threshold=1 -format=json > init.json
-          UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' init.json)
-          ROOT_TOKEN=$(jq -r '.root_token' init.json)
-          docker compose exec -T vault-0 vault operator unseal "$UNSEAL_KEY"
-          echo "::add-mask::$UNSEAL_KEY"
+          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh)
           echo "::add-mask::$ROOT_TOKEN"
-          echo "VAULT_UNSEAL_KEY=$UNSEAL_KEY" >> "$GITHUB_ENV"
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
-          rm -f init.json
-
-      - name: Wait for vault-1 and vault-2 to join the raft cluster
-        run: |
-          cd docker/dev
-          # A raft node has no keyring/state — and unseal fails with "Vault
-          # is not initialized" — until retry_join actually completes, so
-          # unsealing can't start until both nodes show up here. Check both
-          # in one shared loop rather than exhausting one node's timeout
-          # before even looking at the other.
-          for i in $(seq 1 60); do
-            PEERS=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
-              vault operator raft list-peers -format=json 2>/dev/null \
-              | jq -r '.data.config.servers[]?.node_id' 2>/dev/null || true)
-            echo "Current peers: $(echo "$PEERS" | tr '\n' ' ') (attempt $i/60)"
-            if echo "$PEERS" | grep -qx 'vault-1' && echo "$PEERS" | grep -qx 'vault-2'; then
-              echo "Both nodes have joined the raft cluster."
-              break
-            fi
-            sleep 3
-          done
-
-      - name: Unseal the remaining nodes
-        run: |
-          cd docker/dev
-          for node in vault-1 vault-2; do
-            echo "Unsealing $node..."
-            docker compose exec -T "$node" vault operator unseal "$VAULT_UNSEAL_KEY"
-          done
-
-      - name: Wait for all 3 raft peers to become voters
-        run: |
-          cd docker/dev
-          # Even once joined, Vault's autopilot holds a node as a non-voter
-          # during a short stabilization period before promoting it.
-          for i in $(seq 1 60); do
-            RESULT=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
-              vault operator raft list-peers -format=json 2>/dev/null || true)
-            TOTAL=$(echo "$RESULT" | jq '.data.config.servers | length' 2>/dev/null || echo 0)
-            VOTERS=$(echo "$RESULT" | jq '[.data.config.servers[] | select(.voter == true)] | length' 2>/dev/null || echo 0)
-            echo "Peers: ${TOTAL:-0}, Voters: ${VOTERS:-0} (attempt $i/60)"
-            if [ "$TOTAL" = "3" ] && [ "$VOTERS" = "3" ]; then
-              echo "All 3 nodes have joined as voters."
-              docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "Cluster did not converge to 3 voters in time."
-          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers || true
-          exit 1
 
       - name: Verify cluster health
         run: |
@@ -186,30 +111,12 @@ jobs:
           sudo mv vault /usr/local/bin/vault
           vault version
 
-      - name: Start a single Vault node
+      - name: Bring up a single Vault node (Transit auto-unseal)
         run: |
-          cd docker/dev
-          docker compose up -d vault-0
-
-      - name: Wait for Vault to respond
-        run: |
-          for i in $(seq 1 30); do
-            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/seal-status; then
-              echo "Vault is listening."
-              break
-            fi
-            echo "Waiting for Vault to come up... ($i/30)"
-            sleep 2
-          done
-
-      - name: Initialize and unseal (single key share — CI only, never for production)
-        run: |
+          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh --nodes vault-0)
+          echo "::add-mask::$ROOT_TOKEN"
           echo "VAULT_ADDR=http://127.0.0.1:8200" >> "$GITHUB_ENV"
-          export VAULT_ADDR=http://127.0.0.1:8200
-          vault operator init -key-shares=1 -key-threshold=1 -format=json > init.json
-          vault operator unseal "$(jq -r '.unseal_keys_b64[0]' init.json)"
-          echo "VAULT_TOKEN=$(jq -r '.root_token' init.json)" >> "$GITHUB_ENV"
-          rm -f init.json
+          echo "VAULT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
 
       - name: Enable KV v2 and seed a test secret
         run: |
