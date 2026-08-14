@@ -94,33 +94,37 @@ jobs:
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
           rm -f init.json
 
-      - name: Join and unseal the remaining nodes
+      - name: Unseal the remaining nodes
         run: |
           cd docker/dev
           for node in vault-1 vault-2; do
-            echo "Waiting for $node to join the raft cluster..."
-            for i in $(seq 1 30); do
-              if docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
-                  vault operator raft list-peers -format=json \
-                  | jq -e --arg n "$node" '.data.config.servers[]?.node_id == $n' >/dev/null 2>&1; then
-                echo "$node has joined the raft cluster."
-                break
-              fi
-              echo "  still waiting ($i/30)..."
-              sleep 2
-            done
             echo "Unsealing $node..."
             docker compose exec -T "$node" vault operator unseal "$VAULT_UNSEAL_KEY"
           done
 
-      - name: Verify all 3 raft peers are voters
+      - name: Wait for all 3 raft peers to join as voters
         run: |
           cd docker/dev
-          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers
-          VOTERS=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
-            vault operator raft list-peers -format=json | jq '[.data.config.servers[] | select(.voter == true)] | length')
-          echo "Voters: $VOTERS"
-          [ "$VOTERS" -eq 3 ] || { echo "Expected 3 raft voters, got $VOTERS"; exit 1; }
+          # retry_join takes a while to complete, and even once a node has
+          # joined, Vault's autopilot holds it as a non-voter for a short
+          # stabilization period before promoting it — so this polls for
+          # both conditions rather than assuming join == voter.
+          for i in $(seq 1 60); do
+            RESULT=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
+              vault operator raft list-peers -format=json 2>/dev/null || true)
+            TOTAL=$(echo "$RESULT" | jq '.data.config.servers | length' 2>/dev/null || echo 0)
+            VOTERS=$(echo "$RESULT" | jq '[.data.config.servers[] | select(.voter == true)] | length' 2>/dev/null || echo 0)
+            echo "Peers: ${TOTAL:-0}, Voters: ${VOTERS:-0} (attempt $i/60)"
+            if [ "$TOTAL" = "3" ] && [ "$VOTERS" = "3" ]; then
+              echo "All 3 nodes have joined as voters."
+              docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Cluster did not converge to 3 voters in time."
+          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers || true
+          exit 1
 
       - name: Verify cluster health
         run: |
