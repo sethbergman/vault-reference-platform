@@ -97,7 +97,7 @@ LEADER="${NODE_LIST[0]}"
 # Step 1: Bring up and bootstrap vault-unseal
 # ---------------------------------------------------------------------------
 log "Starting vault-unseal..."
-compose up -d --build vault-unseal
+compose up -d --build vault-unseal >&2
 wait_for "http://127.0.0.1:8300/v1/sys/seal-status" "vault-unseal"
 
 log "Initializing vault-unseal..."
@@ -133,7 +133,7 @@ log "vault-unseal is ready."
 # Step 2: Bring up the requested main-cluster nodes
 # ---------------------------------------------------------------------------
 log "Starting ${NODES}..."
-compose up -d --build "${NODE_LIST[@]}"
+compose up -d --build "${NODE_LIST[@]}" >&2
 wait_for "http://127.0.0.1:8200/v1/sys/seal-status" "$LEADER"
 
 # ---------------------------------------------------------------------------
