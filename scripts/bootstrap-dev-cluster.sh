@@ -72,6 +72,9 @@ wait_for() {
         log "  waiting for ${label}... (${i}/${attempts})"
         sleep "$delay"
     done
+    log "----- docker compose logs ${label} (last 50 lines) -----"
+    compose logs --tail=50 "$label" >&2 || true
+    log "----- end logs -----"
     die "${label} did not respond after $((attempts * delay))s"
 }
 
