@@ -1,0 +1,17 @@
+# Copy to group_vars/vault_nodes.yml (or pass with -e @<this-file>) when
+# deploying against the Azure profile, after filling in the terraform
+# outputs below:
+#
+#   cd terraform/azure
+#   terraform output vault_autounseal_tenant_id
+#   terraform output vault_autounseal_key_vault_name
+#   terraform output vault_autounseal_key_name
+#
+# Also pass the Vault nodes' managed identity principal ID as
+# -var vault_node_identity_principal_id=<id> on terraform apply — the seal
+# stanza relies on that identity for Key Vault credentials, not static keys.
+
+vault_seal_type: azurekeyvault
+vault_azurekeyvault_tenant_id: REPLACE_WITH_terraform_output_vault_autounseal_tenant_id
+vault_azurekeyvault_vault_name: REPLACE_WITH_terraform_output_vault_autounseal_key_vault_name
+vault_azurekeyvault_key_name: REPLACE_WITH_terraform_output_vault_autounseal_key_name
