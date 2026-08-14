@@ -94,6 +94,26 @@ jobs:
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
           rm -f init.json
 
+      - name: Wait for vault-1 and vault-2 to join the raft cluster
+        run: |
+          cd docker/dev
+          # A raft node has no keyring/state — and unseal fails with "Vault
+          # is not initialized" — until retry_join actually completes, so
+          # unsealing can't start until both nodes show up here. Check both
+          # in one shared loop rather than exhausting one node's timeout
+          # before even looking at the other.
+          for i in $(seq 1 60); do
+            PEERS=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
+              vault operator raft list-peers -format=json 2>/dev/null \
+              | jq -r '.data.config.servers[]?.node_id' 2>/dev/null || true)
+            echo "Current peers: $(echo "$PEERS" | tr '\n' ' ') (attempt $i/60)"
+            if echo "$PEERS" | grep -qx 'vault-1' && echo "$PEERS" | grep -qx 'vault-2'; then
+              echo "Both nodes have joined the raft cluster."
+              break
+            fi
+            sleep 3
+          done
+
       - name: Unseal the remaining nodes
         run: |
           cd docker/dev
@@ -102,13 +122,11 @@ jobs:
             docker compose exec -T "$node" vault operator unseal "$VAULT_UNSEAL_KEY"
           done
 
-      - name: Wait for all 3 raft peers to join as voters
+      - name: Wait for all 3 raft peers to become voters
         run: |
           cd docker/dev
-          # retry_join takes a while to complete, and even once a node has
-          # joined, Vault's autopilot holds it as a non-voter for a short
-          # stabilization period before promoting it — so this polls for
-          # both conditions rather than assuming join == voter.
+          # Even once joined, Vault's autopilot holds a node as a non-voter
+          # during a short stabilization period before promoting it.
           for i in $(seq 1 60); do
             RESULT=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
               vault operator raft list-peers -format=json 2>/dev/null || true)
