@@ -88,9 +88,39 @@ jobs:
           UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' init.json)
           ROOT_TOKEN=$(jq -r '.root_token' init.json)
           docker compose exec -T vault-0 vault operator unseal "$UNSEAL_KEY"
+          echo "::add-mask::$UNSEAL_KEY"
           echo "::add-mask::$ROOT_TOKEN"
+          echo "VAULT_UNSEAL_KEY=$UNSEAL_KEY" >> "$GITHUB_ENV"
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
           rm -f init.json
+
+      - name: Join and unseal the remaining nodes
+        run: |
+          cd docker/dev
+          for node in vault-1 vault-2; do
+            echo "Waiting for $node to join the raft cluster..."
+            for i in $(seq 1 30); do
+              if docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
+                  vault operator raft list-peers -format=json \
+                  | jq -e --arg n "$node" '.data.config.servers[]?.node_id == $n' >/dev/null 2>&1; then
+                echo "$node has joined the raft cluster."
+                break
+              fi
+              echo "  still waiting ($i/30)..."
+              sleep 2
+            done
+            echo "Unsealing $node..."
+            docker compose exec -T "$node" vault operator unseal "$VAULT_UNSEAL_KEY"
+          done
+
+      - name: Verify all 3 raft peers are voters
+        run: |
+          cd docker/dev
+          docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault operator raft list-peers
+          VOTERS=$(docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 \
+            vault operator raft list-peers -format=json | jq '[.data.config.servers[] | select(.voter == true)] | length')
+          echo "Voters: $VOTERS"
+          [ "$VOTERS" -eq 3 ] || { echo "Expected 3 raft voters, got $VOTERS"; exit 1; }
 
       - name: Verify cluster health
         run: |
