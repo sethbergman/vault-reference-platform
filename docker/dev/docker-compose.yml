@@ -2,25 +2,31 @@ version: "3.8"
 
 services:
   vault-0:
-    build: ../vault
+    build:
+      context: ../vault
+      args:
+        VAULT_NODE_ID: vault-0
     ports:
       - "8200:8200"
     environment:
-      VAULT_CLUSTER_ADDR: "http://vault-0:8201"
       VAULT_ADDR: "http://127.0.0.1:8200"
 
   vault-1:
-    build: ../vault
+    build:
+      context: ../vault
+      args:
+        VAULT_NODE_ID: vault-1
     ports:
       - "8210:8200"
     environment:
-      VAULT_CLUSTER_ADDR: "http://vault-1:8201"
       VAULT_ADDR: "http://127.0.0.1:8200"
 
   vault-2:
-    build: ../vault
+    build:
+      context: ../vault
+      args:
+        VAULT_NODE_ID: vault-2
     ports:
       - "8220:8200"
     environment:
-      VAULT_CLUSTER_ADDR: "http://vault-2:8201"
       VAULT_ADDR: "http://127.0.0.1:8200"
