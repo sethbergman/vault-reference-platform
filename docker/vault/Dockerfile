@@ -14,6 +14,9 @@ RUN sed "s/{{NODE_ID}}/${VAULT_NODE_ID}/g" /tmp/vault.hcl.tpl > /vault/config/va
 # creates this, but we replace the entrypoint below, so create it ourselves.
 RUN mkdir -p /vault/data && chown -R vault:vault /vault/data
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 8200 8201
 
-ENTRYPOINT ["vault", "server", "-config=/vault/config/vault.hcl"]
+ENTRYPOINT ["docker-entrypoint.sh"]

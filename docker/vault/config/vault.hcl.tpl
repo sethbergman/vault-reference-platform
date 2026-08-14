@@ -32,3 +32,17 @@ disable_mlock = true
 api_addr     = "http://{{NODE_ID}}:8200"
 cluster_addr = "http://{{NODE_ID}}:8201"
 ui           = true
+
+# Auto-unseal via the vault-unseal service's Transit engine (see
+# docker/vault-unseal). Same seal-stanza shape a production profile would
+# use for "awskms"/"azurekeyvault" — only the backend differs. The token is
+# only known at container start (it's minted by the bootstrap script after
+# vault-unseal is up), so it's injected by docker-entrypoint.sh, not baked
+# in at build time like NODE_ID.
+seal "transit" {
+  address         = "http://vault-unseal:8200"
+  token           = "{{TRANSIT_TOKEN}}"
+  key_name        = "autounseal"
+  mount_path      = "transit/"
+  disable_renewal = "false"
+}

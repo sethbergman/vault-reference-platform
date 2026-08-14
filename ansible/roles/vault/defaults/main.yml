@@ -2,3 +2,9 @@
 vault_version: "1.17.2"
 vault_cluster_name: vault-reference
 vault_storage_backend: raft
+
+# Manual Shamir unseal by default — safe with no further configuration.
+# Set to "awskms" or "azurekeyvault" via group_vars for auto-unseal; see
+# ansible/group_vars/vault_nodes_aws.yml.example and
+# vault_nodes_azure.yml.example.
+vault_seal_type: shamir

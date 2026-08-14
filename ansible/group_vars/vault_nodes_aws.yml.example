@@ -1,0 +1,15 @@
+# Copy to group_vars/vault_nodes.yml (or pass with -e @<this-file>) when
+# deploying against the AWS profile, after filling in the terraform
+# outputs below:
+#
+#   cd terraform/aws
+#   terraform output vault_autounseal_kms_key_id
+#   terraform output vault_autounseal_kms_region
+#
+# Also attach the vault_autounseal_iam_policy_arn output to the Vault
+# nodes' instance profile — the seal stanza relies on that role for KMS
+# credentials, not static keys.
+
+vault_seal_type: awskms
+vault_awskms_region: us-east-1
+vault_awskms_key_id: REPLACE_WITH_terraform_output_vault_autounseal_kms_key_id

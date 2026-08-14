@@ -1,6 +1,16 @@
 version: "3.8"
 
 services:
+  # Auto-unseal backend for vault-0/1/2 (see docker/vault-unseal). Brought up
+  # and bootstrapped first — scripts/bootstrap-dev-cluster.sh handles the
+  # ordering; a bare `docker compose up` won't unseal or configure it.
+  vault-unseal:
+    build: ../vault-unseal
+    ports:
+      - "8300:8200"
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+
   vault-0:
     build:
       context: ../vault
@@ -10,6 +20,10 @@ services:
       - "8200:8200"
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
+      # Minted by scripts/bootstrap-dev-cluster.sh after vault-unseal is
+      # ready; empty here just means "not bootstrapped yet", not a default
+      # to rely on.
+      VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
 
   vault-1:
     build:
@@ -20,6 +34,7 @@ services:
       - "8210:8200"
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
 
   vault-2:
     build:
@@ -30,3 +45,4 @@ services:
       - "8220:8200"
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"

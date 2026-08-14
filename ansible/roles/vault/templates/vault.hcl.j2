@@ -14,4 +14,21 @@ listener "tcp" {
 api_addr     = "https://{{ ansible_default_ipv4.address }}:8200"
 cluster_addr = "https://{{ ansible_default_ipv4.address }}:8201"
 
-# seal "awskms" { ... }  # enabled in production profiles via group_vars
+{% if vault_seal_type == "awskms" %}
+# Auto-unseal via AWS KMS. Relies on the instance role for credentials —
+# see terraform/aws's vault_autounseal_iam_policy_arn output, which must be
+# attached to the Vault nodes' instance profile.
+seal "awskms" {
+  region     = "{{ vault_awskms_region }}"
+  kms_key_id = "{{ vault_awskms_key_id }}"
+}
+{% elif vault_seal_type == "azurekeyvault" %}
+# Auto-unseal via Azure Key Vault. Relies on the VM's managed identity for
+# credentials — see terraform/azure's azurerm_key_vault_access_policy,
+# which must be granted to the Vault nodes' managed identity.
+seal "azurekeyvault" {
+  tenant_id  = "{{ vault_azurekeyvault_tenant_id }}"
+  vault_name = "{{ vault_azurekeyvault_vault_name }}"
+  key_name   = "{{ vault_azurekeyvault_key_name }}"
+}
+{% endif %}
