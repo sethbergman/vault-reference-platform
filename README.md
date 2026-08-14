@@ -95,6 +95,12 @@ Terraform + Ansible.
 See [`docs/security.md`](docs/security.md) for the threat model, auto-unseal
 approach, TLS handling, and policy structure.
 
+## Auto-unseal
+
+See [`docs/auto-unseal.md`](docs/auto-unseal.md) for how each profile
+auto-unseals — Vault Transit locally/in CI, AWS KMS or Azure Key Vault in
+the cloud profiles.
+
 ## Secret rotation
 
 See [`docs/secret-rotation.md`](docs/secret-rotation.md) for bootstrapping

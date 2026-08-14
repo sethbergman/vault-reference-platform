@@ -5,13 +5,18 @@
 The fastest way to try the reference topology on a laptop.
 
 ```bash
-make deploy       # docker compose up, 3-node Vault cluster
+make deploy       # 3-node Vault cluster, auto-unsealed
 make status        # check cluster/unseal status
 make destroy       # tear it down
 ```
 
-This profile uses Shamir key shares for unsealing (no cloud KMS dependency)
-and is intended for development and CI, not production.
+`make deploy` runs `scripts/bootstrap-dev-cluster.sh`, which brings up a
+standalone Vault instance (`vault-unseal`) as a Transit auto-unseal
+backend, then starts and initializes the 3-node cluster against it — the
+same `seal` stanza shape the AWS/Azure profiles below use, just pointed at
+something that needs no cloud account. `vault-unseal` itself is still
+unsealed the manual, Shamir way — something has to be the root of trust.
+See [`docs/auto-unseal.md`](auto-unseal.md) for the full picture.
 
 ## AWS
 
@@ -36,10 +41,17 @@ cd ../../ansible
 ansible-playbook -i inventory/aws playbooks/site.yml
 ```
 
+Auto-unseal isn't on by default — copy
+`group_vars/vault_nodes_aws.yml.example` to `group_vars/vault_nodes.yml`
+first and fill in the `terraform output` values it references. See
+[`docs/auto-unseal.md`](auto-unseal.md).
+
 ## Azure
 
 Mirrors the AWS layout under `terraform/azure/`, using Azure Key Vault for
-auto-unseal and a Storage Account for snapshots.
+auto-unseal and a Storage Account for snapshots. Same
+`group_vars/vault_nodes_azure.yml.example` step as AWS before running the
+playbook.
 
 ## Post-deployment
 
