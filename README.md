@@ -35,23 +35,26 @@ that part down.
 
 ## Architecture
 
-See [`diagrams/architecture.md`](diagrams/architecture.md) for the full
-diagram. At a high level:
+This is the topology `make deploy` actually stands up (local/CI). See
+[`diagrams/architecture.md`](diagrams/architecture.md) for the full
+target production design — load balancer and cloud KMS auto-unseal
+included, neither of which exist yet (see Roadmap):
 
 ```text
-                Users
-                  │
-           Load Balancer
-                  │
-      ┌───────────┴───────────┐
-      │                       │
- Vault Node 1            Vault Node 2
-      │                       │
-      └───────────┬───────────┘
-                  │
-             Raft Storage
-                  │
-        Snapshot / Backup
+              vault CLI / apps
+                     │
+        ┌────────────┼────────────┐
+        │             │             │
+    vault-0       vault-1       vault-2
+   (leader)      (follower)    (follower)
+        │             │             │
+        └──────Raft cluster─────────┘
+                     │
+             Transit auto-unseal
+                     │
+               vault-unseal
+        (Shamir-unsealed once —
+           the root of trust)
 ```
 
 ## Repository structure
