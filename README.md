@@ -41,19 +41,21 @@ target production design — load balancer and cloud KMS auto-unseal
 included, neither of which exist yet (see Roadmap):
 
 ```text
-              vault CLI / apps
-                     │
-        ┌────────────┼────────────┐
-        │             │             │
-    vault-0       vault-1       vault-2
-   (leader)      (follower)    (follower)
-        │             │             │
-        └──────Raft cluster─────────┘
-                     │
-             Transit auto-unseal
-                     │
-               vault-unseal
-        (Shamir-unsealed once —
+            vault CLI / apps
+                    │
+    ┌───────────────┬───────────────┐
+    │               │               │
+ vault-0         vault-1         vault-2
+(leader)       (follower)      (follower)
+    │               │               │
+    └───────────────┴───────────────┘
+                    │
+              Raft cluster
+                    │
+           Transit auto-unseal
+                    │
+              vault-unseal
+         (Shamir-unsealed once —
            the root of trust)
 ```
 
