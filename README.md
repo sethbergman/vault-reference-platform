@@ -21,10 +21,12 @@ that part down.
 
 ## Design goals
 
-- **Reproducible** — a fresh environment can be stood up from a clean
-  checkout with no manual steps.
-- **HA by default** — the reference topology assumes multiple Vault nodes
-  behind a load balancer from the start, not as a "v2" feature.
+- **Reproducible** — the local profile stands up a real 3-node,
+  auto-unsealed Raft cluster from a clean checkout with one command
+  (`make deploy`). The AWS/Azure profiles aren't there yet — see Roadmap.
+- **HA by default** — the reference topology is a multi-node Raft cluster
+  from the start, not bolted on as a "v2" feature. A load balancer in
+  front of it is still a `TODO` in `terraform/aws` and `terraform/azure`.
 - **Operable, not just deployable** — runbooks and disaster-recovery
   procedures are first-class, not an afterthought.
 - **Cloud-agnostic core** — Terraform modules are structured so the Vault
@@ -66,9 +68,10 @@ vault-reference-platform/
 │   ├── roles/
 │   └── inventory/
 ├── docker/
-│   ├── vault/       # Vault server image + config
-│   ├── tooling/     # CLI/dev tooling image
-│   └── dev/         # docker-compose for local dev
+│   ├── vault/         # Vault server image + config
+│   ├── vault-unseal/  # Transit auto-unseal backend for the dev cluster
+│   ├── tooling/       # CLI/dev tooling image
+│   └── dev/           # docker-compose for local dev
 ├── scripts/
 ├── examples/
 ├── docs/
@@ -82,9 +85,9 @@ vault-reference-platform/
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/vault-reference-platform.git
+git clone https://github.com/sethbergman/vault-reference-platform.git
 cd vault-reference-platform
-make deploy   # brings up a local HA-shaped Vault cluster via Docker Compose
+make deploy   # 3-node Raft cluster, auto-unsealed, via Docker Compose
 ```
 
 See [`docs/deployment.md`](docs/deployment.md) for cloud deployment via
@@ -119,14 +122,19 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs `terraform fmt`/`validate`, `ansible-lint`, and
-`shellcheck` on every PR. See
+GitHub Actions runs six checks on every PR: `terraform fmt`/`validate`,
+`ansible-lint`, `shellcheck`, and `markdownlint`, plus two jobs that
+actually deploy the Docker Compose cluster and exercise it — one brings
+up and auto-unseals the full 3-node Raft cluster and does a live
+secret write/read, the other bootstraps an AppRole and proves
+`secret_id` rotation end to end (issue, use, rotate, confirm the old
+one is rejected). See
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-- **v0.1** — local Docker Compose deployment, base Terraform + docs
-- **v0.2** — HA cluster, auto-unseal, monitoring
+- **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
+- **v0.2** — HA cluster (done), auto-unseal (done), monitoring (open)
 - **v0.3** — CI security scanning, automated tests
 - **v1.0** — production-ready reference architecture
 

@@ -26,8 +26,9 @@ flowchart TD
   external Consul cluster, to keep the operational surface area smaller
   for a reference deployment.
 - **Auto-unseal**: production nodes use a cloud KMS (AWS KMS / Azure Key
-  Vault) for auto-unseal; the local Docker Compose profile uses Shamir
-  shares for simplicity, documented in `docs/deployment.md`.
+  Vault); the local Docker Compose profile uses Vault Transit instead —
+  same `seal` stanza shape, no cloud account needed. See
+  `docs/auto-unseal.md`.
 - **Load balancer**: health-checks the Vault `/v1/sys/health` endpoint so
   standby nodes aren't sent client traffic that requires an active leader.
 - **Backups**: scheduled Raft snapshots are shipped to object storage; see

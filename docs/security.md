@@ -13,8 +13,10 @@ the internal CA under `examples/pki/`.
   - Recovery keys (Shamir shares over the KMS-wrapped root key) are still
   generated at init time and must be distributed and stored per your
   organization's key-custodian policy.
-- **Local/dev**: Shamir key shares, printed at `vault operator init` time.
-  Never used in production profiles.
+- **Local/dev**: Vault Transit auto-unseal — the same `seal` stanza shape
+  as production, backed by a standalone Vault instance instead of a cloud
+  KMS. That instance is itself still unsealed with a single Shamir key
+  share; see [`docs/auto-unseal.md`](auto-unseal.md).
 
 ## Authentication & policy
 
