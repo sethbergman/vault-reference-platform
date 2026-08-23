@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: vault
+    metrics_path: /v1/sys/metrics
+    params:
+      format: ["prometheus"]
+    static_configs:
+      - targets:
+          - vault-0:8200
+          - vault-1:8200
+          - vault-2:8200
+    relabel_configs:
+      # Default instance label is host:port; the node name alone is what
+      # actually distinguishes these three in a dashboard.
+      - source_labels: [__address__]
+        regex: "([^:]+):.*"
+        target_label: instance
+        replacement: "$1"

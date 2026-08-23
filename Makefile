@@ -1,7 +1,7 @@
 .PHONY: deploy status destroy lint test docs
 
-deploy: ## Bring up the local 3-node Vault cluster (auto-unseal via Transit)
-	./scripts/bootstrap-dev-cluster.sh
+deploy: ## Bring up the local 3-node Vault cluster + Prometheus/Grafana
+	./scripts/bootstrap-dev-cluster.sh --with-monitoring
 
 status: ## Check status of the local cluster
 	docker compose -f docker/dev/docker-compose.yml ps

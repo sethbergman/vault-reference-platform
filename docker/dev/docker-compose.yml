@@ -46,3 +46,28 @@ services:
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
       VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
+
+  # Monitoring — started only by `bootstrap-dev-cluster.sh --with-monitoring`
+  # (and therefore `make deploy`), not by a bare `docker compose up`.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      # Local/dev only: anonymous admin access so the dashboard opens
+      # without a login prompt. Never do this anywhere reachable.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
