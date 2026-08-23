@@ -63,9 +63,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bring up the local HA Vault cluster (Transit auto-unseal)
+      - name: Bring up the local HA Vault cluster (Transit auto-unseal + monitoring)
         run: |
-          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh)
+          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh --with-monitoring)
           echo "::add-mask::$ROOT_TOKEN"
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
 
@@ -86,6 +86,18 @@ jobs:
           docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault secrets enable -path=secret -version=2 kv
           docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault kv put secret/ci-smoke-test value=ok
           docker compose exec -T -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" vault-0 vault kv get secret/ci-smoke-test
+
+      - name: Verify Vault metrics are queryable in Prometheus
+        run: |
+          # The bootstrap script already waited for the scrape targets to be
+          # up. This goes further and asserts a real Vault metric has landed
+          # with the right value — proving the telemetry stanza works, not
+          # just that the endpoint answers.
+          RESULT=$(curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=vault_core_unsealed')
+          echo "$RESULT" | jq .
+          UNSEALED=$(echo "$RESULT" | jq '[.data.result[] | select(.value[1] == "1")] | length')
+          echo "Nodes reporting unsealed via Prometheus: $UNSEALED"
+          [ "$UNSEALED" -eq 3 ] || { echo "Expected 3 unsealed nodes in metrics, got $UNSEALED"; exit 1; }
 
       - name: Tear down
         if: always()

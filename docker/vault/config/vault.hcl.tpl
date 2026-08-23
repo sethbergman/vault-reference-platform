@@ -19,6 +19,26 @@ storage "raft" {
 listener "tcp" {
   address     = "0.0.0.0:8200"
   tls_disable = "true"   # local/dev only — TLS is required in every other profile
+
+  telemetry {
+    # sys/metrics normally requires a token. Opening it up lets Prometheus
+    # scrape without credentials, which is fine here because the listener
+    # is already plaintext and confined to the compose network — but in a
+    # real deployment, leave this off and give the scraper a token with a
+    # policy granting read on sys/metrics.
+    unauthenticated_metrics_access = true
+  }
+}
+
+telemetry {
+  # Vault keeps in-memory metrics for this long; Prometheus scrapes well
+  # inside that window (see docker/monitoring/prometheus.yml).
+  prometheus_retention_time = "24h"
+
+  # Without this, every metric is prefixed with the node's hostname, which
+  # in a container is a random ID — that would make each restart look like
+  # a brand-new time series.
+  disable_hostname = true
 }
 
 # The container doesn't run with IPC_LOCK, so Vault can't mlock its memory

@@ -4,10 +4,12 @@
 #
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
+#                              [--with-monitoring]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
 #   ./bootstrap-dev-cluster.sh --nodes vault-0         # single node, e.g. CI
+#   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -24,6 +26,10 @@
 #   4. If more than one node was requested, waits for the rest to join the
 #      Raft cluster (via retry_join) and for Vault's autopilot to promote
 #      them all to voters.
+#   5. With --with-monitoring, also starts Prometheus and Grafana and waits
+#      until Prometheus reports every Vault node as an up scrape target —
+#      so a green run means metrics are genuinely flowing, not just that
+#      the containers started.
 #
 # This is the single source of truth for bringing the dev cluster up — both
 # `make deploy` and CI call this script, so neither can drift from what the
@@ -44,6 +50,7 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 NODES="vault-0,vault-1,vault-2"
+WITH_MONITORING=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
 
@@ -84,6 +91,7 @@ wait_for() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --nodes)  NODES="$2"; shift 2 ;;
+        --with-monitoring) WITH_MONITORING=true; shift ;;
         -h|--help) usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -172,6 +180,40 @@ if [[ ${#NODE_LIST[@]} -gt 1 ]]; then
         sleep 3
     done
     [[ "$TOTAL" == "$EXPECTED" && "$VOTERS" == "$EXPECTED" ]] || die "Cluster did not converge to ${EXPECTED} voters in time"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: Optionally start monitoring and confirm metrics are actually flowing
+# ---------------------------------------------------------------------------
+if [[ "$WITH_MONITORING" == true ]]; then
+    log "Starting Prometheus and Grafana..."
+    compose up -d prometheus grafana >&2
+    wait_for "http://127.0.0.1:9090/-/ready" "prometheus"
+
+    # Containers being up proves nothing about scraping — Vault could be
+    # refusing the metrics request, or the scrape path could be wrong.
+    # Ask Prometheus which of its vault targets are actually up.
+    log "Waiting for Prometheus to scrape all ${#NODE_LIST[@]} Vault node(s)..."
+    for i in $(seq 1 30); do
+        UP_COUNT="$(curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22vault%22%7D' 2>/dev/null \
+            | jq '[.data.result[] | select(.value[1] == "1")] | length' 2>/dev/null || echo 0)"
+        log "  vault targets up: ${UP_COUNT:-0}/${#NODE_LIST[@]} (${i}/30)"
+        if [[ "$UP_COUNT" == "${#NODE_LIST[@]}" ]]; then
+            log "All Vault nodes are being scraped."
+            break
+        fi
+        sleep 3
+    done
+    if [[ "$UP_COUNT" != "${#NODE_LIST[@]}" ]]; then
+        log "----- prometheus vault targets -----"
+        curl -fsS 'http://127.0.0.1:9090/api/v1/targets?state=active' 2>/dev/null \
+            | jq '.data.activeTargets[] | select(.labels.job == "vault") | {instance: .labels.instance, health, lastError}' >&2 || true
+        log "----- end targets -----"
+        die "Prometheus is not scraping all Vault nodes"
+    fi
+
+    log "Grafana: http://localhost:3000 (anonymous admin, dev only)"
+    log "Prometheus: http://localhost:9090"
 fi
 
 log "Cluster is up. Root token is a fresh dev-only credential, printed to stdout."
