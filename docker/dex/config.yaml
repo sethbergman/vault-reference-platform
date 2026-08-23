@@ -1,0 +1,67 @@
+# Dex — a small OIDC identity provider, standing in for whatever real IdP
+# a deployment would use (Okta, Entra ID, Google Workspace, Keycloak...).
+#
+# The point of running a real IdP locally rather than mocking one: the
+# whole OIDC authorization-code flow is genuinely exercised — discovery,
+# redirect, consent, ID token signing, and group claims. Swapping Dex for
+# a production IdP is a config change (issuer URL, client credentials),
+# not a rewrite.
+
+# This must be reachable at the SAME URL from both the Vault container
+# and the human's browser, because Vault validates that the token issuer
+# matches this value while the browser gets redirected to it.
+#
+# "dex" resolves inside the compose network automatically; on the host it
+# needs an /etc/hosts entry (see docs/human-authentication.md). That's
+# the standard workaround for OIDC-in-Docker — localhost means something
+# different inside a container than outside it.
+issuer: http://dex:5556/dex
+
+storage:
+  # In-memory: every restart is a clean slate. Fine here — all the users
+  # are declared below anyway.
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+# The Vault server registered as an OIDC client. In production these
+# values come from the IdP's admin console; the secret would come from
+# somewhere other than a file in git.
+staticClients:
+  - id: vault
+    name: "HashiCorp Vault"
+    secret: vault-dev-client-secret
+    redirectURIs:
+      # The Vault CLI spins up a temporary local listener on 8250 to
+      # catch the callback.
+      - "http://localhost:8250/oidc/callback"
+      - "http://127.0.0.1:8250/oidc/callback"
+      # Vault's web UI callback.
+      - "http://localhost:8200/ui/vault/auth/oidc/oidc/callback"
+
+enablePasswordDB: true
+
+# Two users in different groups — that's what makes the group-to-policy
+# mapping demonstrable rather than theoretical. Both passwords are
+# "password" (bcrypt hash below); dev-only, obviously.
+staticPasswords:
+  - email: "developer@example.com"
+    username: "developer"
+    userID: "1a5b8c3d-0000-4000-a000-000000000001"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    groups:
+      - "vault-developers"
+
+  - email: "operator@example.com"
+    username: "operator"
+    userID: "1a5b8c3d-0000-4000-a000-000000000002"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    groups:
+      - "vault-operators"
+
+oauth2:
+  # Skip the "approve access?" consent screen. A real IdP would show it
+  # once per client; skipping keeps the login flow to a single step for
+  # both humans trying this out and the CI test that scripts it.
+  skipApprovalScreen: true
