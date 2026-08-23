@@ -348,8 +348,10 @@ jobs:
           echo "DEV_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
           echo "Token identity and policies:"
+          # identity_policies is the one that matters here: policies that
+          # come from an identity group land there, not in policies.
           VAULT_TOKEN="$TOKEN" vault token lookup -format=json \
-            | jq '{display_name: .data.display_name, policies: .data.policies}'
+            | jq '.data | {display_name, entity_id, policies, identity_policies}'
 
       - name: Group membership must have produced the developer policy
         run: |
@@ -358,9 +360,15 @@ jobs:
           # authorization. If the group alias were missing or misspelled,
           # login would still succeed and the token would carry only
           # "default" — which is exactly the failure this catches.
-          POLICIES=$(VAULT_TOKEN="$DEV_TOKEN" vault token lookup -format=json \
-            | jq -r '.data.policies | join(",")')
-          echo "Policies on the token: $POLICIES"
+          LOOKUP=$(VAULT_TOKEN="$DEV_TOKEN" vault token lookup -format=json)
+          echo "$LOOKUP" | jq '.data | {policies, identity_policies, entity_id}'
+
+          # Policies granted through an identity group appear under
+          # identity_policies, not policies — check both so this asserts
+          # the thing it claims to.
+          POLICIES=$(echo "$LOOKUP" | jq -r \
+            '[(.data.policies // [])[], (.data.identity_policies // [])[]] | join(",")')
+          echo "Effective policies: $POLICIES"
           echo "$POLICIES" | grep -q "vault-developers" || {
             echo "ERROR: group claim did not map to the vault-developers policy"
             exit 1
@@ -390,8 +398,8 @@ jobs:
           echo "::add-mask::$OP_TOKEN"
 
           POLICIES=$(VAULT_TOKEN="$OP_TOKEN" vault token lookup -format=json \
-            | jq -r '.data.policies | join(",")')
-          echo "Operator policies: $POLICIES"
+            | jq -r '[(.data.policies // [])[], (.data.identity_policies // [])[]] | join(",")')
+          echo "Operator effective policies: $POLICIES"
           echo "$POLICIES" | grep -q "vault-operators" || {
             echo "ERROR: operator did not receive the vault-operators policy"
             exit 1
