@@ -37,7 +37,7 @@
 #   stdout, so it can be captured: TOKEN=$(./oidc-login-test.sh ...)
 #
 # Requirements:
-#   - vault CLI and curl on PATH
+#   - vault CLI, curl and jq on PATH
 #   - VAULT_ADDR and VAULT_TOKEN (the latter only to reach auth_url; the
 #     login itself is unauthenticated)
 #   - The IdP must be reachable from THIS machine at the same hostname
@@ -95,11 +95,16 @@ done
 
 command -v vault >/dev/null 2>&1 || die "vault CLI not found on PATH"
 command -v curl  >/dev/null 2>&1 || die "curl not found on PATH"
+command -v jq    >/dev/null 2>&1 || die "jq not found on PATH"
 [[ -z "$USERNAME" ]] && die "--username is required"
 [[ -z "$PASSWORD" ]] && die "--password is required"
 [[ -z "${VAULT_ADDR:-}" ]] && die "VAULT_ADDR is not set"
 
 COOKIE_JAR="$(mktemp)"
+
+# Trailing slash would produce a double slash in the callback URL below.
+VAULT_ADDR="${VAULT_ADDR%/}"
+export VAULT_ADDR
 
 # ---------------------------------------------------------------------------
 # Step 1: Ask Vault where to send the browser
@@ -172,13 +177,24 @@ log "Received an authorization code."
 # Step 5: Trade the code for a Vault token
 # ---------------------------------------------------------------------------
 log "Exchanging the code with Vault..."
-TOKEN="$(vault write -field=token "auth/${MOUNT}/oidc/callback" \
-    state="$STATE" \
-    nonce="$NONCE" \
-    code="$CODE" \
-    client_nonce="$CLIENT_NONCE")" \
-    || die "Vault rejected the callback"
+# Must be a GET with query parameters — that's the shape of the request a
+# browser makes when the IdP redirects it here, and it's the only method
+# the callback accepts (`vault write` sends a PUT and gets back a 405).
+# The endpoint is unauthenticated: this request *is* the login.
+CALLBACK_RESPONSE="$(curl -sS -G "${VAULT_ADDR}/v1/auth/${MOUNT}/oidc/callback" \
+    --data-urlencode "state=${STATE}" \
+    --data-urlencode "nonce=${NONCE}" \
+    --data-urlencode "code=${CODE}" \
+    --data-urlencode "client_nonce=${CLIENT_NONCE}")" \
+    || die "Callback request to Vault failed"
 
-[[ -n "$TOKEN" ]] || die "Vault returned an empty token"
+TOKEN="$(printf '%s' "$CALLBACK_RESPONSE" | jq -r '.auth.client_token // empty')"
+
+if [[ -z "$TOKEN" ]]; then
+    log "Vault rejected the callback. Response:"
+    printf '%s\n' "$CALLBACK_RESPONSE" | jq . >&2 2>/dev/null \
+        || printf '%s\n' "$CALLBACK_RESPONSE" >&2
+    die "No token in the callback response"
+fi
 log "Login succeeded."
 echo "$TOKEN"
