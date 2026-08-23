@@ -91,8 +91,10 @@ jobs:
     steps:
       - name: Authenticate to Vault
         run: |
-          JWT=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=vault" | jq -r '.value')
+          AUTH="Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          URL="$ACTIONS_ID_TOKEN_REQUEST_URL&audience=vault"
+          JWT=$(curl -sH "$AUTH" "$URL" | jq -r '.value')
+
           VAULT_TOKEN=$(vault write -field=token auth/jwt/login \
             role=github-ci jwt="$JWT")
           echo "::add-mask::$VAULT_TOKEN"
