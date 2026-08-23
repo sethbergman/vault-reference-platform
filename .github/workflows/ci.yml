@@ -290,3 +290,142 @@ jobs:
         run: |
           cd docker/dev
           docker compose down -v
+
+  human-oidc-test:
+    name: Human OIDC login (Dex)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          curl -fsSL -o SHA256SUMS "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS"
+          EXPECTED=$(grep "vault_${VAULT_VERSION}_linux_amd64.zip" SHA256SUMS | awk '{print $1}')
+          ACTUAL=$(sha256sum vault.zip | awk '{print $1}')
+          [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo "Checksum mismatch or missing entry"; exit 1; }
+          unzip -o -q vault.zip vault
+          sudo mv vault /usr/local/bin/vault
+          vault version
+
+      - name: Make "dex" resolve on the host too
+        run: |
+          # The OIDC issuer has to be one URL that both Vault (inside the
+          # compose network) and the browser (out here) can reach, or the
+          # issuer check fails. Compose DNS handles the container side;
+          # this handles the host side, pointing at the published port.
+          echo "127.0.0.1 dex" | sudo tee -a /etc/hosts
+          getent hosts dex
+
+      - name: Bring up Vault + Dex
+        run: |
+          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh --nodes vault-0 --with-oidc)
+          echo "::add-mask::$ROOT_TOKEN"
+          echo "VAULT_ADDR=http://127.0.0.1:8200" >> "$GITHUB_ENV"
+          echo "VAULT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Seed secrets the developer policy grants access to
+        run: |
+          vault secrets enable -path=secret -version=2 kv
+          vault kv put secret/app/config greeting=hello-developer
+
+      - name: Configure OIDC auth and map IdP groups to policies
+        run: |
+          ./scripts/bootstrap-oidc.sh \
+            --discovery-url http://dex:5556/dex \
+            --client-id vault \
+            --client-secret vault-dev-client-secret \
+            --group vault-developers:examples/policies/developer.hcl \
+            --group vault-operators:examples/policies/operator.hcl
+
+      - name: Log in as a developer through the real OIDC flow
+        run: |
+          TOKEN=$(./scripts/oidc-login-test.sh \
+            --username developer@example.com \
+            --password password)
+          echo "::add-mask::$TOKEN"
+          echo "DEV_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          echo "Token identity and policies:"
+          # identity_policies is the one that matters here: policies that
+          # come from an identity group land there, not in policies.
+          VAULT_TOKEN="$TOKEN" vault token lookup -format=json \
+            | jq '.data | {display_name, entity_id, policies, identity_policies}'
+
+      - name: Group membership must have produced the developer policy
+        run: |
+          # This is the assertion that matters. Login succeeding only
+          # proves the IdP authenticated someone; it says nothing about
+          # authorization. If the group alias were missing or misspelled,
+          # login would still succeed and the token would carry only
+          # "default" — which is exactly the failure this catches.
+          LOOKUP=$(VAULT_TOKEN="$DEV_TOKEN" vault token lookup -format=json)
+          echo "$LOOKUP" | jq '.data | {policies, identity_policies, entity_id}'
+
+          # Policies granted through an identity group appear under
+          # identity_policies, not policies — check both so this asserts
+          # the thing it claims to.
+          POLICIES=$(echo "$LOOKUP" | jq -r \
+            '[(.data.policies // [])[], (.data.identity_policies // [])[]] | join(",")')
+          echo "Effective policies: $POLICIES"
+          echo "$POLICIES" | grep -q "vault-developers" || {
+            echo "ERROR: group claim did not map to the vault-developers policy"
+            exit 1
+          }
+          echo "IdP group mapped to a Vault policy correctly."
+
+      - name: Developer can read app secrets
+        run: |
+          VAULT_TOKEN="$DEV_TOKEN" vault kv get secret/app/config
+
+      - name: Developer must NOT have operator privileges
+        run: |
+          # Proves the policies are actually distinct rather than everyone
+          # collapsing to the same access.
+          if VAULT_TOKEN="$DEV_TOKEN" vault operator raft snapshot save /tmp/x.snap >should_fail.log 2>&1; then
+            echo "ERROR: developer policy allowed a raft snapshot"
+            cat should_fail.log
+            exit 1
+          fi
+          echo "Correctly denied — developers don't get operator access."
+
+      - name: An operator logs in and gets a different policy set
+        run: |
+          OP_TOKEN=$(./scripts/oidc-login-test.sh \
+            --username operator@example.com \
+            --password password)
+          echo "::add-mask::$OP_TOKEN"
+
+          POLICIES=$(VAULT_TOKEN="$OP_TOKEN" vault token lookup -format=json \
+            | jq -r '[(.data.policies // [])[], (.data.identity_policies // [])[]] | join(",")')
+          echo "Operator effective policies: $POLICIES"
+          echo "$POLICIES" | grep -q "vault-operators" || {
+            echo "ERROR: operator did not receive the vault-operators policy"
+            exit 1
+          }
+
+          # Same IdP, same Vault, different group — and therefore the
+          # mirror image of the developer's access.
+          if VAULT_TOKEN="$OP_TOKEN" vault kv get secret/app/config >should_fail.log 2>&1; then
+            echo "ERROR: operator policy allowed reading application secrets"
+            cat should_fail.log
+            exit 1
+          fi
+          echo "Operator correctly cannot read application secrets."
+
+      - name: Bad credentials must be rejected
+        run: |
+          if ./scripts/oidc-login-test.sh \
+              --username developer@example.com \
+              --password wrong-password >should_fail.log 2>&1; then
+            echo "ERROR: login succeeded with the wrong password"
+            exit 1
+          fi
+          echo "Wrong password correctly rejected."
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v

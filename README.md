@@ -75,6 +75,8 @@ vault-reference-platform/
 ├── docker/
 │   ├── vault/         # Vault server image + config
 │   ├── vault-unseal/  # Transit auto-unseal backend for the dev cluster
+│   ├── dex/           # OIDC identity provider for human login
+│   ├── monitoring/    # Prometheus + Grafana config
 │   ├── tooling/       # CLI/dev tooling image
 │   └── dev/           # docker-compose for local dev
 ├── scripts/
@@ -109,6 +111,12 @@ See [`docs/auto-unseal.md`](docs/auto-unseal.md) for how each profile
 auto-unseals — Vault Transit locally/in CI, AWS KMS or Azure Key Vault in
 the cloud profiles.
 
+## Human authentication
+
+See [`docs/human-authentication.md`](docs/human-authentication.md) for
+OIDC login, with identity-provider groups mapped to Vault policies —
+access is granted and revoked in the IdP, not per-person in Vault.
+
 ## CI authentication
 
 See [`docs/ci-authentication.md`](docs/ci-authentication.md) for letting
@@ -134,9 +142,9 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs seven checks on every PR. Four are static:
+GitHub Actions runs eight checks on every PR. Four are static:
 `terraform fmt`/`validate`, `ansible-lint`, `shellcheck`, and
-`markdownlint`. The other three deploy the Docker Compose cluster and
+`markdownlint`. The other four deploy the Docker Compose cluster and
 actually exercise it:
 
 - **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
@@ -146,6 +154,9 @@ actually exercise it:
 - **GitHub Actions OIDC** — logs in with a real GitHub-minted OIDC token,
   then confirms a role bound to a different repository rejects that same
   token and that the read-only policy denies writes.
+- **Human OIDC** — runs a full browser-style login against a real OIDC
+  provider, then confirms a developer and an operator get genuinely
+  different access and that a wrong password fails.
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 

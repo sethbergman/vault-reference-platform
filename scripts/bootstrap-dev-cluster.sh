@@ -4,12 +4,13 @@
 #
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
-#                              [--with-monitoring]
+#                              [--with-monitoring] [--with-oidc]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
 #   ./bootstrap-dev-cluster.sh --nodes vault-0         # single node, e.g. CI
 #   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
+#   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -51,6 +52,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 NODES="vault-0,vault-1,vault-2"
 WITH_MONITORING=false
+WITH_OIDC=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
 
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --nodes)  NODES="$2"; shift 2 ;;
         --with-monitoring) WITH_MONITORING=true; shift ;;
+        --with-oidc) WITH_OIDC=true; shift ;;
         -h|--help) usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -100,6 +103,17 @@ done
 IFS=',' read -r -a NODE_LIST <<< "$NODES"
 [[ ${#NODE_LIST[@]} -ge 1 ]] || die "No nodes parsed from --nodes"
 LEADER="${NODE_LIST[0]}"
+
+# ---------------------------------------------------------------------------
+# Step 0: Optionally start the OIDC identity provider
+# ---------------------------------------------------------------------------
+# Started before Vault so the discovery endpoint is live by the time
+# bootstrap-oidc.sh configures the auth method against it.
+if [[ "$WITH_OIDC" == true ]]; then
+    log "Starting Dex (OIDC identity provider)..."
+    compose up -d dex >&2
+    wait_for "http://127.0.0.1:5556/dex/.well-known/openid-configuration" "dex"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Bring up and bootstrap vault-unseal
