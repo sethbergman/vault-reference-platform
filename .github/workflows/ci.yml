@@ -171,3 +171,110 @@ jobs:
         run: |
           cd docker/dev
           docker compose down -v
+
+  jwt-github-oidc-test:
+    name: GitHub Actions OIDC login (JWT auth)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to mint the OIDC token this job authenticates with. Note
+      # that pull requests from forks never get this, so a fork PR will not
+      # be able to run this job — that restriction is GitHub's, and it's
+      # also exactly why bound claims matter.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          curl -fsSL -o SHA256SUMS "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS"
+          EXPECTED=$(grep "vault_${VAULT_VERSION}_linux_amd64.zip" SHA256SUMS | awk '{print $1}')
+          ACTUAL=$(sha256sum vault.zip | awk '{print $1}')
+          [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo "Checksum mismatch or missing entry"; exit 1; }
+          unzip -o -q vault.zip vault
+          sudo mv vault /usr/local/bin/vault
+          vault version
+
+      - name: Bring up a single Vault node (Transit auto-unseal)
+        run: |
+          ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh --nodes vault-0)
+          echo "::add-mask::$ROOT_TOKEN"
+          echo "VAULT_ADDR=http://127.0.0.1:8200" >> "$GITHUB_ENV"
+          echo "VAULT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Enable KV v2 and seed a CI secret
+        run: |
+          vault secrets enable -path=secret -version=2 kv
+          vault kv put secret/ci/build greeting=hello-from-ci
+
+      - name: Bootstrap the JWT role for this repository
+        run: |
+          ./scripts/bootstrap-jwt-github.sh \
+            --role github-ci \
+            --policy-file examples/policies/ci-readonly.hcl \
+            --repository "${{ github.repository }}" \
+            --audience vault \
+            --token-ttl 15m \
+            --token-max-ttl 30m
+
+      - name: Mint a real GitHub OIDC token
+        run: |
+          # GitHub mints this fresh for this job. It is never stored
+          # anywhere — that is the whole point compared to AppRole.
+          JWT=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=vault" | jq -r '.value')
+          [ -n "$JWT" ] && [ "$JWT" != "null" ] || { echo "Failed to mint an OIDC token"; exit 1; }
+          echo "::add-mask::$JWT"
+          echo "GH_JWT=$JWT" >> "$GITHUB_ENV"
+
+          # Claims are not secret (the signature is what matters), so show
+          # what Vault will be matching against — invaluable when a bound
+          # claim doesn't match and login fails.
+          echo "Token claims:"
+          echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{iss, aud, repository, ref, sub}' || true
+
+      - name: Log in to Vault with the OIDC token and read the secret
+        run: |
+          CI_TOKEN=$(vault write -field=token auth/jwt/login role=github-ci jwt="$GH_JWT")
+          echo "::add-mask::$CI_TOKEN"
+          echo "Logged in via GitHub OIDC — no stored credential involved."
+          VAULT_TOKEN="$CI_TOKEN" vault kv get secret/ci/build
+
+      - name: A token from another repository must be rejected
+        run: |
+          # The signature on our token is valid GitHub-issued, so without
+          # bound claims this role would accept it. Binding to a different
+          # repository is what must make it fail — this proves the claim
+          # check is actually enforced rather than just configured.
+          ./scripts/bootstrap-jwt-github.sh \
+            --role github-ci-otherrepo \
+            --policy-file examples/policies/ci-readonly.hcl \
+            --repository "some-other-org/some-other-repo" \
+            --audience vault
+
+          if vault write auth/jwt/login role=github-ci-otherrepo jwt="$GH_JWT" >should_fail.log 2>&1; then
+            echo "ERROR: token authenticated against a role bound to a different repository"
+            cat should_fail.log
+            exit 1
+          fi
+          echo "Correctly rejected — bound claims are enforced:"
+          grep -i "claim\|denied\|error" should_fail.log | head -5 || true
+
+      - name: The read-only policy must not permit writes
+        run: |
+          CI_TOKEN=$(vault write -field=token auth/jwt/login role=github-ci jwt="$GH_JWT")
+          echo "::add-mask::$CI_TOKEN"
+          if VAULT_TOKEN="$CI_TOKEN" vault kv put secret/ci/build greeting=tampered >should_fail.log 2>&1; then
+            echo "ERROR: ci-readonly policy allowed a write"
+            cat should_fail.log
+            exit 1
+          fi
+          echo "Write correctly denied by the read-only policy."
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v
