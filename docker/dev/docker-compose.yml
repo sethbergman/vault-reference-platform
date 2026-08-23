@@ -7,7 +7,11 @@ services:
   # Dex directly, so it has to be reachable from the host at the same
   # URL Vault uses. See docs/human-authentication.md.
   dex:
-    image: dexidp/dex:v2.41.1
+    # v2.45.0 is the first release where staticPasswords supports a
+    # "groups" field. On anything older the key is silently ignored, the
+    # ID token carries no groups claim, and Vault fails the login with
+    # 'failed to fetch groups' — with nothing pointing at the version.
+    image: dexidp/dex:v2.45.1
     command: ["dex", "serve", "/etc/dex/config.yaml"]
     ports:
       - "5556:5556"

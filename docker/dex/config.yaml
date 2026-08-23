@@ -45,6 +45,10 @@ enablePasswordDB: true
 # Two users in different groups — that's what makes the group-to-policy
 # mapping demonstrable rather than theoretical. Both passwords are
 # "password" (bcrypt hash below); dev-only, obviously.
+#
+# The "groups" field here needs Dex >= v2.45.0. Older versions parse the
+# key without complaint and then omit groups from the ID token, so the
+# compose file pins a version deliberately.
 staticPasswords:
   - email: "developer@example.com"
     username: "developer"
