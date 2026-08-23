@@ -142,9 +142,9 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs eight checks on every PR. Four are static:
+GitHub Actions runs nine checks on every PR. Four are static:
 `terraform fmt`/`validate`, `ansible-lint`, `shellcheck`, and
-`markdownlint`. The other four deploy the Docker Compose cluster and
+`markdownlint`. The other five deploy the Docker Compose cluster and
 actually exercise it:
 
 - **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
@@ -157,13 +157,16 @@ actually exercise it:
 - **Human OIDC** — runs a full browser-style login against a real OIDC
   provider, then confirms a developer and an operator get genuinely
   different access and that a wrong password fails.
+- **DR restore drill** — snapshots a cluster, destroys the node and its
+  storage, restores into a replacement, and verifies a secret written
+  before the disaster reads back.
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
 - **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
-- **v0.2** — HA cluster (done), auto-unseal (done), monitoring (open)
+- **v0.2** — HA cluster (done), auto-unseal (done), monitoring (done)
 - **v0.3** — CI security scanning, automated tests
 - **v1.0** — production-ready reference architecture
 
