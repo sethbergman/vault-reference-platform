@@ -79,9 +79,9 @@ vault-reference-platform/
 │   ├── monitoring/    # Prometheus + Grafana config
 │   ├── tooling/       # CLI/dev tooling image
 │   └── dev/           # docker-compose for local dev
-├── scripts/
-├── examples/
-├── docs/
+├── scripts/           # bootstrap, auth setup, rotation, DR drill
+├── examples/          # example least-privilege policies
+├── docs/              # runbooks and guides
 ├── diagrams/
 ├── .github/workflows/
 ├── Makefile
@@ -133,7 +133,9 @@ path for workloads that can't use OIDC.
 ## Disaster recovery
 
 See [`docs/disaster-recovery.md`](docs/disaster-recovery.md) for backup and
-restore procedures.
+restore procedures. `make test` runs the restore drill end to end — take a
+snapshot, destroy the node and its storage, restore, verify the data came
+back — and CI runs it on every PR, so the procedure can't rot unnoticed.
 
 ## Operations
 
@@ -167,7 +169,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 - **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
 - **v0.2** — HA cluster (done), auto-unseal (done), monitoring (done)
-- **v0.3** — CI security scanning, automated tests
+- **v0.3** — automated tests (done), CI security scanning (open)
 - **v1.0** — production-ready reference architecture
 
 ## License
