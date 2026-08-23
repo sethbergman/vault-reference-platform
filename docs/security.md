@@ -26,9 +26,11 @@ the internal CA under `examples/pki/`.
 - **Other machine/workload access** uses AppRole, with `secret_id`s
   rotated on a cadence (see below), or the platform-native auth method
   (e.g. AWS IAM auth for EC2-hosted workloads).
-- **Human access** should go through an OIDC auth method rather than
-  tokens or userpass. Not implemented here yet — it needs a real identity
-  provider, so there's nothing in this repo to configure against.
+- **Human access** goes through an OIDC auth method rather than tokens or
+  userpass, with IdP group membership mapped to Vault policies. See
+  [`docs/human-authentication.md`](human-authentication.md). Access is
+  granted and revoked by changing group membership in the identity
+  provider, not by provisioning anything per-person in Vault.
 - Policies are least-privilege and scoped per application/environment;
   see `examples/policies/` for the starting set.
 
