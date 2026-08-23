@@ -20,9 +20,15 @@ the internal CA under `examples/pki/`.
 
 ## Authentication & policy
 
-- Human access goes through an OIDC auth method, not tokens or userpass.
-- Machine/workload access uses AppRole or the platform-native auth method
+- **CI pipelines** authenticate with GitHub Actions OIDC via the JWT auth
+  method — no stored credential at all. See
+  [`docs/ci-authentication.md`](ci-authentication.md).
+- **Other machine/workload access** uses AppRole, with `secret_id`s
+  rotated on a cadence (see below), or the platform-native auth method
   (e.g. AWS IAM auth for EC2-hosted workloads).
+- **Human access** should go through an OIDC auth method rather than
+  tokens or userpass. Not implemented here yet — it needs a real identity
+  provider, so there's nothing in this repo to configure against.
 - Policies are least-privilege and scoped per application/environment;
   see `examples/policies/` for the starting set.
 

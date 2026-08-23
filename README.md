@@ -109,11 +109,18 @@ See [`docs/auto-unseal.md`](docs/auto-unseal.md) for how each profile
 auto-unseals — Vault Transit locally/in CI, AWS KMS or Azure Key Vault in
 the cloud profiles.
 
+## CI authentication
+
+See [`docs/ci-authentication.md`](docs/ci-authentication.md) for letting
+GitHub Actions authenticate via OIDC — short-lived tokens minted per job,
+no stored credential to leak or rotate.
+
 ## Secret rotation
 
 See [`docs/secret-rotation.md`](docs/secret-rotation.md) for bootstrapping
 AppRole roles and rotating `secret_id`s on a recurring cadence via
-`scripts/bootstrap-approle.sh` and `scripts/rotate-secret-id.sh`.
+`scripts/bootstrap-approle.sh` and `scripts/rotate-secret-id.sh` — the
+path for workloads that can't use OIDC.
 
 ## Disaster recovery
 
@@ -127,14 +134,20 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs six checks on every PR: `terraform fmt`/`validate`,
-`ansible-lint`, `shellcheck`, and `markdownlint`, plus two jobs that
-actually deploy the Docker Compose cluster and exercise it — one brings
-up and auto-unseals the full 3-node Raft cluster and does a live
-secret write/read, the other bootstraps an AppRole and proves
-`secret_id` rotation end to end (issue, use, rotate, confirm the old
-one is rejected). See
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+GitHub Actions runs seven checks on every PR. Four are static:
+`terraform fmt`/`validate`, `ansible-lint`, `shellcheck`, and
+`markdownlint`. The other three deploy the Docker Compose cluster and
+actually exercise it:
+
+- **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
+  does a live secret write/read.
+- **AppRole rotation** — issues a `secret_id`, uses it, rotates it, and
+  confirms the old one is rejected.
+- **GitHub Actions OIDC** — logs in with a real GitHub-minted OIDC token,
+  then confirms a role bound to a different repository rejects that same
+  token and that the read-only policy denies writes.
+
+See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
