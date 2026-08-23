@@ -429,3 +429,18 @@ jobs:
         run: |
           cd docker/dev
           docker compose down -v
+
+  dr-drill-test:
+    name: DR restore drill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the disaster recovery drill
+        run: ./scripts/dr-drill.sh
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v

@@ -17,8 +17,8 @@ lint: ## Run all lint/format/validate checks
 	ansible-lint ansible/ || true
 	shellcheck scripts/*.sh
 
-test: ## Run automated tests (placeholder)
-	@echo "TODO: add Terraform/Ansible integration tests"
+test: ## Run the disaster recovery restore drill
+	./scripts/dr-drill.sh
 
 docs: ## List doc set (placeholder for future doc generation)
 	@ls docs/
