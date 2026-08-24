@@ -1,0 +1,14 @@
+{
+  "aws_region": { "sensitive": false, "type": "string", "value": "us-east-1" },
+  "autoscaling_group_name": { "sensitive": false, "type": "string", "value": "vault-test-vault" },
+  "private_subnet_ids": { "sensitive": false, "type": ["list", "string"], "value": ["subnet-aaa", "subnet-bbb", "subnet-ccc"] },
+  "vault_addr": { "sensitive": false, "type": "string", "value": "https://vault-test-nlb-123.elb.us-east-1.amazonaws.com:8200" },
+  "vault_autounseal_iam_policy_arn": { "sensitive": false, "type": "string", "value": "arn:aws:iam::123456789012:policy/vault-test-autounseal" },
+  "vault_autounseal_kms_key_id": { "sensitive": false, "type": "string", "value": "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555" },
+  "vault_autounseal_kms_region": { "sensitive": false, "type": "string", "value": "us-east-1" },
+  "vault_cluster_tag": { "sensitive": false, "type": "string", "value": "VaultCluster=vault-test" },
+  "vault_lb_dns_name": { "sensitive": false, "type": "string", "value": "vault-test-nlb-123.elb.us-east-1.amazonaws.com" },
+  "vault_security_group_id": { "sensitive": false, "type": "string", "value": "sg-0123456789abcdef0" },
+  "vault_snapshot_bucket": { "sensitive": false, "type": "string", "value": "vault-test-snapshots-abc123" },
+  "vpc_id": { "sensitive": false, "type": "string", "value": "vpc-0123456789abcdef0" }
+}

@@ -1,0 +1,13 @@
+{
+  "resource_group_name": { "sensitive": false, "type": "string", "value": "vault-test-rg" },
+  "subscription_id": { "sensitive": false, "type": "string", "value": "00000000-1111-2222-3333-444444444444" },
+  "vault_addr": { "sensitive": false, "type": "string", "value": "https://10.20.0.100:8200" },
+  "vault_autounseal_key_name": { "sensitive": false, "type": "string", "value": "vault-unseal" },
+  "vault_autounseal_key_vault_name": { "sensitive": false, "type": "string", "value": "vaulttest-au-a1b2" },
+  "vault_autounseal_tenant_id": { "sensitive": false, "type": "string", "value": "99999999-8888-7777-6666-555555555555" },
+  "vault_cluster_tag": { "sensitive": false, "type": "string", "value": "VaultCluster=vault-test" },
+  "vault_node_identity_principal_id": { "sensitive": false, "type": "string", "value": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+  "vault_scale_set_name": { "sensitive": false, "type": "string", "value": "vault-test-vault" },
+  "vault_snapshot_container": { "sensitive": false, "type": "string", "value": "snapshots" },
+  "vault_snapshot_storage_account": { "sensitive": false, "type": "string", "value": "vaulttestsnapabc123" }
+}

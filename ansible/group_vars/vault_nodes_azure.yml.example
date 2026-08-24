@@ -1,17 +1,34 @@
-# Copy to group_vars/vault_nodes.yml (or pass with -e @<this-file>) when
-# deploying against the Azure profile, after filling in the terraform
-# outputs below:
+# Reference only. Generate the real file instead of copying this one:
 #
-#   cd terraform/azure
-#   terraform output vault_autounseal_tenant_id
-#   terraform output vault_autounseal_key_vault_name
-#   terraform output vault_autounseal_key_name
+#   ./scripts/terraform-to-ansible.sh --cloud azure
 #
-# Also pass the Vault nodes' managed identity principal ID as
-# -var vault_node_identity_principal_id=<id> on terraform apply — the seal
-# stanza relies on that identity for Key Vault credentials, not static keys.
+# That writes group_vars/vault_nodes.yml from `terraform output -json`,
+# so the values cannot drift from the infrastructure they describe. This
+# file exists to show the shape and to explain what each value is for.
 
+vault_cloud: azure
+
+# Raft auto-join needs the subscription explicitly: go-discover has no
+# managed-identity fallback for this one value, unlike the credentials.
+vault_azure_subscription_id: 00000000-0000-0000-0000-000000000000
+
+# Auto-unseal. Credentials come from the VM's managed identity, not a
+# client secret. See docs/auto-unseal.md.
 vault_seal_type: azurekeyvault
-vault_azurekeyvault_tenant_id: REPLACE_WITH_terraform_output_vault_autounseal_tenant_id
-vault_azurekeyvault_vault_name: REPLACE_WITH_terraform_output_vault_autounseal_key_vault_name
-vault_azurekeyvault_key_name: REPLACE_WITH_terraform_output_vault_autounseal_key_name
+vault_azurekeyvault_tenant_id: 00000000-0000-0000-0000-000000000000
+vault_azurekeyvault_vault_name: vaultref-au-a1b2
+vault_azurekeyvault_key_name: vault-unseal
+
+# Azure discovers peers by enumerating the scale set, not by tag.
+# go-discover rejects a config carrying both selectors, and its tag mode
+# matches network-interface tags rather than the VM tags Terraform sets.
+vault_scale_set_name: vault-reference-vault
+vault_resource_group: vault-reference-rg
+
+# Still needed: ansible/inventory/azure.yml filters on it.
+vault_cluster_tag: VaultCluster=vault-reference
+vault_cluster_name: vault-reference
+
+vault_snapshot_storage_account: vaultrefsnapexample
+vault_snapshot_container: snapshots
+vault_api_addr: https://10.20.0.100:8200

@@ -1,0 +1,49 @@
+# Dynamic inventory for the Azure profile.
+#
+# Mirrors inventory/aws.yml, for the same reason: the VM scale set
+# replaces instances, so a static inventory is wrong as soon as one is
+# recycled — and wrong silently.
+#
+# The tag matched here is the same one Vault's retry_join auto_join
+# filters on (see terraform/azure/compute.tf), so cluster formation and
+# configuration management break together if it changes rather than one
+# quietly drifting from the other.
+#
+# Usage:
+#   cd ansible
+#   ansible-inventory -i inventory/azure.yml --graph
+#   ansible-playbook -i inventory/azure.yml playbooks/site.yml
+#
+# Requires the azure.azcollection collection and credentials with reader
+# access to the resource group.
+
+plugin: azure.azcollection.azure_rm
+
+# Discovery is across the subscription, filtered by tag below, rather
+# than pinned to a resource group name — the group name is a Terraform
+# variable and would be a second place to keep in step.
+include_vm_resource_groups:
+  - "*"
+
+# Only running instances, only ones carrying the cluster tag.
+conditional_groups:
+  vault_nodes: "'VaultCluster' in tags"
+
+keyed_groups:
+  - key: tags.VaultCluster
+    prefix: vault_cluster
+    separator: "_"
+
+exclude_host_filters:
+  # Skip anything not tagged as part of a Vault cluster.
+  - "'VaultCluster' not in (tags | default({}))"
+  # Skip instances that are not running — deallocated VMs would
+  # otherwise appear as unreachable hosts and fail the run.
+  - "powerstate != 'running'"
+
+# Private addresses only, matching the AWS profile: nodes have no public
+# IP, so reaching them needs a bastion, VPN, or Azure Bastion.
+plain_host_names: true
+
+hostvar_expressions:
+  ansible_host: private_ipv4_addresses[0]

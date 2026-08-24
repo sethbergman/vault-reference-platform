@@ -58,12 +58,24 @@ storage "raft" {
   path    = "/opt/vault/data"
   node_id = "$${VM_NAME}"
 
-  # Peers are discovered through the Azure API by tag rather than listed
+  # Peers are discovered through the Azure API rather than listed
   # statically, so the scale set can replace instances without any
   # configuration change. Uses the VM's managed identity — no credentials
   # on the node.
+  #
+  # Scale-set mode, not tag mode. go-discover's azure provider accepts
+  # (tag_name + tag_value) or (resource_group + vm_scale_set) and rejects
+  # a mix of the two with "unclear configuration", so this cannot also
+  # carry the VaultCluster tag that AWS filters on. Tag mode would be
+  # wrong here regardless: it matches tags on *network interfaces*, and
+  # the tags Terraform sets land on the scale set, not its NICs.
+  #
+  # Scale-set mode requires Uniform orchestration, which is what
+  # azurerm_linux_virtual_machine_scale_set creates. The newer
+  # azurerm_orchestrated_virtual_machine_scale_set defaults to Flexible
+  # and would silently discover nothing.
   retry_join {
-    auto_join             = "provider=azure tag_name=VaultCluster tag_value=$${CLUSTER_NAME} subscription_id=${subscription_id} resource_group=${resource_group}"
+    auto_join             = "provider=azure subscription_id=${subscription_id} resource_group=${resource_group} vm_scale_set=${vm_scale_set}"
     auto_join_scheme      = "https"
     leader_tls_servername = "vault.$${CLUSTER_NAME}.internal"
     leader_ca_cert_file   = "/etc/vault.d/tls/ca.crt"

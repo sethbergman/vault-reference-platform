@@ -1,0 +1,54 @@
+# Dynamic inventory for the AWS profile.
+#
+# Instances are discovered through the EC2 API by tag rather than listed
+# by address. That is not a convenience: the autoscaling group replaces
+# nodes, so a static inventory is wrong the first time an instance is
+# recycled, and wrong *silently* — the playbook succeeds against hosts
+# that no longer exist and never touches the ones that do.
+#
+# The tag matched here is the same one Vault's retry_join auto_join
+# filters on (see terraform/aws/compute.tf). One tag, two consumers: if
+# it changes, cluster formation and configuration management break
+# together rather than one drifting away from the other.
+#
+# Usage:
+#   cd ansible
+#   ansible-inventory -i inventory/aws.yml --graph
+#   ansible-playbook -i inventory/aws.yml playbooks/site.yml
+#
+# Requires the amazon.aws collection and AWS credentials with
+# ec2:DescribeInstances.
+
+plugin: amazon.aws.aws_ec2
+
+# Left unset deliberately so the region comes from AWS_REGION or the
+# active profile. Hardcoding it here means a second region needs a second
+# inventory file that will drift from this one.
+regions: []
+
+filters:
+  tag:VaultCluster: "*"
+  instance-state-name: running
+
+keyed_groups:
+  # Produces a group per cluster — vault_cluster_vault_reference and so
+  # on — so one control machine can address several clusters without
+  # separate inventory files.
+  - key: tags.VaultCluster
+    prefix: vault_cluster
+    separator: "_"
+
+groups:
+  # playbooks/site.yml targets vault_nodes, so everything carrying the
+  # tag lands there regardless of which cluster it belongs to.
+  vault_nodes: "'VaultCluster' in tags"
+
+# Nodes sit in private subnets with no public address, so connections go
+# to the private IP. Reaching them needs SSM, a bastion, or a VPN — see
+# docs/deployment.md.
+hostnames:
+  - tag:Name
+  - private-ip-address
+
+compose:
+  ansible_host: private_ip_address

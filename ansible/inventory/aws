@@ -1,6 +1,0 @@
-# Populated from Terraform output (terraform/aws) in CI/deploy pipelines.
-# Example:
-# [vault_nodes]
-# vault-0 ansible_host=10.0.1.10
-# vault-1 ansible_host=10.0.1.11
-# vault-2 ansible_host=10.0.1.12
