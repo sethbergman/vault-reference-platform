@@ -220,10 +220,14 @@ if [[ -n "$STANDBY_PORT" ]]; then
         bad "and it takes no snapshot" "a standby wrote a snapshot"
     fi
 
-    if grep -q "not active" "${WORK}/standby.log"; then
-        ok "and says why"
+    # Specifically "standby", not just any reason. The old wording was
+    # "Node is unknown, not active", which a node that could not work out
+    # its own role produced just as readily as a real standby — so a
+    # looser match here passed while no node anywhere took a snapshot.
+    if grep -q "standby" "${WORK}/standby.log"; then
+        ok "and identifies itself as a standby"
     else
-        bad "and says why" "$(tail -2 "${WORK}/standby.log")"
+        bad "and identifies itself as a standby" "$(tail -2 "${WORK}/standby.log")"
     fi
 else
     bad "found a real standby node" "no node reported 429; is this actually an HA cluster?"
