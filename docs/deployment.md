@@ -53,6 +53,40 @@ auto-unseal and a Storage Account for snapshots. Same
 `group_vars/vault_nodes_azure.yml.example` step as AWS before running the
 playbook.
 
+## Provider lock files
+
+`terraform/aws` and `terraform/azure` each commit a
+`.terraform.lock.hcl`. It pins the exact provider versions and records
+their checksums, which does two things: an upstream provider release
+can't change what CI builds, and a substituted or tampered provider
+can't install silently.
+
+The lock records checksums **per platform**, and Terraform refuses to
+run on a platform the lock doesn't cover. These are locked for
+`linux_amd64` (CI), `darwin_arm64`, and `windows_amd64`. Working on
+something else — an Intel Mac, an ARM Linux runner — means adding it:
+
+```bash
+cd terraform/aws
+terraform providers lock \
+  -platform=linux_amd64 \
+  -platform=darwin_arm64 \
+  -platform=windows_amd64 \
+  -platform=linux_arm64        # the one being added
+```
+
+List every platform to keep, not just the new one: the command replaces
+the set rather than adding to it.
+
+To take a newer provider version, widen the constraint in the module's
+`required_providers` block and re-run the same command. Don't hand-edit
+the file — the checksums are the point of it.
+
+Note that `terraform init` alone writes a lock for only the current
+platform, which is why the command above exists. Committing an
+init-generated lock is the usual way this gets broken: it works locally
+and then fails everywhere else.
+
 ## Post-deployment
 
 1. Initialize Vault (`vault operator init`) — do this exactly once per
