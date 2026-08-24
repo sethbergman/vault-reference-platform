@@ -57,8 +57,10 @@ services:
       - "-u"
       - "TCP-LISTEN:9090,fork,reuseaddr"
       - "OPEN:/collector/audit-socket.log,creat,append"
-    ports:
-      - "9090:9090"
+    # Deliberately no host port. Vault reaches this over the container
+    # network as audit-collector:9090, and the tests read the file with
+    # `compose exec`, so publishing it buys nothing — and 9090 on the
+    # host is Prometheus, which is how this was found.
 
   # Auto-unseal backend for vault-0/1/2 (see docker/vault-unseal). Brought up
   # and bootstrapped first — scripts/bootstrap-dev-cluster.sh handles the
