@@ -66,7 +66,7 @@ and [`docs/deployment.md`](docs/deployment.md):
 vault-reference-platform/
 ├── terraform/
 │   ├── aws/        # AWS: VPC, ASG, NLB, KMS, snapshot bucket
-│   ├── azure/      # Azure: Key Vault only — compute still a stub
+│   ├── azure/      # Azure: VNet, VMSS, LB, Key Vault, snapshots
 │   ├── local/       # Local/Docker provider for dev + CI
 │   └── modules/     # Shared, provider-agnostic modules
 ├── ansible/

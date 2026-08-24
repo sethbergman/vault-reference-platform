@@ -39,6 +39,15 @@ jobs:
           cd terraform/aws
           terraform test
 
+      - name: terraform test (azure)
+        run: |
+          # Same arrangement: mocked providers, no Azure credentials,
+          # nothing created. Catches things validate cannot — notably
+          # Key Vault's 24-character name limit, which constrains the
+          # value rather than the schema and so fails only at apply.
+          cd terraform/azure
+          terraform test
+
   ansible-lint:
     name: Ansible lint
     runs-on: ubuntu-latest

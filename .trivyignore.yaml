@@ -66,3 +66,28 @@ misconfigurations:
       vault, terraform and ansible CLIs against a local stack; it holds
       no data and serves no network listener. The Vault server images
       (docker/vault, docker/vault-unseal) do drop to the vault user.
+
+  - id: AVD-AZU-0057
+    paths:
+      - "terraform/azure/storage.tf"
+    statement: >-
+      Storage analytics logging on the snapshot account. Same reasoning
+      as AVD-AWS-0089 on the S3 side, kept consistent deliberately: NSG
+      flow logs and Azure Activity Log already cover who reached the
+      account at the network and control-plane layers, and enabling
+      per-service analytics logging means somewhere to put those logs
+      with its own retention and access rules. Revisit if the account
+      ever holds more than this one cluster's backups.
+
+  - id: AVD-AZU-0058
+    paths:
+      - "terraform/azure/storage.tf"
+    statement: >-
+      Geo-redundant replication. ZRS is chosen deliberately: the cluster
+      is single-region, so surviving the loss of an availability zone is
+      the property that matters. Geo-redundancy would put snapshots in a
+      paired region while the Key Vault key stays put, and a snapshot
+      without its key is undecryptable — so GRS alone would give the
+      appearance of cross-region recovery without the substance. Real
+      cross-region DR needs a Key Vault in the second region as well,
+      and that is a larger design decision than a replication setting.
