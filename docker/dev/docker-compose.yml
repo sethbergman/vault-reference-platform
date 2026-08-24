@@ -39,6 +39,27 @@ services:
       timeout: 3s
       retries: 30
 
+  # Receives the socket audit device's stream (see docs/audit.md).
+  #
+  # The point of it is failure isolation, not the collector itself. Two
+  # file devices on one filesystem prove entries reach both and prove
+  # nothing about surviving a full disk — the same disk fills for both.
+  # A socket device fails when the network or this container does, which
+  # is a genuinely separate failure domain, and lets the integration
+  # tests kill one device and show Vault still serving.
+  #
+  # HashiCorp recommend pairing a socket device with a non-socket one,
+  # because a socket device alone can block Vault when its endpoint goes
+  # away. That pairing is exactly what bootstrap-audit.sh sets up.
+  audit-collector:
+    image: alpine/socat:1.8.0.1
+    command:
+      - "-u"
+      - "TCP-LISTEN:9090,fork,reuseaddr"
+      - "OPEN:/collector/audit-socket.log,creat,append"
+    ports:
+      - "9090:9090"
+
   # Auto-unseal backend for vault-0/1/2 (see docker/vault-unseal). Brought up
   # and bootstrapped first — scripts/bootstrap-dev-cluster.sh handles the
   # ordering; a bare `docker compose up` won't unseal or configure it.

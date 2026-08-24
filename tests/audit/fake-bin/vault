@@ -39,6 +39,12 @@ if [[ "$1 ${2:-}" == "audit enable" ]]; then
     # case exited 0 whenever the scenario had set FAKE_ENABLE_RC=0 — it
     # printed an error and reported success, which is precisely the shape
     # of bug these tests exist to catch.
+    # A socket device whose endpoint is not listening is rejected at
+    # enable time too, the same as an unwritable file path.
+    if [[ "$*" == *"socket"* && "${FAKE_COLLECTOR_UP:-true}" != "true" ]]; then
+        echo "error enabling audit device: dial tcp: connection refused" >&2
+        exit 2
+    fi
     if [[ "$*" == *"/nonexistent/"* ]]; then
         echo "error enabling audit device: permission denied" >&2
         exit 2

@@ -33,22 +33,36 @@ downtime.
 `bootstrap-audit.sh` enables two by default. `--no-second` exists, and
 says plainly what it costs.
 
-### The local profile demonstrates the mechanism, not the redundancy
+### The secondary belongs on a different failure domain
 
-Both devices here are files on the same filesystem. That proves entries
-reach both, and proves nothing about surviving a full disk — the same
-disk fills for both.
-
-In a real deployment the second device belongs somewhere that fails
-separately:
+Two files on one partition is one failure domain wearing two hats: the
+same disk fills for both, so the redundancy is nominal.
 
 | Device | Fails when |
 |---|---|
 | `file` on the Vault node | that disk fills |
-| `syslog` to a remote collector | the network or collector is down |
-| `socket` to a log shipper | the shipper dies |
+| `socket` to a collector | the network or collector is down |
+| `syslog` to a remote host | the same, plus the syslog daemon |
 
-Two files on one partition is one failure domain wearing two hats.
+The script defaults to a second **file**, because that works with nothing
+else running. The local profile and the integration tests use a
+**socket** instead, pointed at the `audit-collector` container:
+
+```bash
+./scripts/bootstrap-dev-cluster.sh --with-audit
+./scripts/bootstrap-audit.sh \
+    --second-type socket \
+    --second-address audit-collector:9090
+```
+
+That pairing — file primary, socket secondary — is what HashiCorp
+recommend, and it is not arbitrary. A socket device **alone** can block
+Vault when its endpoint goes away. Paired with a file device it cannot,
+because the file keeps satisfying the at-least-one guarantee.
+
+It is also the only arrangement in which losing a device demonstrates
+anything, which is why the integration suite stops the collector and
+checks Vault keeps serving. Two files would have failed together.
 
 ## What is in the log, and what is not
 
@@ -133,20 +147,44 @@ a real cluster:
 - moving the file and sending `SIGHUP` resumes writes to the new path,
   with Vault serving throughout
 - an unwritable path is rejected at enable time and leaves Vault serving
+- stopping the collector leaves Vault serving, healthy, and still
+  recording to the file device
 
 ## What is not covered
 
 **The all-devices-fail outage is documented, not demonstrated.** Proving
-it means filling a disk or breaking every device on a running cluster,
-and the recovery is manual. The behaviour is HashiCorp's, stated in their
-documentation; what is tested here is the mitigation — that two devices
-are enabled and both receive entries.
+it means breaking *every* device on a running cluster, and the recovery
+is manual.
+
+What is demonstrated is the half that matters operationally: the
+integration suite stops the audit collector and shows Vault still
+accepting writes, still healthy, and still recording to the surviving
+device. That is the at-least-one guarantee doing its job, and it is the
+reason to run two devices rather than one.
 
 **No log shipping.** Where audit logs go, how long they are kept, and who
 can read them are deployment decisions. Nothing here forwards them
 anywhere.
 
-**Nothing enables audit devices automatically.** `bootstrap-audit.sh` is
-run deliberately, and the Ansible roles do not call it. Enabling audit
-logging changes Vault's availability characteristics, and that should be
-a decision someone makes rather than a side effect of running a playbook.
+**Nothing enables audit devices by default.** The `vault_audit` role
+exists and is wired into `playbooks/site.yml`, but
+`vault_audit_enabled` defaults to `false`.
+
+That default is load-bearing rather than cautious. Turning audit logging
+on introduces a dependency that, when it fails, stops Vault answering.
+That is correct behaviour, and it is a change somebody should make
+knowingly rather than inherit from a playbook run against an existing
+cluster.
+
+```yaml
+vault_audit_enabled: true
+vault_audit_token: "<token with sudo on sys/audit>"
+
+# Recommended: put the second device somewhere that fails separately.
+vault_audit_second_type: socket
+vault_audit_second_address: logs.internal:9090
+```
+
+The role runs against Vault's API rather than its config file, so it
+needs a cluster that is already up and unsealed — which is why it is
+ordered last.

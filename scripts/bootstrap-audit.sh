@@ -9,8 +9,10 @@
 #   --path <name>        Primary device mount name (default: file)
 #   --file-path <path>   Where it writes (default: /vault/audit/vault-audit.log)
 #   --second-path <name> Secondary device mount name (default: file-secondary)
-#   --second-file <path> Where that writes
+#   --second-type <t>    file or socket (default: file)
+#   --second-file <path> Where a file secondary writes
 #                        (default: /vault/audit/vault-audit-secondary.log)
+#   --second-address <a> Where a socket secondary sends (host:port)
 #   --no-second          Enable only one device. Read the warning below.
 #   --mode <octal>       File mode for the logs (default: 0600)
 #   --list               Show enabled devices and exit
@@ -27,11 +29,16 @@
 # turns a full disk into a total outage. Two devices on independent
 # failure domains is what stops routine disk pressure becoming downtime.
 #
-# In this local profile both devices are files on the same filesystem,
-# which demonstrates the mechanism and not the redundancy. In a real
-# deployment the second device belongs somewhere that fails separately:
-# syslog to a remote collector, or a socket to a log shipper. See
-# docs/audit.md.
+# The secondary defaults to a second file, which works anywhere and needs
+# nothing else running — but two files on one filesystem are one failure
+# domain wearing two hats. `--second-type socket` points it at a
+# collector instead, which is the shape HashiCorp recommend and what the
+# local profile and integration tests actually use.
+#
+# A socket device alone is a bad idea: when its endpoint goes away Vault
+# can block. Paired with a file device it cannot, because the file device
+# keeps satisfying the at-least-one guarantee. That pairing is the whole
+# reason both exist. See docs/audit.md.
 #
 # WHAT IS NOT LOGGED
 #
@@ -62,6 +69,8 @@ DEVICE_PATH="file"
 FILE_PATH="/vault/audit/vault-audit.log"
 SECOND_PATH="file-secondary"
 SECOND_FILE="/vault/audit/vault-audit-secondary.log"
+SECOND_TYPE="file"
+SECOND_ADDRESS=""
 ENABLE_SECOND=true
 MODE="0600"
 LIST_ONLY=false
@@ -81,6 +90,8 @@ while [[ $# -gt 0 ]]; do
         --file-path)   FILE_PATH="$2"; shift 2 ;;
         --second-path) SECOND_PATH="$2"; shift 2 ;;
         --second-file) SECOND_FILE="$2"; shift 2 ;;
+        --second-type) SECOND_TYPE="$2"; shift 2 ;;
+        --second-address) SECOND_ADDRESS="$2"; shift 2 ;;
         --no-second)   ENABLE_SECOND=false; shift ;;
         --mode)        MODE="$2"; shift 2 ;;
         --list)        LIST_ONLY=true; shift ;;
@@ -94,6 +105,14 @@ command -v vault >/dev/null 2>&1 || die "vault not found on PATH"
 command -v jq    >/dev/null 2>&1 || die "jq not found on PATH"
 [[ -n "${VAULT_ADDR:-}" ]]  || die "VAULT_ADDR is not set"
 [[ -n "${VAULT_TOKEN:-}" ]] || die "VAULT_TOKEN is not set"
+
+case "$SECOND_TYPE" in
+    file) ;;
+    socket)
+        [[ -n "$SECOND_ADDRESS" ]]             || die "--second-type socket needs --second-address host:port"
+        ;;
+    *) die "--second-type must be file or socket, got: ${SECOND_TYPE}" ;;
+esac
 
 # device_enabled <name>
 device_enabled() {
@@ -114,9 +133,9 @@ fi
 # ---------------------------------------------------------------------------
 # Enable
 # ---------------------------------------------------------------------------
-# enable_file <mount-name> <file-path> <label>
-enable_file() {
-    local name="$1" path="$2" label="$3"
+# enable_device <mount-name> <destination> <label> [file|socket]
+enable_device() {
+    local name="$1" path="$2" label="$3" kind="${4:-file}"
 
     if device_enabled "$name" && [[ "$FORCE" == false ]]; then
         log "${label} device '${name}/' is already enabled; leaving it alone."
@@ -136,21 +155,36 @@ enable_file() {
 
     log "Enabling the ${label} audit device at '${name}/' -> ${path}..."
 
-    # Vault writes a test entry when a device is enabled, so a path it
-    # cannot write fails here rather than at the first real request. That
-    # is the difference between a failed command and an outage.
-    vault audit enable -path="$name" file \
-        file_path="$path" \
-        mode="$MODE" >/dev/null \
-        || die "Could not enable ${name} at ${path} — is the directory writable by the vault user?"
+    # Vault writes a test entry when a device is enabled, so a
+    # destination it cannot reach fails here rather than at the first
+    # real request. That is the difference between a failed command and
+    # an outage.
+    if [[ "$kind" == "socket" ]]; then
+        vault audit enable -path="$name" socket \
+            address="$path" \
+            socket_type=tcp >/dev/null \
+            || die "Could not enable ${name} to ${path} — is the collector listening?"
+    else
+        vault audit enable -path="$name" file \
+            file_path="$path" \
+            mode="$MODE" >/dev/null \
+            || die "Could not enable ${name} at ${path} — is the directory writable by the vault user?"
+    fi
 
     log "  enabled."
 }
 
-enable_file "$DEVICE_PATH" "$FILE_PATH" "primary"
+enable_device "$DEVICE_PATH" "$FILE_PATH" "primary" file
 
 if [[ "$ENABLE_SECOND" == true ]]; then
-    enable_file "$SECOND_PATH" "$SECOND_FILE" "secondary"
+    if [[ "$SECOND_TYPE" == "socket" ]]; then
+        enable_device "$SECOND_PATH" "$SECOND_ADDRESS" "secondary" socket
+    else
+        enable_device "$SECOND_PATH" "$SECOND_FILE" "secondary" file
+        log ""
+        log "Note: both devices are files. If they share a filesystem they"
+        log "share a failure domain — see --second-type socket."
+    fi
 else
     log ""
     log "WARNING: only one audit device is enabled (--no-second)."

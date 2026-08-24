@@ -12,3 +12,9 @@
     # Renewal only. The bootstrap certificate comes from the vault role
     # above; see the note at the top of the role's tasks.
     - vault_pki
+    # Last, and off by default. This one talks to Vault's API rather than
+    # its config file, so it needs a cluster that is already up — and
+    # enabling audit logging changes the cluster's availability
+    # characteristics, which should be a decision rather than a side
+    # effect. See the role defaults.
+    - vault_audit

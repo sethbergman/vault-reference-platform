@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -626,7 +626,13 @@ info "=== Audit devices ==="
 # Checking the file exists does not answer it; reading the entry back out
 # and finding the request in it does.
 
-if "${REPO_ROOT}/scripts/bootstrap-audit.sh" >"${WORK}/audit.log" 2>&1; then
+# file primary + socket secondary: the pairing HashiCorp recommend, and
+# the only arrangement where killing one device demonstrates anything.
+# Two files on one filesystem fail together.
+if "${REPO_ROOT}/scripts/bootstrap-audit.sh" \
+        --second-type socket \
+        --second-address audit-collector:9090 \
+        >"${WORK}/audit.log" 2>&1; then
     ok "bootstrap-audit.sh enabled the audit devices"
 else
     bad "bootstrap-audit.sh enabled the audit devices" "log follows"
@@ -666,12 +672,61 @@ fi
 
 # Both devices receive every entry. If the secondary is empty, the
 # redundancy the two-device design depends on is not actually there.
-SECOND_TEXT="$(audit_cat /vault/audit/vault-audit-secondary.log)"
+SECOND_TEXT="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
 if [[ "$SECOND_TEXT" == *"itest/audit-canary"* ]]; then
-    ok "and the secondary device received the same entry"
+    ok "and the socket device delivered the same entry to the collector"
 else
-    bad "and the secondary device received the same entry"         "the second device is enabled but not recording"
+    bad "and the socket device delivered the same entry to the collector" \
+        "the second device is enabled but nothing reached the collector"
 fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Losing one device does not stop Vault ==="
+# ---------------------------------------------------------------------------
+# The reason for two devices, demonstrated rather than asserted. Vault
+# refuses to serve when it cannot write to ANY enabled device; with the
+# collector dead the file device still satisfies that, so requests keep
+# working. Two files on one filesystem could not show this — they fail
+# together, which is why the secondary here is a socket.
+info "  stopping the audit collector..."
+compose stop audit-collector >/dev/null 2>&1 || true
+sleep 3
+
+# A TCP socket device drops a single entry on connection loss and the
+# request still succeeds, so write twice before drawing a conclusion.
+vault kv put itest/after-collector-loss value=one >/dev/null 2>&1 || true
+sleep 2
+WROTE_AFTER=0
+vault kv put itest/after-collector-loss value=two >/dev/null 2>&1 && WROTE_AFTER=1
+
+if [[ "$WROTE_AFTER" == "1" ]]; then
+    ok "Vault still accepts writes with one audit device dead"
+else
+    bad "Vault still accepts writes with one audit device dead" \
+        "the surviving file device should have satisfied the at-least-one guarantee"
+fi
+
+CODE="$(alive_code 8200)"
+if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
+    ok "and it is still healthy (${CODE})"
+else
+    bad "and it is still healthy" "health returned ${CODE}"
+fi
+
+# And the surviving device kept recording. Serving requests that no audit
+# device captured would be worse than refusing them.
+SURVIVOR="$(audit_cat "$PRIMARY")"
+if [[ "$SURVIVOR" == *"itest/after-collector-loss"* ]]; then
+    ok "and the surviving device still recorded the request"
+else
+    bad "and the surviving device still recorded the request" \
+        "Vault served a request that no audit device captured"
+fi
+
+info "  restarting the audit collector..."
+compose start audit-collector >/dev/null 2>&1 || true
+sleep 3
 
 # ---------------------------------------------------------------------------
 info ""

@@ -45,11 +45,12 @@ anywhere. Where they go, how long they are kept and who can read them are
 deployment decisions — and an audit log that only exists on the node it
 describes is one a compromise can delete.
 
-The local profile demonstrates two devices on one filesystem, which
-proves entries reach both and proves nothing about surviving a full disk.
-A second device on an independent failure domain — syslog to a remote
-collector, or a socket to a shipper — is the part a real deployment
-needs and this repository does not provide.
+The local profile now uses a socket device to a collector container, so
+the two devices fail independently and the integration suite can stop one
+and show Vault still serving. What is still missing is the destination
+being somewhere durable and off-host — the collector here writes to a
+file in a sibling container, which survives a Vault disk filling and not
+much else.
 
 ### Alert routing
 

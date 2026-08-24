@@ -45,6 +45,7 @@ reset_scenario() {
     export FAKE_ENABLE_RC=0
     export FAKE_DISABLE_RC=0
     export FAKE_ENABLE_SILENT_NOOP=false
+    export FAKE_COLLECTOR_UP=true
     export VAULT_ADDR=https://127.0.0.1:8200
     export VAULT_TOKEN=s.testtoken
 }
@@ -124,6 +125,49 @@ assert_log_has   "enables the primary"            "audit enable -path=file file"
 assert_log_lacks "and not the secondary"          "file-secondary"
 # An option that quietly makes an outage more likely should say so.
 assert_says      "warns that one device is a single point of failure" "total outage"
+
+# ---------------------------------------------------------------------------
+printf '\n=== A socket secondary is a separate failure domain ===\n'
+# ---------------------------------------------------------------------------
+# Two files on one filesystem are one failure domain wearing two hats:
+# the same disk fills for both, so the redundancy is nominal. A socket
+# device fails when the network or the collector does, which is the point
+# of having a second one at all.
+reset_scenario
+run_bootstrap --second-type socket --second-address collector:9090
+assert_rc      "socket secondary is accepted"       0
+assert_log_has "the secondary is a socket device"   "audit enable -path=file-secondary socket"
+assert_log_has "pointed at the given address"       "address=collector:9090"
+assert_log_has "over tcp"                           "socket_type=tcp"
+
+# The primary stays a file on purpose. A socket device alone can block
+# Vault when its endpoint goes away; paired with a file device it cannot,
+# because the file keeps satisfying the at-least-one guarantee.
+assert_log_has "the primary is still a file device" "audit enable -path=file file"
+
+# An unreachable collector must fail at enable time. Later means every
+# request blocked until someone works out why.
+reset_scenario
+export FAKE_COLLECTOR_UP=false
+run_bootstrap --second-type socket --second-address collector:9090
+assert_rc   "an unreachable collector aborts at enable time" 1
+assert_says "and points at the collector"                    "is the collector listening"
+
+reset_scenario
+run_bootstrap --second-type socket
+assert_rc   "socket without an address is refused" 1
+assert_says "and says what is missing"             "--second-address"
+
+reset_scenario
+run_bootstrap --second-type carrier-pigeon
+assert_rc   "an unknown secondary type is refused" 1
+assert_says "and lists the valid ones"             "must be file or socket"
+
+# Two files remains the default because it works with nothing else
+# running — but it should say what it is not giving you.
+reset_scenario
+run_bootstrap
+assert_says "the file default notes the shared failure domain" "share a failure domain"
 
 # ---------------------------------------------------------------------------
 printf '\n=== Existing devices are left alone ===\n'

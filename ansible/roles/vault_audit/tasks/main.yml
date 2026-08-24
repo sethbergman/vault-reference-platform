@@ -1,0 +1,90 @@
+---
+# Enable audit devices on an already-running cluster.
+#
+# This runs against Vault's API, not the node's config file, so it needs
+# a cluster that is up and unsealed. It is therefore ordered last in
+# playbooks/site.yml and does nothing unless explicitly enabled.
+
+- name: Check that a token was provided
+  ansible.builtin.assert:
+    that:
+      - vault_audit_token | length > 0
+    fail_msg: >-
+      vault_audit_enabled is true but vault_audit_token is empty. Enabling
+      an audit device needs sudo on sys/audit — see docs/audit.md.
+  when: vault_audit_enabled
+
+- name: Check that a socket secondary has an address
+  ansible.builtin.assert:
+    that:
+      - vault_audit_second_type != "socket" or vault_audit_second_address | length > 0
+    fail_msg: >-
+      vault_audit_second_type is "socket" but vault_audit_second_address
+      is empty. A socket device with nowhere to send is refused at enable
+      time, which is the good case — but it will fail the play.
+  when:
+    - vault_audit_enabled
+    - vault_audit_second_enabled
+
+- name: Create the audit directory
+  ansible.builtin.file:
+    path: "{{ vault_audit_dir }}"
+    state: directory
+    owner: vault
+    group: vault
+    # Not world-readable. The log records who touched which secret, which
+    # is not something every account on the host needs.
+    mode: "0700"
+  when: vault_audit_enabled
+
+- name: Install the bootstrap script
+  ansible.builtin.copy:
+    # role_path rather than a copy under files/: one script, used by the
+    # role and by anyone running it by hand, so the two cannot drift.
+    src: "{{ role_path }}/../../../scripts/bootstrap-audit.sh"
+    dest: /usr/local/bin/vault-bootstrap-audit.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: vault_audit_enabled
+
+# The script is idempotent — it leaves existing devices alone — so this
+# is safe to re-run. changed_when keys off what it reported doing rather
+# than the exit code, which is 0 in both cases.
+- name: Enable the audit devices
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['/usr/local/bin/vault-bootstrap-audit.sh',
+         '--path', vault_audit_path,
+         '--file-path', vault_audit_file,
+         '--mode', vault_audit_mode]
+        + (['--no-second'] if not vault_audit_second_enabled else
+           ['--second-path', vault_audit_second_path,
+            '--second-type', vault_audit_second_type]
+           + (['--second-address', vault_audit_second_address]
+              if vault_audit_second_type == 'socket'
+              else ['--second-file', vault_audit_second_file]))
+      }}
+  environment:
+    VAULT_ADDR: "https://127.0.0.1:8200"
+    VAULT_CACERT: "{{ vault_tls_dir }}/ca.crt"
+    VAULT_TOKEN: "{{ vault_audit_token }}"
+  register: vault_audit_run
+  changed_when: "'Enabling the' in vault_audit_run.stderr"
+  no_log: true
+  when: vault_audit_enabled
+
+# Enabling a device that already existed is a no-op, but reporting how
+# many are live is worth doing: one device is a single point of failure
+# and the operator should see that rather than infer it.
+- name: Report how many devices are enabled
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Audit devices enabled. Vault refuses requests when it cannot
+         write to any of them, so keeping two is what stops a full disk
+         becoming an outage.'
+         if vault_audit_second_enabled else
+         'WARNING: a single audit device is enabled. A full disk will
+          stop Vault serving requests. See docs/audit.md.' }}
+  when: vault_audit_enabled

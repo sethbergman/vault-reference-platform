@@ -1,0 +1,42 @@
+---
+# Audit devices.
+#
+# Off by default, and this default is load-bearing rather than cautious.
+#
+# Vault refuses to service requests when it cannot write to any enabled
+# audit device. Turning audit logging on therefore changes the
+# availability characteristics of the cluster: it introduces a dependency
+# that, if it fails, stops Vault answering. That is correct behaviour —
+# an unauditable Vault should not be serving secrets — but it is a
+# decision somebody should make knowingly, not a side effect of running a
+# playbook against an existing cluster.
+#
+# See docs/audit.md.
+vault_audit_enabled: false
+
+vault_audit_dir: /etc/vault.d/audit
+
+# Primary device: a file on the node.
+vault_audit_path: file
+vault_audit_file: "{{ vault_audit_dir }}/vault-audit.log"
+
+# Secondary device. Two devices, because one turns a full disk into a
+# total outage — Vault needs at least one device to accept the entry.
+#
+# "file" works with nothing else running, but two files on one filesystem
+# share a failure domain: the same disk fills for both. "socket" points
+# at a collector instead, which fails independently. That pairing —
+# file primary, socket secondary — is what HashiCorp recommend; a socket
+# device on its own can block Vault when its endpoint disappears.
+vault_audit_second_enabled: true
+vault_audit_second_path: file-secondary
+vault_audit_second_type: file
+vault_audit_second_file: "{{ vault_audit_dir }}/vault-audit-secondary.log"
+vault_audit_second_address: ""
+
+vault_audit_mode: "0600"
+
+# Credentials. The token needs sudo on sys/audit, which is a privileged
+# capability — audit configuration is not something an application role
+# should be able to change.
+vault_audit_token: ""
