@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# Stand-in for scp — see tests/upgrade/fake-bin/ssh for why these exist.
+#
+# Records the copy so tests can assert the binary is staged on a node
+# before that node's service is stopped, and confirm the source file the
+# script extracted actually exists.
+
+set -uo pipefail
+
+args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o|-i) shift 2 ;;
+        -*) shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+
+src="${args[0]:-}"
+dest="${args[-1]:-}"
+host="${dest%%:*}"
+host="${host#*@}"
+
+if [[ -n "${FAKE_SSH_LOG:-}" ]]; then
+    printf '%s\tSCP %s -> %s\n' "$host" "$src" "$dest" >> "$FAKE_SSH_LOG"
+fi
+
+# The script extracts the binary before copying it. If that step ever
+# broke, this is where it would show up rather than as a confusing
+# failure on the remote side.
+[[ -f "$src" ]] || {
+    echo "scp: source file does not exist: $src" >&2
+    exit 1
+}
+
+exit 0

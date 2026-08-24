@@ -45,7 +45,10 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 NODES=""
-SSH_USER="${USER}"
+# $USER is not always exported — CI runners, containers and cron often
+# have no login shell to set it, and `set -u` turns that into an immediate
+# crash before the script does anything. Fall back to the real uid.
+SSH_USER="${USER:-$(id -un 2>/dev/null || echo root)}"
 SSH_KEY=""
 BINARY_PATH="/usr/local/bin/vault"
 SERVICE_NAME="vault"
