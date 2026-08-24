@@ -175,7 +175,11 @@ log "Replacement node initialized and auto-unsealed."
 # Step 5: Restore
 # ---------------------------------------------------------------------------
 log "=== Step 5: restore the snapshot ==="
-compose cp "$SNAPSHOT_HOST_PATH" "${NODE}:/tmp/restore.snap" >&2 \
+# Piped in through exec rather than `compose cp`. cp writes the file as
+# root, and Vault runs as the unprivileged vault user, so it could not
+# read its own restore file — "permission denied" on /tmp/restore.snap.
+# exec runs as the image's USER, so the file arrives owned by vault.
+compose exec -T "$NODE" sh -c 'cat > /tmp/restore.snap' < "$SNAPSHOT_HOST_PATH" \
     || die "Failed to copy the snapshot into the replacement node"
 
 # -force because the snapshot came from a different cluster instance than
