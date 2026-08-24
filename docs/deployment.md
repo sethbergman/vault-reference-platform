@@ -58,12 +58,6 @@ CA, ACM Private CA, or delivered by the Ansible layer). Until they are in
 place at `/etc/vault.d/tls/`, Vault will not start. That is deliberate: a
 Vault serving plaintext is worse than one that refuses to boot.
 
-### Cost note
-
-Three NAT gateways at roughly $32/month each are the bulk of the idle
-cost. Dropping `az_count` to 2, or sharing a single NAT, trades that
-against AZ independence.
-
 Then configure the nodes:
 
 ```bash
@@ -75,6 +69,12 @@ Auto-unseal isn't on by default — copy
 `group_vars/vault_nodes_aws.yml.example` to `group_vars/vault_nodes.yml`
 first and fill in the `terraform output` values it references. See
 [`docs/auto-unseal.md`](auto-unseal.md).
+
+### AWS running costs
+
+Three NAT gateways at roughly $32/month each are the bulk of the idle
+cost. Dropping `az_count` to 2, or sharing a single NAT, trades that
+against AZ independence.
 
 ## Azure
 
@@ -116,7 +116,7 @@ worth knowing:
   are truncated and given a random suffix rather than derived from
   `cluster_name` alone.
 
-### Cost note
+### Azure running costs
 
 The NAT gateway and the Standard load balancer are the bulk of the idle
 cost, in the same range as the AWS profile's NAT gateways. Premium OS
