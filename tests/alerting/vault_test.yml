@@ -1,0 +1,301 @@
+# promtool rule unit tests.
+#
+#   promtool test rules tests/alerting/vault_test.yml
+#
+# These feed synthetic series into the real rule file and assert which
+# alerts fire. No Prometheus, no cluster, no network.
+#
+# The cases that matter most are the ones asserting an alert fires when a
+# series STOPS EXISTING, because that is the failure this whole file was
+# written for and the one a threshold expression silently misses.
+
+# Relative to this file. The tests live outside docker/monitoring/rules
+# on purpose: Prometheus globs that directory for *.yml, and a unit-test
+# file sitting in it would be loaded as a rule file and refuse to parse.
+#
+# NOTE ON exp_annotations
+#
+# promtool compares annotations whether or not you declare them: omitting
+# the block asserts they are empty, which no real alert is. So they are
+# spelled out below, which means rewording an alert breaks its test.
+#
+# That is the right trade. The annotation is the alert's contract with
+# whoever gets woken by it, and changing that text deliberately is
+# different from changing it by accident.
+
+rule_files:
+- ../../docker/monitoring/rules/vault.yml
+evaluation_interval: 15s
+tests:
+- name: a healthy three-node cluster is quiet
+  interval: 15s
+  input_series:
+  - series: up{job="vault", instance="vault-0"}
+    values: 1+0x40
+  - series: up{job="vault", instance="vault-1"}
+    values: 1+0x40
+  - series: up{job="vault", instance="vault-2"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-1"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-2"}
+    values: 1+0x40
+  - series: vault_core_active{instance="vault-0"}
+    values: 1+0x40
+  - series: vault_core_active{instance="vault-1"}
+    values: 0+0x40
+  - series: vault_core_active{instance="vault-2"}
+    values: 0+0x40
+  - series: vault_snapshot_last_success_timestamp_seconds{instance="vault-0"}
+    values: 0+0x40
+  - series: probe_ssl_earliest_cert_expiry{job="vault-tls", instance="vault-0"}
+    values: 864000+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultNodeDown
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultNodeSealed
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultQuorumLost
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultNoActiveNode
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultSnapshotMetricMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateProbeMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultAllTargetsMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultSnapshotStale
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateExpiringSoon
+    exp_alerts: []
+- name: a node that stops responding is reported
+  interval: 15s
+  input_series:
+  - series: up{job="vault", instance="vault-0"}
+    values: 1+0x10 0+0x30
+  - series: up{job="vault", instance="vault-1"}
+    values: 1+0x40
+  - series: up{job="vault", instance="vault-2"}
+    values: 1+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultNodeDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: vault
+        instance: vault-0
+      exp_annotations:
+        summary: Vault node vault-0 is not responding to scrapes
+        description: Prometheus cannot reach vault-0. This fires per node; losing
+          one of three is survivable, losing two is not.
+        runbook: docs/operations.md#vaultnodedown
+- name: snapshots stopping entirely is caught by absent, not by staleness
+  interval: 15s
+  input_series:
+  - series: vault_snapshot_last_success_timestamp_seconds{instance="vault-0"}
+    values: 0+0x4 stale
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultSnapshotStale
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultSnapshotMetricMissing
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Nothing is reporting Vault snapshot success
+        description: No snapshot has ever been recorded, or the pushgateway is
+          unreachable. VaultSnapshotStale cannot fire while this is true, because
+          it has no series to evaluate — which is precisely how snapshots went
+          missing unnoticed before.
+        runbook: docs/operations.md#vaultsnapshotmetricmissing
+- name: a snapshot that is merely old is caught by the staleness rule
+  interval: 15s
+  input_series:
+  - series: vault_snapshot_last_success_timestamp_seconds{instance="vault-0"}
+    values: -36000+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultSnapshotMetricMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultSnapshotStale
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        instance: vault-0
+      exp_annotations:
+        summary: No successful Vault snapshot in over two hours
+        description: The snapshot timer runs hourly. Two hours without a success
+          means at least one cycle failed silently. Check the bucket before the
+          unit status — a green timer is not a backup.
+        runbook: docs/operations.md#vaultsnapshotstale
+- name: losing quorum is reported
+  interval: 15s
+  input_series:
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-1"}
+    values: 1+0x10 0+0x30
+  - series: vault_core_unsealed{instance="vault-2"}
+    values: 1+0x10 0+0x30
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultQuorumLost
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Fewer than two Vault nodes are unsealed
+        description: Raft needs a majority. Below two of three the cluster cannot
+          elect a leader or accept writes.
+        runbook: docs/operations.md#vaultquorumlost
+- name: unsealed but leaderless is reported
+  interval: 15s
+  input_series:
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-1"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-2"}
+    values: 1+0x40
+  - series: vault_core_active{instance="vault-0"}
+    values: 0+0x40
+  - series: vault_core_active{instance="vault-1"}
+    values: 0+0x40
+  - series: vault_core_active{instance="vault-2"}
+    values: 0+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultQuorumLost
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultNoActiveNode
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: No Vault node reports itself as active
+        description: Nodes can all be unsealed and healthy while none holds leadership.
+          Writes fail with "local node not active but active cluster node not
+          found".
+        runbook: docs/operations.md#vaultnoactivenode
+- name: a certificate close to expiry is reported
+  interval: 15s
+  input_series:
+  - series: probe_ssl_earliest_cert_expiry{job="vault-tls", instance="vault-0"}
+    values: 43200+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultCertificateProbeMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateExpiringSoon
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: vault-tls
+        instance: vault-0
+      exp_annotations:
+        summary: Vault certificate on vault-0 expires within 24h
+        description: Renewal is daily, so under a day of remaining life means
+          at least one renewal has not taken effect. Compare the serial on disk
+          with the one being served.
+        runbook: docs/operations.md#vaultcertificateexpiringsoon
+- name: monitoring failing entirely is itself an alert
+  interval: 15s
+  input_series:
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultNodeDown
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultAllTargetsMissing
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: vault
+      exp_annotations:
+        summary: No Vault scrape targets exist at all
+        description: 'Prometheus has no targets for job=vault. Every other alert
+          in this file is silent while this is true, which is why it is here:
+          it is the alert that catches the monitoring itself failing.'
+        runbook: docs/operations.md#vaultalltargetsmissing
+- name: a sealed node is reported
+  interval: 15s
+  input_series:
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-1"}
+    values: 1+0x40
+  - series: vault_core_unsealed{instance="vault-2"}
+    values: 1+0x10 0+0x30
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultQuorumLost
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultNodeSealed
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        instance: vault-2
+      exp_annotations:
+        summary: Vault node vault-2 is sealed
+        description: A sealed node serves nothing. With auto-unseal configured
+          this usually means the KMS or Transit backend is unreachable rather
+          than that someone sealed it.
+        runbook: docs/operations.md#vaultnodesealed
+- name: nothing probing certificates is itself reported
+  interval: 15s
+  input_series:
+  - series: vault_core_unsealed{instance="vault-0"}
+    values: 1+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultCertificateExpiringSoon
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateProbeMissing
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: vault-tls
+      exp_annotations:
+        summary: Nothing is probing Vault's served certificates
+        description: The TLS probe is not reporting, so certificate expiry is
+          unmonitored and VaultCertificateExpiringSoon cannot fire.
+        runbook: docs/operations.md#vaultcertificateprobemissing
+- name: a healthy certificate and live targets stay quiet
+  interval: 15s
+  input_series:
+  - series: up{job="vault", instance="vault-0"}
+    values: 1+0x40
+  - series: probe_ssl_earliest_cert_expiry{job="vault-tls", instance="vault-0"}
+    values: 864000+0x40
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: VaultAllTargetsMissing
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateExpiringSoon
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: VaultCertificateProbeMissing
+    exp_alerts: []

@@ -195,6 +195,21 @@ clouds replace instances and a static inventory goes stale silently.
 
 See [`docs/deployment.md`](docs/deployment.md).
 
+## Monitoring and alerting
+
+Prometheus, Grafana and Alertmanager come up with
+`--with-monitoring`. The alert rules are built around **absence** —
+noticing when something stops — because that is the shape almost every
+failure in this project has taken: a green timer and no backup, a
+successful reload command and a stale certificate.
+
+The trap they exist to avoid is worth stating plainly: a threshold alert
+on a metric nobody reports never fires. So every freshness alert is
+paired with an `absent()` alert, and the tests fail if a new one is added
+without its partner.
+
+See [`docs/monitoring.md`](docs/monitoring.md).
+
 ## Operations
 
 See [`docs/operations.md`](docs/operations.md) for day-2 runbooks: health
@@ -202,13 +217,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs sixteen checks on every PR. Five are static:
+GitHub Actions runs seventeen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Four run against fixtures and shims — fast, no credentials, and able to
+Five run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -223,6 +238,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Dynamic database credentials** — that the connection is scoped, the
   two roles grant genuinely different things, and root rotation happens
   last.
+- **Alerting rules** — `promtool test rules` drives synthetic series
+  through the real rule file, including the case where a series stops
+  existing and the threshold alert consequently cannot fire.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -270,6 +288,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - **v0.5** — scheduled snapshots (done), certificate renewal from Vault
   PKI (done), integration tests against a real cluster (done)
 - **v0.6** — dynamic database credentials (done)
+- **v0.7** — alerting on absence (done)
 - **v1.0** — production-ready reference architecture
 
 **The honest gap:** neither cloud profile has been applied end to end.
