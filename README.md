@@ -1,5 +1,7 @@
 # Vault Reference Platform
 
+![Vault Reference Platform banner](docs/images/banner.jpg)
+
 A reference implementation for deploying and operating a highly available
 [HashiCorp Vault](https://www.vaultproject.io/) cluster using Infrastructure
 as Code and standard platform-engineering practices.
