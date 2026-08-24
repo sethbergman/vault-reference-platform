@@ -181,6 +181,7 @@ fi
 umask 077
 STAGE="$(mktemp -d)"
 
+# shellcheck disable=SC2317  # invoked through the trap below
 cleanup() {
     local rc=$?
     rm -rf "$STAGE"
@@ -363,7 +364,7 @@ VERIFY_HOST="${VERIFY_ADDR:-${VAULT_ADDR#*://}}"
 [[ "$VERIFY_HOST" == *:* ]] || VERIFY_HOST="${VERIFY_HOST}:8200"
 
 log "Confirming ${VERIFY_HOST} is serving the new certificate..."
-for attempt in $(seq 1 10); do
+for _ in $(seq 1 10); do
     SERVED_SERIAL="$(echo | openssl s_client -connect "$VERIFY_HOST" 2>/dev/null \
         | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
     if [[ -n "$SERVED_SERIAL" && "$SERVED_SERIAL" == "$WANT_SERIAL" ]]; then
