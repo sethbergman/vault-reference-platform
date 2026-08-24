@@ -1,0 +1,6 @@
+---
+- name: Restart vault snapshot timer
+  ansible.builtin.systemd:
+    name: vault-snapshot.timer
+    state: restarted
+    daemon_reload: true

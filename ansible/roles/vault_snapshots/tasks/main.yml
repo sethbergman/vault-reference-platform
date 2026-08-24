@@ -1,0 +1,105 @@
+---
+# Scheduled Raft snapshots.
+#
+# docs/disaster-recovery.md described these as running hourly long before
+# anything scheduled them. scripts/dr-drill.sh has been testing the
+# restore path since #10 — against snapshots that, in a real deployment,
+# nothing was creating.
+
+- name: Check that a snapshot destination is configured
+  ansible.builtin.assert:
+    that:
+      - vault_cloud != "aws" or vault_snapshot_bucket | default("") | length > 0
+      - vault_cloud != "azure" or vault_snapshot_storage_account | default("") | length > 0
+    fail_msg: >-
+      vault_snapshots_enabled is true but no destination is set for
+      vault_cloud={{ vault_cloud }}. Run scripts/terraform-to-ansible.sh
+      to generate group_vars from the Terraform outputs.
+  when: vault_snapshots_enabled
+
+- name: Check that snapshot credentials are configured
+  ansible.builtin.assert:
+    that:
+      - (vault_snapshots_role_id | length > 0 and vault_snapshots_secret_id | length > 0)
+        or vault_snapshots_token | length > 0
+    fail_msg: >-
+      vault_snapshots_enabled is true but no credentials are set. Provide
+      vault_snapshots_role_id and vault_snapshots_secret_id (preferred),
+      or vault_snapshots_token. See docs/disaster-recovery.md.
+  when: vault_snapshots_enabled
+
+- name: Install the snapshot script
+  ansible.builtin.copy:
+    # role_path rather than a copy under files/: one script, used by the
+    # role and by anyone running it by hand, so the two cannot drift.
+    src: "{{ role_path }}/../../../scripts/snapshot.sh"
+    dest: "{{ vault_snapshots_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: vault_snapshots_enabled
+  notify: Restart vault snapshot timer
+
+# Credentials go in an EnvironmentFile rather than on the ExecStart line,
+# because a command line is visible to every user on the host through
+# /proc. 0640 root:vault so the unit can read it and nothing else can.
+- name: Install the snapshot credentials
+  ansible.builtin.template:
+    src: snapshot.env.j2
+    dest: /etc/vault.d/snapshot.env
+    owner: root
+    group: vault
+    mode: "0640"
+  no_log: true
+  when: vault_snapshots_enabled
+  notify: Restart vault snapshot timer
+
+- name: Create the local snapshot directory
+  ansible.builtin.file:
+    path: "{{ vault_snapshots_local_dir }}"
+    state: directory
+    owner: vault
+    group: vault
+    mode: "0700"
+  when:
+    - vault_snapshots_enabled
+    - vault_cloud not in ["aws", "azure"]
+
+- name: Install the snapshot service
+  ansible.builtin.template:
+    src: vault-snapshot.service.j2
+    dest: /etc/systemd/system/vault-snapshot.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: vault_snapshots_enabled
+  notify: Restart vault snapshot timer
+
+- name: Install the snapshot timer
+  ansible.builtin.template:
+    src: vault-snapshot.timer.j2
+    dest: /etc/systemd/system/vault-snapshot.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: vault_snapshots_enabled
+  notify: Restart vault snapshot timer
+
+- name: Enable the snapshot timer
+  ansible.builtin.systemd:
+    name: vault-snapshot.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: vault_snapshots_enabled
+
+# Turning the feature off has to actually stop it. Leaving an enabled
+# timer behind after someone sets vault_snapshots_enabled to false is the
+# kind of thing that gets discovered by a full disk.
+- name: Stop the snapshot timer when disabled
+  ansible.builtin.systemd:
+    name: vault-snapshot.timer
+    enabled: false
+    state: stopped
+  when: not vault_snapshots_enabled
+  failed_when: false

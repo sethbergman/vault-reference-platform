@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Stand-in for curl: the IMDS token request and the blob PUT.
+set -uo pipefail
+printf 'curl %s\n' "$*" >> "${FAKE_LOG}"
+
+if [[ "$*" == *"169.254.169.254"* ]]; then
+    if [[ "${FAKE_IMDS_RC:-0}" != "0" ]]; then
+        exit "${FAKE_IMDS_RC}"
+    fi
+    if [[ "${FAKE_IMDS_TOKEN:-tok}" == "none" ]]; then
+        echo '{}'
+    else
+        printf '{"access_token":"%s"}\n' "${FAKE_IMDS_TOKEN:-tok}"
+    fi
+    exit 0
+fi
+
+# The blob PUT. The script asks for the status code with -w, so that is
+# all this needs to emit on stdout.
+if [[ "$*" == *"blob.core.windows.net"* ]]; then
+    if [[ "${FAKE_BLOB_CURL_RC:-0}" != "0" ]]; then
+        exit "${FAKE_BLOB_CURL_RC}"
+    fi
+    printf '%s' "${FAKE_BLOB_HTTP_CODE:-201}"
+    exit 0
+fi
+
+echo "fake curl: unhandled URL: $*" >&2
+exit 64

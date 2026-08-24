@@ -25,7 +25,9 @@ that part down.
   auto-unsealed Raft cluster from a clean checkout with one command
   (`make deploy`). `terraform/aws` builds the equivalent on AWS —
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
-  bucket. Azure is still a stub; see Roadmap.
+  bucket. `terraform/azure` builds the same shape with a VM scale set,
+  Key Vault auto-unseal, and a blob container. Neither has been applied
+  end to end — see [`docs/deployment.md`](docs/deployment.md).
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery

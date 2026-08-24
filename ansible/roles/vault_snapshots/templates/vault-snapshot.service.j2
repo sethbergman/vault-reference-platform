@@ -1,0 +1,43 @@
+[Unit]
+Description=Take a Vault Raft snapshot and upload it
+Documentation=https://github.com/sethbergman/vault-reference-platform/blob/main/docs/disaster-recovery.md
+# Pointless to run if Vault is not up, and the script would exit 0
+# anyway. Requires= rather than Wants= so a node with Vault stopped
+# does not accumulate successful-but-empty timer runs.
+Requires=vault.service
+After=vault.service network-online.target
+
+[Service]
+Type=oneshot
+User=vault
+Group=vault
+
+EnvironmentFile=/etc/vault.d/snapshot.env
+{% if vault_cloud == "aws" %}
+ExecStart={{ vault_snapshots_script }} --cloud aws --bucket {{ vault_snapshot_bucket }} --prefix {{ vault_snapshots_prefix }}
+{% elif vault_cloud == "azure" %}
+ExecStart={{ vault_snapshots_script }} --cloud azure --account {{ vault_snapshot_storage_account }} --container {{ vault_snapshot_container }} --prefix {{ vault_snapshots_prefix }}
+{% else %}
+ExecStart={{ vault_snapshots_script }} --cloud none --output-dir {{ vault_snapshots_local_dir }}
+{% endif %}
+
+# The snapshot is written to a private temp directory that systemd
+# discards when the unit exits, so a crash between "take" and "upload"
+# cannot leave the cluster's whole storage sitting on disk.
+PrivateTmp=true
+
+# This unit reads Vault's data and needs the network. It needs nothing
+# else, so it gets nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+{% if vault_cloud not in ["aws", "azure"] %}
+ReadWritePaths={{ vault_snapshots_local_dir }}
+{% endif %}
+
+[Install]
+WantedBy=multi-user.target

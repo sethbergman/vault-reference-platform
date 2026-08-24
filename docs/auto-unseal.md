@@ -54,15 +54,17 @@ minimal permissions to use it — an `aws_iam_policy` and an
 `azurerm_key_vault_access_policy` respectively, granting only
 encrypt/decrypt (AWS) or get/wrap/unwrap (Azure) on that one key.
 
-Neither policy is attached to anything yet. Both modules are still
-missing the actual compute (EC2/ASG for AWS, a VM scale set for Azure) —
-see the `TODO` comments in each `main.tf` — so there's no instance role
-or managed identity to attach to. Once that compute exists:
+Both are wired up. Each module provisions its own compute — an
+autoscaling group on AWS, a VM scale set on Azure — and attaches the
+credential to it, so there is nothing to pass on the command line:
 
-- **AWS**: attach the `vault_autounseal_iam_policy_arn` output to the
-  Vault nodes' instance profile.
-- **Azure**: pass the VM scale set's managed identity principal ID as
-  `-var vault_node_identity_principal_id=<id>` on `terraform apply`.
+- **AWS**: the policy is attached to the nodes' instance profile
+  (`terraform/aws/iam.tf`), and the seal stanza picks up credentials
+  from the instance role.
+- **Azure**: the access policy is granted to the scale set's user-assigned
+  managed identity (`terraform/azure/compute.tf`).
+
+No static keys or client secrets are involved on either cloud.
 
 The Ansible seal stanza doesn't turn on by itself — `vault_seal_type`
 defaults to `shamir` (plain manual unseal,
