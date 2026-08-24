@@ -4,6 +4,15 @@ global:
 
 scrape_configs:
   - job_name: vault
+    # The nodes serve TLS with certificates from the local dev CA, so
+    # the scheme has to be https and the CA has to be trusted. Using
+    # insecure_skip_verify here would make the scrape work while
+    # verifying nothing, which is worse than not scraping.
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/vault-ca.crt
+      # The targets are addressed by container name, which is what the
+      # certificates are issued for, so no name override is needed.
     metrics_path: /v1/sys/metrics
     params:
       format: ["prometheus"]

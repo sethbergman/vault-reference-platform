@@ -5,27 +5,45 @@ storage "raft" {
   # Every node in the local dev cluster lists every other node (including
   # itself — Vault just ignores a self-join) so the same template produces a
   # working config for any node once NODE_ID is substituted at build time.
+  # leader_ca_cert_file is what makes the join verify the peer rather
+  # than trust whatever answers on that name. Without it a node would
+  # happily join anything presenting a certificate.
   retry_join {
-    leader_api_addr = "http://vault-0:8200"
+    leader_api_addr     = "https://vault-0:8200"
+    leader_ca_cert_file = "/vault/tls/ca.crt"
   }
   retry_join {
-    leader_api_addr = "http://vault-1:8200"
+    leader_api_addr     = "https://vault-1:8200"
+    leader_ca_cert_file = "/vault/tls/ca.crt"
   }
   retry_join {
-    leader_api_addr = "http://vault-2:8200"
+    leader_api_addr     = "https://vault-2:8200"
+    leader_ca_cert_file = "/vault/tls/ca.crt"
   }
 }
 
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = "true"   # local/dev only — TLS is required in every other profile
+  address = "0.0.0.0:8200"
+
+  # Certificates are issued by scripts/generate-dev-certs.sh and mounted
+  # in read-only. Each node gets its own, with SANs for its container
+  # name plus localhost, because peers dial it by name while the host
+  # reaches it through a published port.
+  tls_cert_file = "/vault/tls/{{NODE_ID}}.crt"
+  tls_key_file  = "/vault/tls/{{NODE_ID}}.key"
+
+  # Peers must present a certificate from the same CA — this is what
+  # stops anything that can reach the network from joining the cluster.
+  tls_client_ca_file = "/vault/tls/ca.crt"
+
+  tls_min_version = "tls12"
 
   telemetry {
     # sys/metrics normally requires a token. Opening it up lets Prometheus
-    # scrape without credentials, which is fine here because the listener
-    # is already plaintext and confined to the compose network — but in a
-    # real deployment, leave this off and give the scraper a token with a
-    # policy granting read on sys/metrics.
+    # scrape without credentials. The listener is TLS now, so this is
+    # narrower than it was — but in a real deployment leave it off and
+    # give the scraper a token with a policy granting read on
+    # sys/metrics.
     unauthenticated_metrics_access = true
   }
 }
@@ -49,8 +67,8 @@ disable_mlock = true
 # Must be the node's own address, reachable from the other nodes on the
 # compose network — not 127.0.0.1 — or raft peers can't reach each other
 # for join/replication traffic.
-api_addr     = "http://{{NODE_ID}}:8200"
-cluster_addr = "http://{{NODE_ID}}:8201"
+api_addr     = "https://{{NODE_ID}}:8200"
+cluster_addr = "https://{{NODE_ID}}:8201"
 ui           = true
 
 # Auto-unseal via the vault-unseal service's Transit engine (see
@@ -60,7 +78,7 @@ ui           = true
 # vault-unseal is up), so it's injected by docker-entrypoint.sh, not baked
 # in at build time like NODE_ID.
 seal "transit" {
-  address         = "http://vault-unseal:8200"
+  address         = "https://vault-unseal:8200"
   token           = "{{TRANSIT_TOKEN}}"
   key_name        = "autounseal"
   mount_path      = "transit/"

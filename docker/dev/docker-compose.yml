@@ -25,8 +25,14 @@ services:
     build: ../vault-unseal
     ports:
       - "8300:8200"
+    volumes:
+      - ./tls:/vault/tls:ro
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # The CLI inside the container talks to its own listener, which is
+      # now TLS. VAULT_CACERT is what lets it verify the local CA rather
+      # than needing -tls-skip-verify, which would defeat the point.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
 
   vault-0:
     build:
@@ -35,8 +41,14 @@ services:
         VAULT_NODE_ID: vault-0
     ports:
       - "8200:8200"
+    volumes:
+      - ./tls:/vault/tls:ro
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # The CLI inside the container talks to its own listener, which is
+      # now TLS. VAULT_CACERT is what lets it verify the local CA rather
+      # than needing -tls-skip-verify, which would defeat the point.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
       # Minted by scripts/bootstrap-dev-cluster.sh after vault-unseal is
       # ready; empty here just means "not bootstrapped yet", not a default
       # to rely on.
@@ -49,8 +61,14 @@ services:
         VAULT_NODE_ID: vault-1
     ports:
       - "8210:8200"
+    volumes:
+      - ./tls:/vault/tls:ro
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # The CLI inside the container talks to its own listener, which is
+      # now TLS. VAULT_CACERT is what lets it verify the local CA rather
+      # than needing -tls-skip-verify, which would defeat the point.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
       VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
 
   vault-2:
@@ -60,8 +78,14 @@ services:
         VAULT_NODE_ID: vault-2
     ports:
       - "8220:8200"
+    volumes:
+      - ./tls:/vault/tls:ro
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # The CLI inside the container talks to its own listener, which is
+      # now TLS. VAULT_CACERT is what lets it verify the local CA rather
+      # than needing -tls-skip-verify, which would defeat the point.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
       VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
 
   # Monitoring — started only by `bootstrap-dev-cluster.sh --with-monitoring`
@@ -72,6 +96,9 @@ services:
       - "9090:9090"
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Needed to verify the Vault nodes it scrapes, now that they serve
+      # TLS. Without it every scrape fails certificate verification.
+      - ./tls/ca.crt:/etc/prometheus/vault-ca.crt:ro
 
   grafana:
     image: grafana/grafana:11.2.0

@@ -102,6 +102,12 @@ command -v jq    >/dev/null 2>&1 || die "jq not found on PATH"
 
 COOKIE_JAR="$(mktemp)"
 
+# The vault CLI reads VAULT_CACERT; curl does not. These raw requests
+# need the CA passed explicitly, or they fail verification against the
+# local dev CA once the listener serves TLS.
+CURL_CA=()
+[[ -n "${VAULT_CACERT:-}" ]] && CURL_CA=(--cacert "$VAULT_CACERT")
+
 # Trailing slash would produce a double slash in the callback URL below.
 VAULT_ADDR="${VAULT_ADDR%/}"
 export VAULT_ADDR
@@ -181,7 +187,7 @@ log "Exchanging the code with Vault..."
 # browser makes when the IdP redirects it here, and it's the only method
 # the callback accepts (`vault write` sends a PUT and gets back a 405).
 # The endpoint is unauthenticated: this request *is* the login.
-CALLBACK_RESPONSE="$(curl -sS -G "${VAULT_ADDR}/v1/auth/${MOUNT}/oidc/callback" \
+CALLBACK_RESPONSE="$(curl -sS "${CURL_CA[@]}" -G "${VAULT_ADDR}/v1/auth/${MOUNT}/oidc/callback" \
     --data-urlencode "state=${STATE}" \
     --data-urlencode "nonce=${NONCE}" \
     --data-urlencode "code=${CODE}" \

@@ -10,6 +10,16 @@ make status        # check cluster/unseal status
 make destroy       # tear it down
 ```
 
+The cluster serves TLS. `bootstrap-dev-cluster.sh` calls
+`scripts/generate-dev-certs.sh` first, which issues a local CA and a
+certificate per node into `docker/dev/tls/` — gitignored, and regenerated
+with `--force` if they ever need replacing. Clients need the CA:
+
+```bash
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=$PWD/docker/dev/tls/ca.crt
+```
+
 `make deploy` runs `scripts/bootstrap-dev-cluster.sh`, which brings up a
 standalone Vault instance (`vault-unseal`) as a Transit auto-unseal
 backend, then starts and initializes the 3-node cluster against it — the

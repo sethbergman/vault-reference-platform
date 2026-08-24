@@ -3,8 +3,25 @@
 ## Transport
 
 All client and inter-node traffic is TLS-terminated at the Vault process
-itself (not offloaded at the load balancer), using certificates issued by
-the internal CA under `examples/pki/`.
+itself, not offloaded at the load balancer. That constraint is why both
+cloud profiles use a layer-4 load balancer rather than an application
+gateway — see [`docs/deployment.md`](deployment.md).
+
+Certificates come from different places per profile:
+
+| Profile | Issued by |
+|---|---|
+| Local / CI | `scripts/generate-dev-certs.sh` — a local CA, per-node leaves |
+| AWS / Azure | Your own CA, ACM Private CA, or the Ansible layer |
+
+The local CA is generated on demand into `docker/dev/tls/`, which is
+gitignored. Nothing there is committed: a private key in version control
+is compromised from the moment it lands, whether or not anyone notices.
+
+The cloud profiles deliberately do **not** issue certificates in the
+Terraform. Nodes come up expecting them at `/etc/vault.d/tls/` and Vault
+refuses to start without them, which is the correct failure — a Vault
+serving plaintext is worse than one that will not boot.
 
 ## Unsealing
 

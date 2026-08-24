@@ -33,7 +33,8 @@ See [Why /etc/hosts](#why-etchosts) below — it isn't optional.
 Then configure the auth method and the group mapping:
 
 ```bash
-export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=$PWD/docker/dev/tls/ca.crt
 export VAULT_TOKEN=<root token printed by the bootstrap script>
 
 ./scripts/bootstrap-oidc.sh \
