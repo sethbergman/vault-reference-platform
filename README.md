@@ -145,10 +145,12 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs nine checks on every PR. Four are static:
-`terraform fmt`/`validate`, `ansible-lint`, `shellcheck`, and
-`markdownlint`. The other five deploy the Docker Compose cluster and
-actually exercise it:
+GitHub Actions runs eleven checks on every PR. Five are static:
+`terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
+`markdownlint`, and security scanning (gitleaks for committed secrets,
+Trivy for Terraform and Dockerfile misconfigurations — see
+[`docs/security.md`](docs/security.md)). The other six deploy the Docker
+Compose cluster and actually exercise it:
 
 - **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
   does a live secret write/read.
@@ -163,6 +165,9 @@ actually exercise it:
 - **DR restore drill** — snapshots a cluster, destroys the node and its
   storage, restores into a replacement, and verifies a secret written
   before the disaster reads back.
+- **Rolling upgrade tests** — proves a bad checksum aborts before any
+  node is touched, and that an unhealthy node stops the rollout rather
+  than costing a second node and quorum.
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
@@ -170,7 +175,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 - **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
 - **v0.2** — HA cluster (done), auto-unseal (done), monitoring (done)
-- **v0.3** — automated tests (done), CI security scanning (open)
+- **v0.3** — automated tests (done), CI security scanning (done)
 - **v1.0** — production-ready reference architecture
 
 ## License

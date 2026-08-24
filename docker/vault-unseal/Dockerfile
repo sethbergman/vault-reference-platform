@@ -13,4 +13,9 @@ RUN mkdir -p /vault/data && chown -R vault:vault /vault/data
 
 EXPOSE 8200 8201
 
+# Same reasoning as docker/vault: replacing the base image's entrypoint
+# skips the su-exec that would otherwise drop privileges, so this was
+# running Vault as root.
+USER vault
+
 ENTRYPOINT ["vault", "server", "-config=/vault/config/vault.hcl"]

@@ -494,3 +494,33 @@ jobs:
 
       - name: Exercise scripts/vault-upgrade.sh
         run: ./tests/upgrade/run-tests.sh
+
+  security-scan:
+    name: Security scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan past commits, not just the tip.
+          # A secret committed and then removed is still a leaked secret.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan Terraform and Dockerfiles for misconfigurations
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          trivy-config: ""
+          ignore-unfixed: false
+          # Fail on HIGH and above. Accepted findings live in
+          # .trivyignore.yaml, each with the reason it is accepted — a
+          # suppression with no justification is indistinguishable from
+          # never having run the scanner.
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml

@@ -56,3 +56,31 @@ deployments should also ship audit logs to a SIEM.
 - Swap is disabled on Vault nodes to avoid secrets being paged to disk.
 - The Vault API port is only reachable from the load balancer and other
   cluster nodes, not from the public internet.
+
+## Automated scanning
+
+CI runs two scanners on every PR (`security-scan` in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
+
+- **gitleaks** — committed secrets, over full history rather than just
+  the tip, since a credential that was committed and later removed has
+  still leaked.
+- **Trivy config** — Terraform and Dockerfile misconfigurations, failing
+  the build on HIGH and above.
+
+Accepted findings live in `.trivyignore.yaml`, and each one records why
+it is accepted rather than fixed. A suppression with no justification is
+indistinguishable from never having run the scanner, so entries state the
+risk being taken and what would remove it.
+
+Adding the scanners found four real problems, all now fixed:
+
+| Finding | Why it mattered |
+|---|---|
+| Vault containers ran as **root** | Replacing the base image's entrypoint skipped the `su-exec` that drops privileges — the containers had been running Vault as root since the auto-unseal work. |
+| Azure Key Vault had **no purge protection** | Purging it would not just break unsealing; every Raft snapshot is encrypted under that key, so all backups become permanently undecryptable. |
+| Azure Key Vault accepted traffic from **any network** | No default-deny ACL on the key that unseals Vault. |
+| Node egress allowed **every protocol and port** | Now scoped to TCP 443 and 80. |
+
+VPC flow logs were added at the same time: Vault's audit device records
+requests it served, and flow logs record attempts it never saw.

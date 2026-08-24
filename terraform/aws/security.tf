@@ -76,13 +76,31 @@ resource "aws_vpc_security_group_ingress_rule" "vault_api_between_nodes" {
   ip_protocol                  = "tcp"
 }
 
-# Outbound is unrestricted: nodes need package repositories, the KMS
-# endpoint for auto-unseal, S3 for snapshots, and SSM. Narrowing this to
-# specific endpoints is worthwhile hardening but needs interface endpoints
-# for each service to avoid breaking auto-unseal on boot.
-resource "aws_vpc_security_group_egress_rule" "vault_all" {
+# Outbound is limited to HTTPS and HTTP rather than every protocol and
+# port. Nodes need package repositories at boot, plus KMS for auto-unseal,
+# S3 for snapshots and SSM for access — all of which are HTTPS.
+#
+# The destination is still 0.0.0.0/0, which scanners flag and which is
+# fair. Removing that needs interface VPC endpoints for KMS, SSM and
+# SSM Messages so those calls never leave the VPC, leaving only package
+# installation needing the internet — and that in turn is removed by
+# baking an AMI with Vault preinstalled rather than installing at boot
+# (see the note in templates/user-data.sh.tftpl). Both are worth doing
+# and both are more than a security group change.
+resource "aws_vpc_security_group_egress_rule" "vault_https" {
   security_group_id = aws_security_group.vault.id
-  description       = "Outbound to package repos, KMS, S3 and SSM"
+  description       = "HTTPS out to KMS, S3, SSM and package repositories"
   cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "vault_http" {
+  security_group_id = aws_security_group.vault.id
+  description       = "HTTP out for package repository metadata and mirror lists"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
 }

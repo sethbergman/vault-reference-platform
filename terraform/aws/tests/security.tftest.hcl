@@ -64,6 +64,39 @@ run "raft_and_forwarding_ports_are_peer_only" {
   }
 }
 
+run "egress_is_not_every_protocol_and_port" {
+  command = plan
+
+  # This started as a single ip_protocol = "-1" rule, which permits every
+  # protocol on every port outbound. The destination is still 0.0.0.0/0
+  # (accepted, with reasoning, in .trivyignore.yaml), but reverting to
+  # "-1" would quietly restore the wider hole without changing the CIDR a
+  # scanner looks at.
+  assert {
+    condition     = aws_vpc_security_group_egress_rule.vault_https.ip_protocol == "tcp"
+    error_message = "Egress must be scoped to TCP, not every protocol."
+  }
+
+  assert {
+    condition = alltrue([
+      aws_vpc_security_group_egress_rule.vault_https.from_port == 443,
+      aws_vpc_security_group_egress_rule.vault_http.from_port == 80,
+    ])
+    error_message = "Egress should be limited to HTTPS and HTTP."
+  }
+}
+
+run "flow_logs_capture_rejected_traffic_too" {
+  command = plan
+
+  # ACCEPT-only would record what got through and nothing about what was
+  # turned away, which is the half worth having when investigating.
+  assert {
+    condition     = aws_flow_log.vault.traffic_type == "ALL"
+    error_message = "Flow logs must capture rejected traffic as well as accepted."
+  }
+}
+
 run "imds_v2_is_required" {
   command = plan
 
