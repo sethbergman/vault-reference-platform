@@ -478,7 +478,14 @@ psql_as() {
     # prefixed every result and turned a passing query into a failed
     # assertion. Filtered by `level=` rather than by that one message,
     # since any future compose warning would break this identically.
-    compose exec -T -e PGPASSWORD="$2" postgres         psql -h 127.0.0.1 -U "$1" -d appdata -tAc "$3" 2>&1         | grep -v 'level='         | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'         | grep -v '^$' || true
+    # Over the service name, not loopback. initdb gives 127.0.0.1 a trust
+    # rule, so a loopback connection accepts any password at all — which
+    # would make the root-rotation assertion below meaningless.
+    compose exec -T -e PGPASSWORD="$2" postgres \
+        psql -h postgres -U "$1" -d appdata -tAc "$3" 2>&1 \
+        | grep -v 'level=' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | grep -v '^$' || true
 }
 
 BOOTSTRAP_PW="bootstrap-only-rotated-immediately"
@@ -577,11 +584,24 @@ info "=== Root rotation ==="
 # with — not the operator who ran the script, not this test. That is the
 # end state dynamic secrets are for, and it is only demonstrable against a
 # real database.
+# Control first. Under a trust rule Postgres accepts *any* password, so
+# the assertion after this one would pass or fail for reasons having
+# nothing to do with rotation. Proving a bogus password is rejected is
+# what makes the next line evidence rather than decoration.
+WRONG_OUT="$(psql_as vaultadmin "definitely-not-the-password" "SELECT 1;")"
+if [[ "$WRONG_OUT" != "1" ]]; then
+    ok "a wrong password is rejected, so the next check means something"
+else
+    bad "a wrong password is rejected, so the next check means something" \
+        "Postgres accepted a bogus password — auth is not enforced on this path"
+fi
+
 ROOT_OUT="$(psql_as vaultadmin "$BOOTSTRAP_PW" "SELECT 1;")"
 if [[ "$ROOT_OUT" != "1" ]]; then
     ok "the bootstrap password no longer works"
 else
-    bad "the bootstrap password no longer works"         "the password in docker-compose.yml still authenticates — rotate-root did not run"
+    bad "the bootstrap password no longer works" \
+        "the password in docker-compose.yml still authenticates — rotate-root did not run"
 fi
 
 # And Vault can still issue, which is what makes the rotation safe rather
