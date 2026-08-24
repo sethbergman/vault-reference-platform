@@ -17,6 +17,16 @@ RUN mkdir -p /vault/data && chown -R vault:vault /vault/data
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# The entrypoint rewrites this file in place to inject the Transit token,
+# so it has to be writable by the user Vault runs as.
+RUN chown vault:vault /vault/config/vault.hcl
+
 EXPOSE 8200 8201
+
+# The base image's own entrypoint drops privileges with su-exec before
+# starting Vault. Replacing that entrypoint silently undid it — these
+# containers were running Vault as root. Dropping here restores it.
+# 8200/8201 are above 1024, so no privileged bind is needed.
+USER vault
 
 ENTRYPOINT ["docker-entrypoint.sh"]

@@ -86,3 +86,9 @@ variable "snapshot_retention_days" {
   description = "Days to keep Raft snapshots in S3 before expiring them."
   default     = 30
 }
+
+variable "flow_log_retention_days" {
+  type        = number
+  description = "Days to retain VPC flow logs in CloudWatch."
+  default     = 90
+}

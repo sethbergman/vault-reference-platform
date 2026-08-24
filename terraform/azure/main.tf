@@ -34,6 +34,25 @@ resource "azurerm_key_vault" "vault_autounseal" {
   location            = azurerm_resource_group.vault.location
   tenant_id           = data.azurerm_client_config.current.tenant_id
   sku_name            = "standard"
+
+  # Losing this key does not just break unsealing — it makes every Raft
+  # snapshot permanently undecryptable, because they are encrypted under
+  # it (see docs/disaster-recovery.md). Soft delete alone still allows a
+  # purge inside the retention window; purge protection removes that
+  # option entirely, and it cannot be turned off once enabled. That is
+  # the point: the key must not be destroyable by accident or by someone
+  # who has compromised the subscription.
+  soft_delete_retention_days = 90
+  purge_protection_enabled   = true
+
+  # Deny by default. Without this the Key Vault accepts traffic from any
+  # network, which for the key that unseals Vault is a wide door.
+  # AzureServices is bypassed so the platform's own integrations keep
+  # working; add the Vault subnet's ID here once the VM scale set exists.
+  network_acls {
+    default_action = "Deny"
+    bypass         = "AzureServices"
+  }
 }
 
 resource "azurerm_key_vault_key" "vault_autounseal" {

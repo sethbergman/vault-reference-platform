@@ -1,0 +1,68 @@
+# Accepted findings, each with the reason it is accepted rather than
+# fixed. Anything not listed here is expected to be fixed, not muted.
+#
+# A suppression without a justification is indistinguishable from not
+# having run the scanner, so every entry states what the risk is and why
+# it is being taken. Entries with a date are things to revisit, not
+# permanent exemptions.
+
+misconfigurations:
+  - id: AVD-AWS-0104
+    paths:
+      - "terraform/aws/security.tf"
+    statement: >-
+      Unrestricted egress destination. Already narrowed from every
+      protocol and port to TCP 443 and 80 only. The remaining 0.0.0.0/0
+      is for package installation at boot and for KMS, S3 and SSM, which
+      have no fixed address ranges worth encoding. Properly removing it
+      needs interface VPC endpoints for KMS, SSM and SSM Messages, plus a
+      prebaked AMI so nothing is installed at boot — both are tracked
+      work, not a security group change. Accepted meanwhile because the
+      nodes are in private subnets with no inbound path except the load
+      balancer.
+
+  - id: AVD-AZU-0014
+    paths:
+      - "terraform/azure/main.tf"
+    statement: >-
+      Key expiry on the auto-unseal key. Deliberately not set. An expired
+      key does not degrade gracefully here: every node fails to unseal on
+      its next restart, and every existing Raft snapshot becomes
+      undecryptable, because they are encrypted under it. Rotation is
+      handled by Key Vault versioning, which keeps prior versions
+      readable; expiry does not. This is a case where the generic control
+      is actively wrong for the workload.
+
+  - id: AVD-AWS-0089
+    paths:
+      - "terraform/aws/storage.tf"
+    statement: >-
+      S3 access logging on the snapshot bucket. Enabling it means a
+      second bucket to hold the logs, which then needs its own retention,
+      encryption and access policy. VPC flow logs and CloudTrail already
+      cover who reached the bucket at the network and API layers. Worth
+      revisiting if the snapshot bucket ever holds more than this one
+      cluster's backups.
+
+  - id: AVD-DS-0026
+    paths:
+      - "docker/vault/Dockerfile"
+      - "docker/vault-unseal/Dockerfile"
+      - "docker/tooling/Dockerfile"
+    statement: >-
+      No HEALTHCHECK instruction. Health is asserted where it is acted
+      on instead: docker/dev is orchestrated by
+      scripts/bootstrap-dev-cluster.sh, which polls sys/health and fails
+      the run if a node never becomes active, and the AWS profile uses
+      the load balancer's health check to decide whether to replace an
+      instance. A container-level HEALTHCHECK would duplicate that
+      without anything consuming the result.
+
+  - id: AVD-DS-0002
+    paths:
+      - "docker/tooling/Dockerfile"
+    statement: >-
+      Runs as root. This image is an interactive shell for running the
+      vault, terraform and ansible CLIs against a local stack; it holds
+      no data and serves no network listener. The Vault server images
+      (docker/vault, docker/vault-unseal) do drop to the vault user.
