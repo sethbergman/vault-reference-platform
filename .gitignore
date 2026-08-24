@@ -2,8 +2,13 @@
 *.tfstate
 *.tfstate.backup
 *.tfplan
-.terraform.lock.hcl
 *.snap
+
+# .terraform.lock.hcl is deliberately NOT ignored — it is committed. It
+# pins provider versions and records their checksums, so CI can't be
+# broken by an upstream release and a substituted provider can't install
+# silently. Regenerate with `terraform providers lock` (see
+# docs/deployment.md), never by hand.
 .DS_Store
 
 # Vault rotation script state (accessors only, not secrets — but keep out of the repo)
