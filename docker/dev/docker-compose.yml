@@ -56,7 +56,12 @@ services:
     command:
       - "-u"
       - "TCP-LISTEN:9090,fork,reuseaddr"
-      - "OPEN:/collector/audit-socket.log,creat,append"
+      # /tmp, not a directory of our own: socat's `creat` creates the
+      # file, not its parent, so a path under a directory that does not
+      # exist in the image fails silently per connection — the TCP
+      # listener still accepts, so Vault enables the device happily and
+      # nothing is ever written.
+      - "OPEN:/tmp/audit-socket.log,creat,append"
     # Deliberately no host port. Vault reaches this over the container
     # network as audit-collector:9090, and the tests read the file with
     # `compose exec`, so publishing it buys nothing — and 9090 on the

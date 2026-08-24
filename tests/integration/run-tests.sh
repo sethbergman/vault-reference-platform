@@ -672,12 +672,17 @@ fi
 
 # Both devices receive every entry. If the secondary is empty, the
 # redundancy the two-device design depends on is not actually there.
-SECOND_TEXT="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
+SECOND_TEXT="$(compose exec -T audit-collector cat /tmp/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
 if [[ "$SECOND_TEXT" == *"itest/audit-canary"* ]]; then
     ok "and the socket device delivered the same entry to the collector"
 else
+    # Enabling a socket device only proves the TCP listener accepted a
+    # connection. Whether the collector then managed to write is a
+    # separate question, and its own logs are the only place it is
+    # answered — so print them rather than guessing.
     bad "and the socket device delivered the same entry to the collector" \
-        "the second device is enabled but nothing reached the collector"
+        "enabled but nothing arrived; collector logs follow"
+    compose logs --tail=15 audit-collector 2>&1 | sed 's/^/        /' || true
 fi
 
 # ---------------------------------------------------------------------------
