@@ -5,6 +5,12 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    # Used only to suffix the snapshot bucket name, which has to be
+    # globally unique across every AWS account.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -34,10 +40,8 @@ resource "aws_kms_alias" "vault_autounseal" {
   target_key_id = aws_kms_key.vault_autounseal.key_id
 }
 
-# The minimum permissions Vault's awskms seal needs. Not attached to
-# anything yet — there's no EC2/ASG instance role to attach it to until
-# that TODO below is built out. Attach this to the Vault nodes' instance
-# profile once it exists, so Vault can reach KMS via the instance role
+# The minimum permissions Vault's awskms seal needs. Attached to the node
+# instance role in iam.tf, so Vault reaches KMS via the instance role
 # rather than static credentials.
 resource "aws_iam_policy" "vault_autounseal" {
   name        = "${var.cluster_name}-vault-autounseal"
@@ -53,5 +57,10 @@ resource "aws_iam_policy" "vault_autounseal" {
   })
 }
 
-# TODO: EC2/ASG nodes, ALB + target group + health check,
-# S3 bucket for Raft snapshots.
+# The rest of the cluster is split by concern rather than piled in here:
+#   network.tf   VPC, subnets, NAT, S3 endpoint
+#   security.tf  security groups
+#   iam.tf       node role and instance profile
+#   compute.tf   launch template and autoscaling group
+#   lb.tf        network load balancer and health check
+#   storage.tf   snapshot bucket

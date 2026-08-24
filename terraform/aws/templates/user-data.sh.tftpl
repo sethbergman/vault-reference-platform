@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+#
+# Bootstraps a Vault node. Rendered by Terraform (see compute.tf) and run
+# once at first boot by cloud-init.
+#
+# Note this installs Vault at boot from HashiCorp's repository. That is
+# convenient for a reference deployment, but it means a node's software
+# version depends on what the repo serves at the moment it boots. For
+# production, bake an AMI with Vault already installed (Packer) and pin
+# it — that removes boot-time network dependencies and makes a scale-out
+# event deterministic.
+
+set -euxo pipefail
+
+# Everything here goes to /var/log/user-data.log as well as the console,
+# which is the first place to look when a node comes up but Vault does not.
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+VAULT_VERSION="${vault_version}"
+CLUSTER_NAME="${cluster_name}"
+AWS_REGION="${aws_region}"
+KMS_KEY_ID="${kms_key_id}"
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+dnf install -y dnf-plugins-core unzip jq
+dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+dnf install -y "vault-$${VAULT_VERSION}-1"
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+# IMDSv2 requires a token; the launch template enforces it, so IMDSv1-style
+# unauthenticated calls will fail here.
+IMDS_TOKEN="$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
+
+imds() {
+  curl -sS -H "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+    "http://169.254.169.254/latest/meta-data/$${1}"
+}
+
+INSTANCE_ID="$(imds instance-id)"
+LOCAL_IPV4="$(imds local-ipv4)"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+install -d -o vault -g vault -m 0700 /opt/vault/data
+
+cat > /etc/vault.d/vault.hcl <<EOF
+cluster_name = "$${CLUSTER_NAME}"
+
+storage "raft" {
+  path    = "/opt/vault/data"
+  node_id = "$${INSTANCE_ID}"
+
+  # Peers are discovered through the EC2 API by tag rather than listed
+  # statically, so the autoscaling group can replace nodes without any
+  # configuration change. Requires ec2:DescribeInstances on the instance
+  # role (see iam.tf).
+  retry_join {
+    auto_join               = "provider=aws region=$${AWS_REGION} tag_key=VaultCluster tag_value=$${CLUSTER_NAME}"
+    auto_join_scheme        = "https"
+    leader_tls_servername   = "vault.$${CLUSTER_NAME}.internal"
+    leader_ca_cert_file     = "/etc/vault.d/tls/ca.crt"
+  }
+}
+
+listener "tcp" {
+  address       = "0.0.0.0:8200"
+  tls_cert_file = "/etc/vault.d/tls/vault.crt"
+  tls_key_file  = "/etc/vault.d/tls/vault.key"
+
+  telemetry {
+    unauthenticated_metrics_access = false
+  }
+}
+
+# Auto-unseal via KMS, using the instance role for credentials — no
+# access keys on the node. See docs/auto-unseal.md.
+seal "awskms" {
+  region     = "$${AWS_REGION}"
+  kms_key_id = "$${KMS_KEY_ID}"
+}
+
+api_addr     = "https://$${LOCAL_IPV4}:8200"
+cluster_addr = "https://$${LOCAL_IPV4}:8201"
+
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}
+
+ui = true
+EOF
+
+chown vault:vault /etc/vault.d/vault.hcl
+chmod 0640 /etc/vault.d/vault.hcl
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+# The listener above expects certificates that this script does not create.
+# Issuing them is deployment-specific — an internal CA, ACM Private CA, or
+# certificates delivered by the Ansible layer (see ansible/roles/vault).
+# Until they exist Vault will refuse to start, which is the correct
+# failure: a Vault serving plaintext is worse than one that does not
+# start. docs/deployment.md covers the options.
+if [[ ! -f /etc/vault.d/tls/vault.crt ]]; then
+  echo "No TLS certificate present at /etc/vault.d/tls/vault.crt."
+  echo "Vault will not start until one is provisioned — see docs/deployment.md."
+fi
+
+systemctl enable vault
+systemctl start vault || {
+  echo "Vault failed to start; most likely the TLS material above is missing."
+  exit 0
+}

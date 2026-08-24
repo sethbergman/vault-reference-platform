@@ -23,10 +23,11 @@ that part down.
 
 - **Reproducible** — the local profile stands up a real 3-node,
   auto-unsealed Raft cluster from a clean checkout with one command
-  (`make deploy`). The AWS/Azure profiles aren't there yet — see Roadmap.
+  (`make deploy`). `terraform/aws` builds the equivalent on AWS —
+  network, autoscaling group, load balancer, KMS auto-unseal, snapshot
+  bucket. Azure is still a stub; see Roadmap.
 - **HA by default** — the reference topology is a multi-node Raft cluster
-  from the start, not bolted on as a "v2" feature. A load balancer in
-  front of it is still a `TODO` in `terraform/aws` and `terraform/azure`.
+  behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
   procedures are first-class, not an afterthought.
 - **Cloud-agnostic core** — Terraform modules are structured so the Vault
@@ -35,10 +36,10 @@ that part down.
 
 ## Architecture
 
-This is the topology `make deploy` actually stands up (local/CI). See
-[`diagrams/architecture.md`](diagrams/architecture.md) for the full
-target production design — load balancer and cloud KMS auto-unseal
-included, neither of which exist yet (see Roadmap):
+This is the topology `make deploy` actually stands up (local/CI). The AWS
+profile builds the same shape with a load balancer and KMS auto-unseal in
+front of it — see [`diagrams/architecture.md`](diagrams/architecture.md)
+and [`docs/deployment.md`](docs/deployment.md):
 
 ```text
             vault CLI / apps
@@ -64,8 +65,8 @@ included, neither of which exist yet (see Roadmap):
 ```text
 vault-reference-platform/
 ├── terraform/
-│   ├── aws/        # AWS provider implementation
-│   ├── azure/      # Azure provider implementation
+│   ├── aws/        # AWS: VPC, ASG, NLB, KMS, snapshot bucket
+│   ├── azure/      # Azure: Key Vault only — compute still a stub
 │   ├── local/       # Local/Docker provider for dev + CI
 │   └── modules/     # Shared, provider-agnostic modules
 ├── ansible/
