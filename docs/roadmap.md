@@ -102,18 +102,8 @@ replication, DR replication, namespaces, HSM auto-unseal). They would
 make the reference untestable for most readers, and the open-source
 feature set is enough to demonstrate the architecture.
 
-## A note on how things get marked done
+## What "done" means here
 
-"Done" in the table above means there is a test that fails when the
-feature breaks, not that the code exists. Several entries were written
-before that was true and had to be corrected:
-
-- "HA cluster" was claimed while nodes had no `retry_join` and never
-  clustered.
-- "Hourly snapshots" was documented for some time before anything
-  scheduled them — and after that, before the leadership check worked.
-- "Human access goes through OIDC" was aspirational for several releases.
-
-The pattern is consistent enough to be worth stating: the documentation
-tends to describe the intended design, and the gap between that and the
-code is invisible until something exercises it.
+An entry is marked done when there is a test that fails if the feature
+breaks — not when the code exists. That distinction is why the table
+above and the gap section can be read at face value.
