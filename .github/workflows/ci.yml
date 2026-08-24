@@ -82,6 +82,21 @@ jobs:
           # failing one.
           shellcheck -s bash tests/upgrade/run-tests.sh tests/upgrade/fake-bin/ssh tests/upgrade/fake-bin/scp
 
+      # Windows checkouts do not track the executable bit, so a script
+      # committed from one lands as 100644 and CI fails with "Permission
+      # denied" rather than anything about the script. Cheaper to assert
+      # the invariant than to rediscover it each time.
+      - name: Every shell script must be executable
+        run: |
+          non_exec="$(git ls-files -s '*.sh' | grep -v '^100755' || true)"
+          if [[ -n "$non_exec" ]]; then
+            echo "These scripts are missing the executable bit:"
+            echo "$non_exec"
+            echo "Fix with: git update-index --chmod=+x <path>"
+            exit 1
+          fi
+        shell: bash
+
   markdownlint:
     name: Markdown lint
     runs-on: ubuntu-latest
