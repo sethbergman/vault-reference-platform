@@ -63,13 +63,21 @@ resource "aws_iam_role_policy_attachment" "vault_autojoin" {
 # s3:DeleteObject — a node should be able to write a backup but not remove
 # one. Expiry is handled by the bucket lifecycle rule instead, so a
 # compromised node cannot destroy backup history.
+locals {
+  # Named rather than inlined below so it can be asserted on directly.
+  # The rendered policy JSON comes from a data source, and data sources
+  # are mocked during `terraform test` — a test reading the rendered
+  # output would pass no matter what was in this list.
+  snapshot_object_actions = [
+    "s3:PutObject",
+    "s3:GetObject",
+  ]
+}
+
 data "aws_iam_policy_document" "vault_snapshots" {
   statement {
-    effect = "Allow"
-    actions = [
-      "s3:PutObject",
-      "s3:GetObject",
-    ]
+    effect    = "Allow"
+    actions   = local.snapshot_object_actions
     resources = ["${aws_s3_bucket.snapshots.arn}/*"]
   }
 

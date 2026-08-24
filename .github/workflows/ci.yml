@@ -7,11 +7,15 @@ on:
 
 jobs:
   terraform:
-    name: Terraform fmt/validate
+    name: Terraform fmt/validate/test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+        with:
+          # terraform_wrapper wraps the binary in a script that mangles
+          # exit codes and output, which breaks `terraform test`.
+          terraform_wrapper: false
       - name: terraform fmt
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (aws)
@@ -24,6 +28,16 @@ jobs:
           cd terraform/azure
           terraform init -backend=false
           terraform validate
+
+      - name: terraform test (aws)
+        run: |
+          # Runs against mocked providers, so no AWS credentials and
+          # nothing is created. These assert on configuration semantics
+          # that validate cannot see — quorum arithmetic, whether an
+          # "internal" load balancer really lands in private subnets,
+          # whether the health check keeps standby nodes in the pool.
+          cd terraform/aws
+          terraform test
 
   ansible-lint:
     name: Ansible lint
