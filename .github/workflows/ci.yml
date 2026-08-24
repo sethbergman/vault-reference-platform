@@ -83,6 +83,29 @@ jobs:
           echo "::add-mask::$ROOT_TOKEN"
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
 
+      - name: Wait for the cluster to be ready to serve writes
+        run: |
+          # Defence in depth. bootstrap-dev-cluster.sh already waits for
+          # the leader to become active, but every step below writes to
+          # Vault, and "unsealed" is not the same as "active" — writing in
+          # that window fails with "local node not active but active
+          # cluster node not found". Cheap to re-check here so a failure
+          # points at the cluster rather than at whichever write happened
+          # to go first.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/health; then
+              echo "Cluster is active and ready for writes."
+              exit 0
+            fi
+            echo "Waiting for an active node... ($i/30)"
+            sleep 2
+          done
+          echo "No active node after 60s. Seal status:"
+          curl -fsS http://127.0.0.1:8200/v1/sys/seal-status | jq . || true
+          echo "Leader status:"
+          curl -fsS http://127.0.0.1:8200/v1/sys/leader | jq . || true
+          exit 1
+
       - name: Verify cluster health
         run: |
           STATUS=$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:8200/v1/sys/health)
