@@ -516,6 +516,7 @@ fi
 # same user this would be a shared password with extra steps.
 CREDS_B="$(vault read -format=json database/creds/appdata-readonly 2>/dev/null || true)"
 USER_B="$(jq -r '.data.username // empty' <<< "${CREDS_B:-{\}}" 2>/dev/null || true)"
+PASS_B="$(jq -r '.data.password // empty' <<< "${CREDS_B:-{\}}" 2>/dev/null || true)"
 if [[ -n "$USER_B" && "$USER_B" != "$USER_A" ]]; then
     ok "a second read returns a different user"
 else
@@ -569,7 +570,12 @@ else
 fi
 
 # Gone from the database, not merely unable to log in.
-ROLE_LEFT="$(psql_as vaultadmin "$BOOTSTRAP_PW"     "SELECT count(*) FROM pg_roles WHERE rolname = '${USER_A}';")"
+# Asked using a *live* Vault-issued credential, not the bootstrap
+# account — by this point root rotation has run and the bootstrap
+# password is correctly dead. pg_roles is a public catalog view, so an
+# ordinary credential can answer this, and using one keeps the check
+# working regardless of what happened to the admin password.
+ROLE_LEFT="$(psql_as "$USER_B" "$PASS_B"     "SELECT count(*) FROM pg_roles WHERE rolname = '${USER_A}';")"
 if [[ "$ROLE_LEFT" == "0" ]]; then
     ok "and the role is dropped from Postgres entirely"
 else
