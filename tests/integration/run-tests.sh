@@ -470,7 +470,15 @@ info "=== Dynamic database credentials ==="
 
 # psql <user> <password> <sql> — run SQL as a specific role.
 psql_as() {
-    compose exec -T -e PGPASSWORD="$2" postgres         psql -h 127.0.0.1 -U "$1" -d appdata -tAc "$3" 2>&1
+    # stderr is kept, because the interesting answers arrive there:
+    # "permission denied" is how a readonly role proves it is readonly.
+    #
+    # But docker compose writes its own diagnostics to the same stream,
+    # and one of them — the obsolete-`version` warning — silently
+    # prefixed every result and turned a passing query into a failed
+    # assertion. Filtered by `level=` rather than by that one message,
+    # since any future compose warning would break this identically.
+    compose exec -T -e PGPASSWORD="$2" postgres         psql -h 127.0.0.1 -U "$1" -d appdata -tAc "$3" 2>&1         | grep -v 'level='         | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'         | grep -v '^$' || true
 }
 
 BOOTSTRAP_PW="bootstrap-only-rotated-immediately"

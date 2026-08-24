@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # OIDC identity provider for human logins (see docker/dex). Started only
   # by `bootstrap-dev-cluster.sh --with-oidc`. The published port matters
