@@ -15,6 +15,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.3 | Automated tests, CI security scanning (gitleaks, Trivy) |
 | v0.4 | AWS and Azure profiles, TLS everywhere, Terraform → Ansible handoff |
 | v0.5 | Scheduled snapshots, certificate renewal from Vault PKI, integration tests |
+| v0.6 | Dynamic database credentials (PostgreSQL), with root rotation |
 
 ## The honest gap
 
@@ -78,13 +79,19 @@ distribute the combined trust bundle everywhere, swap one node at a time
 with a health gate between each, then remove the bootstrap CA — the same
 shape as `vault-upgrade.sh`.
 
-### Dynamic secrets
+### More database engines
 
-Everything here uses the KV engine. The stronger argument for Vault is
-credentials that do not exist until they are requested and expire on
-their own — the database engine issuing short-lived Postgres users, for
-example. Its absence makes this a well-operated secret *store* rather
-than a demonstration of what Vault is actually for.
+The database engine is wired up for PostgreSQL only. Vault supports
+MySQL, MSSQL, MongoDB and others through the same interface, and the
+shape established here would carry over, but nothing else has been
+exercised.
+
+Related and larger: the cloud profiles do not provision a database at
+all. `terraform/aws` and `terraform/azure` build a Vault cluster, not an
+application estate, so pointing the engine at RDS or Azure Database is
+currently left to the reader. Doing it properly would mean Terraform for
+the instance, network rules letting Vault reach it, and `--sslmode
+verify-full` rather than the dev profile's `disable`.
 
 ## Toward v1.0
 
@@ -96,6 +103,10 @@ in production. The blockers are, in order:
 2. **Audit devices**, including the disk-full failure mode.
 3. **Alerting**, particularly on absence.
 4. **The full PKI migration path**, end to end.
+
+Dynamic secrets have moved off this list: the database engine is
+configured, tested against a real Postgres, and documented — including
+what it does not cover.
 
 Explicitly *not* planned: Vault Enterprise features (performance
 replication, DR replication, namespaces, HSM auto-unseal). They would

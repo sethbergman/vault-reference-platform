@@ -18,6 +18,29 @@ services:
     volumes:
       - ../dex/config.yaml:/etc/dex/config.yaml:ro
 
+  # Target for the database secrets engine (see docs/dynamic-secrets.md).
+  # Started only by `bootstrap-dev-cluster.sh --with-database`.
+  #
+  # The credentials here are the *bootstrap* ones Vault uses to connect.
+  # scripts/bootstrap-database-secrets.sh rotates the password immediately
+  # afterwards, so what is written below stops being valid the moment the
+  # engine is configured — which is the point of the exercise. Nothing
+  # here is a secret worth protecting; it is deliberately visible so the
+  # rotation is observable.
+  postgres:
+    image: postgres:16.4-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: vaultadmin
+      POSTGRES_PASSWORD: bootstrap-only-rotated-immediately
+      POSTGRES_DB: appdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultadmin -d appdata"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   # Auto-unseal backend for vault-0/1/2 (see docker/vault-unseal). Brought up
   # and bootstrapped first — scripts/bootstrap-dev-cluster.sh handles the
   # ordering; a bare `docker compose up` won't unseal or configure it.

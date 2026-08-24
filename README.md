@@ -127,6 +127,26 @@ See [`docs/ci-authentication.md`](docs/ci-authentication.md) for letting
 GitHub Actions authenticate via OIDC — short-lived tokens minted per job,
 no stored credential to leak or rotate.
 
+## Dynamic secrets
+
+Everything above stores secrets somebody created. `scripts/bootstrap-database-secrets.sh`
+configures Vault to *issue* them instead — a Postgres account that does
+not exist until it is requested, belongs to one consumer, and is dropped
+when its lease ends.
+
+The bootstrap ends by rotating the password of the account Vault itself
+connects with, without reporting the new value. After that nobody knows
+the database credential except Vault, which is the difference between
+using Vault and keeping a password in it.
+
+```bash
+./scripts/bootstrap-dev-cluster.sh --with-database
+./scripts/bootstrap-database-secrets.sh --password bootstrap-only-rotated-immediately
+vault read database/creds/appdata-readonly
+```
+
+See [`docs/dynamic-secrets.md`](docs/dynamic-secrets.md).
+
 ## Secret rotation
 
 See [`docs/secret-rotation.md`](docs/secret-rotation.md) for bootstrapping
@@ -182,13 +202,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs fifteen checks on every PR. Five are static:
+GitHub Actions runs sixteen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Three run against fixtures and shims — fast, no credentials, and able to
+Four run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -200,6 +220,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Vault PKI tests** — mostly what the renewal script must *refuse* to
   do, since almost every failure there ends with a node that cannot serve
   TLS.
+- **Dynamic database credentials** — that the connection is scoped, the
+  two roles grant genuinely different things, and root rotation happens
+  last.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -222,9 +245,11 @@ for real:
   than costing a second node and quorum.
 - **Integration (real cluster)** — runs the operational scripts against
   the real three-node cluster: a snapshot Vault itself accepts back,
-  standby detection against a node genuinely reporting 429, and a
-  certificate swap that leaves the node unsealed, still a voter, with its
-  data intact and its process never restarted.
+  standby detection against a node genuinely reporting 429, a certificate
+  swap that leaves the node unsealed, still a voter, with its data intact
+  and its process never restarted, and a database credential that
+  connects, cannot write when it is readonly, and is dropped from
+  `pg_roles` when its lease is revoked.
 
 The last one exists because shims can only prove a script issues the
 commands you expected. On its first run it found that snapshots had never
@@ -244,6 +269,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
   Terraform → Ansible handoff (done)
 - **v0.5** — scheduled snapshots (done), certificate renewal from Vault
   PKI (done), integration tests against a real cluster (done)
+- **v0.6** — dynamic database credentials (done)
 - **v1.0** — production-ready reference architecture
 
 **The honest gap:** neither cloud profile has been applied end to end.

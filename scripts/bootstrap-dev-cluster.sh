@@ -5,12 +5,14 @@
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
 #                              [--with-monitoring] [--with-oidc]
+#                              [--with-database]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
 #   ./bootstrap-dev-cluster.sh --nodes vault-0         # single node, e.g. CI
 #   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
 #   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
+#   ./bootstrap-dev-cluster.sh --with-database         # + Postgres for dynamic creds
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -53,6 +55,7 @@ set -euo pipefail
 NODES="vault-0,vault-1,vault-2"
 WITH_MONITORING=false
 WITH_OIDC=false
+WITH_DATABASE=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
 TLS_DIR="${COMPOSE_DIR}/tls"
@@ -106,6 +109,7 @@ while [[ $# -gt 0 ]]; do
         --nodes)  NODES="$2"; shift 2 ;;
         --with-monitoring) WITH_MONITORING=true; shift ;;
         --with-oidc) WITH_OIDC=true; shift ;;
+        --with-database) WITH_DATABASE=true; shift ;;
         -h|--help) usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -134,6 +138,19 @@ if [[ "$WITH_OIDC" == true ]]; then
     log "Starting Dex (OIDC identity provider)..."
     compose up -d dex >&2
     wait_for "http://127.0.0.1:5556/dex/.well-known/openid-configuration" "dex"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 0: Optionally start the database
+# ---------------------------------------------------------------------------
+# Waited on via the compose healthcheck rather than a port probe: Postgres
+# accepts TCP connections for a while before it will accept queries, so a
+# port check passes and the first `vault write database/config/...` fails
+# with "the database system is starting up".
+if [[ "$WITH_DATABASE" == true ]]; then
+    log "Starting Postgres (target for the database secrets engine)..."
+    compose up -d --wait postgres >&2         || die "Postgres did not become healthy"
+    log "Postgres is accepting queries."
 fi
 
 # ---------------------------------------------------------------------------
