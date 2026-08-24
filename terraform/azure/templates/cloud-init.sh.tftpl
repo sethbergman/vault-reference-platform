@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# Bootstraps a Vault node. Rendered by Terraform (see compute.tf) and run
+# once at first boot.
+#
+# Same caveat as the AWS template: this installs Vault at boot from
+# HashiCorp's repository, so a node's version depends on what the repo
+# serves at the moment it boots. For production, bake an image with Vault
+# already installed and pin it.
+
+set -euxo pipefail
+
+exec > >(tee /var/log/vault-bootstrap.log | logger -t vault-bootstrap -s 2>/dev/console) 2>&1
+
+VAULT_VERSION="${vault_version}"
+CLUSTER_NAME="${cluster_name}"
+KEY_VAULT_NAME="${key_vault_name}"
+KEY_NAME="${key_name}"
+TENANT_ID="${tenant_id}"
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl gpg jq
+
+curl -fsSL https://apt.releases.hashicorp.com/gpg \
+  | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  > /etc/apt/sources.list.d/hashicorp.list
+
+apt-get update
+apt-get install -y "vault=$${VAULT_VERSION}-1"
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+# Azure's instance metadata service requires the Metadata header, which is
+# what stops a browser or a naive SSRF from reading it.
+imds() {
+  curl -sS -H "Metadata: true" \
+    "http://169.254.169.254/metadata/instance/$${1}?api-version=2021-02-01&format=text"
+}
+
+VM_NAME="$(imds compute/name)"
+LOCAL_IPV4="$(imds network/interface/0/ipv4/ipAddress/0/privateIpAddress)"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+install -d -o vault -g vault -m 0700 /opt/vault/data
+
+cat > /etc/vault.d/vault.hcl <<EOF
+cluster_name = "$${CLUSTER_NAME}"
+
+storage "raft" {
+  path    = "/opt/vault/data"
+  node_id = "$${VM_NAME}"
+
+  # Peers are discovered through the Azure API by tag rather than listed
+  # statically, so the scale set can replace instances without any
+  # configuration change. Uses the VM's managed identity — no credentials
+  # on the node.
+  retry_join {
+    auto_join             = "provider=azure tag_name=VaultCluster tag_value=$${CLUSTER_NAME} subscription_id=${subscription_id} resource_group=${resource_group}"
+    auto_join_scheme      = "https"
+    leader_tls_servername = "vault.$${CLUSTER_NAME}.internal"
+    leader_ca_cert_file   = "/etc/vault.d/tls/ca.crt"
+  }
+}
+
+listener "tcp" {
+  address       = "0.0.0.0:8200"
+  tls_cert_file = "/etc/vault.d/tls/vault.crt"
+  tls_key_file  = "/etc/vault.d/tls/vault.key"
+
+  telemetry {
+    unauthenticated_metrics_access = false
+  }
+}
+
+# Auto-unseal via Key Vault, using the VM's managed identity for
+# credentials. See docs/auto-unseal.md.
+seal "azurekeyvault" {
+  tenant_id  = "$${TENANT_ID}"
+  vault_name = "$${KEY_VAULT_NAME}"
+  key_name   = "$${KEY_NAME}"
+}
+
+api_addr     = "https://$${LOCAL_IPV4}:8200"
+cluster_addr = "https://$${LOCAL_IPV4}:8201"
+
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}
+
+ui = true
+EOF
+
+chown vault:vault /etc/vault.d/vault.hcl
+chmod 0640 /etc/vault.d/vault.hcl
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+# As on AWS, this script does not issue certificates — that is
+# deployment-specific. Vault will refuse to start without them, which is
+# the correct failure: a Vault serving plaintext is worse than one that
+# does not start. See docs/deployment.md.
+if [[ ! -f /etc/vault.d/tls/vault.crt ]]; then
+  echo "No TLS certificate at /etc/vault.d/tls/vault.crt."
+  echo "Vault will not start until one is provisioned — see docs/deployment.md."
+fi
+
+systemctl enable vault
+systemctl start vault || {
+  echo "Vault failed to start; most likely the TLS material above is missing."
+  exit 0
+}

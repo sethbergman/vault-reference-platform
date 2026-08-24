@@ -78,10 +78,49 @@ first and fill in the `terraform output` values it references. See
 
 ## Azure
 
-Mirrors the AWS layout under `terraform/azure/`, using Azure Key Vault for
-auto-unseal and a Storage Account for snapshots. Same
-`group_vars/vault_nodes_azure.yml.example` step as AWS before running the
-playbook.
+```bash
+cd terraform/azure
+terraform init
+terraform plan -out=plan.tfplan \
+  -var="ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
+terraform apply plan.tfplan
+```
+
+Mirrors the AWS layout: a VNet with separate node and load balancer
+subnets, a VM scale set sized to `node_count`, a Standard load balancer
+on 8200, Key Vault auto-unseal, and a storage account for Raft snapshots.
+`ssh_public_key` is required — Azure will not create a Linux scale set
+with neither a password nor a key.
+
+Same `group_vars/vault_nodes_azure.yml.example` step as AWS before
+running the playbook.
+
+### Differences from the AWS profile
+
+The two are meant to behave the same, but the mechanisms differ in ways
+worth knowing:
+
+- **Subnets are regional, not zonal.** One subnet spans the region and
+  zone spread is a property of the scale set, so there is a single node
+  subnet rather than one per zone.
+- **The health probe has no status-code matcher.** Azure probes accept
+  200-299 and nothing else, while Vault answers 429 on a standby. The
+  probe passes `standbyok=true` so Vault answers 200 for a healthy
+  standby instead — without it Azure ejects every standby and only the
+  leader serves traffic.
+- **Outbound needs an explicit NAT gateway.** Azure's default outbound
+  access is being retired, and relying on it means nodes lose internet
+  access on a date outside your control.
+- **Names are length-limited and globally unique.** Key Vault and storage
+  account names are capped at 24 characters across all of Azure, so both
+  are truncated and given a random suffix rather than derived from
+  `cluster_name` alone.
+
+### Cost note
+
+The NAT gateway and the Standard load balancer are the bulk of the idle
+cost, in the same range as the AWS profile's NAT gateways. Premium OS
+disks add to it; `os_disk_size_gb` and `vm_size` are the levers.
 
 ## Provider lock files
 

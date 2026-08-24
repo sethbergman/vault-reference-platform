@@ -5,6 +5,12 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.0"
     }
+    # Used only to suffix the storage account name, which has to be
+    # globally unique across all of Azure.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -28,8 +34,20 @@ resource "azurerm_resource_group" "vault" {
 # Auto-unseal key for Vault's "azurekeyvault" seal stanza (see
 # ansible/roles/vault/templates/vault.hcl.j2 and
 # ansible/group_vars/vault_nodes_azure.yml.example).
+resource "random_id" "key_vault_suffix" {
+  byte_length = 4
+}
+
 resource "azurerm_key_vault" "vault_autounseal" {
-  name                = "${var.cluster_name}-autounseal"
+  # Key Vault names are globally unique across Azure and capped at 24
+  # characters, so neither the cluster name alone nor
+  # "${cluster_name}-autounseal" works — the latter is 26 characters at
+  # the default cluster name and fails at apply time. `terraform
+  # validate` cannot see this; it is a runtime constraint on the value,
+  # not the schema.
+  #
+  # 15 characters of cluster name + dash + 8 hex = 24 exactly.
+  name                = "${substr(replace(lower(var.cluster_name), "/[^a-z0-9-]/", ""), 0, 15)}-${random_id.key_vault_suffix.hex}"
   resource_group_name = azurerm_resource_group.vault.name
   location            = azurerm_resource_group.vault.location
   tenant_id           = data.azurerm_client_config.current.tenant_id
@@ -63,19 +81,13 @@ resource "azurerm_key_vault_key" "vault_autounseal" {
   key_opts     = ["wrapKey", "unwrapKey"]
 }
 
-# The minimum access Vault's azurekeyvault seal needs. var.vault_node_identity_principal_id
-# defaults to Azure's conventional null-GUID placeholder — there's no VM
-# scale set with a managed identity to grant access to until that TODO
-# below is built out. Pass the real managed identity's principal ID once
-# it exists, so Vault can reach Key Vault via managed identity rather
-# than static credentials.
-resource "azurerm_key_vault_access_policy" "vault_autounseal" {
-  key_vault_id = azurerm_key_vault.vault_autounseal.id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = var.vault_node_identity_principal_id
+# The access policy granting Vault's azurekeyvault seal wrap/unwrap on
+# this key lives in compute.tf, alongside the managed identity it is
+# granted to. It used to sit here pointed at a placeholder null-GUID
+# because no identity existed yet.
 
-  key_permissions = ["Get", "WrapKey", "UnwrapKey"]
-}
-
-# TODO: VM scale set nodes, Load Balancer + health probe,
-# Storage Account for Raft snapshots.
+# The rest of the cluster is split by concern rather than piled in here:
+#   network.tf   VNet, subnets, NAT, NSG, flow logs
+#   compute.tf   managed identity, role assignments, VM scale set
+#   lb.tf        load balancer and health probe
+#   storage.tf   snapshot container and storage account
