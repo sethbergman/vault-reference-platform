@@ -139,7 +139,11 @@ else
     bad "snapshot.sh succeeded against the active node" "$(tail -3 "${WORK}/snap.log")"
 fi
 
-SNAP_FILE="$(find "$SNAP_DIR" -name '*.snap' -type f 2>/dev/null | head -1)"
+# `set -o pipefail` plus `set -e` makes a failing `find` abort the whole
+# suite with no diagnostic at all — which is how this first ran. Every
+# data-gathering line below has to be non-fatal so a missing value is
+# reported as a failed assertion rather than a silent exit.
+SNAP_FILE="$(find "$SNAP_DIR" -name '*.snap' -type f 2>/dev/null | head -1 || true)"
 if [[ -s "${SNAP_FILE:-/nonexistent}" ]]; then
     ok "a non-empty snapshot file was produced"
 else
@@ -185,7 +189,7 @@ if [[ -n "$STANDBY_PORT" ]]; then
         bad "a standby exits 0 rather than failing the timer" "$(tail -3 "${WORK}/standby.log")"
     fi
 
-    if [[ -z "$(find "$STANDBY_DIR" -name '*.snap' -type f 2>/dev/null | head -1)" ]]; then
+    if [[ -z "$(find "$STANDBY_DIR" -name '*.snap' -type f 2>/dev/null | head -1 || true)" ]]; then
         ok "and it takes no snapshot"
     else
         bad "and it takes no snapshot" "a standby wrote a snapshot"
@@ -227,8 +231,8 @@ served_cert() {
         | openssl x509 2>/dev/null
 }
 
-BEFORE_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2)"
-BEFORE_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null)"
+BEFORE_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+BEFORE_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null || true)"
 BEFORE_STARTED="$(docker inspect -f '{{.State.StartedAt}}' "$(compose ps -q vault-0)" 2>/dev/null || echo unknown)"
 BEFORE_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || echo 0)"
 
@@ -282,8 +286,8 @@ info "=== SIGHUP reloads the certificate without restarting Vault ==="
 # ---------------------------------------------------------------------------
 # The claim the whole renewal design rests on. Until now it rested on
 # HashiCorp's listener documentation and nothing else.
-AFTER_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2)"
-AFTER_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null)"
+AFTER_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+AFTER_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null || true)"
 AFTER_STARTED="$(docker inspect -f '{{.State.StartedAt}}' "$(compose ps -q vault-0)" 2>/dev/null || echo unknown)"
 
 if [[ -n "$AFTER_SERIAL" && "$AFTER_SERIAL" != "$BEFORE_SERIAL" ]]; then
@@ -321,7 +325,7 @@ else
     bad "vault-0 is still healthy and unsealed" "health returned ${CODE}"
 fi
 
-SEALED="$(vault status -format=json 2>/dev/null | jq -r 'if has("sealed") then .sealed else true end')"
+SEALED="$(vault status -format=json 2>/dev/null | jq -r 'if has("sealed") then .sealed else true end' || true)"
 if [[ "$SEALED" == "false" ]]; then
     ok "and it did not reseal"
 else
