@@ -61,6 +61,13 @@ jobs:
         env:
           ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible/roles
 
+      # Lint and parse catch different things: ansible-lint is happy with
+      # a playbook that references a role variable no inventory defines,
+      # and --syntax-check is happy with style problems. Run both.
+      - name: Syntax-check the playbook
+        run: ansible-playbook --syntax-check -i inventory/local playbooks/site.yml
+        working-directory: ansible
+
   shellcheck:
     name: Shellcheck
     runs-on: ubuntu-latest
@@ -74,6 +81,21 @@ jobs:
           # and a bug in them shows up as a passing test rather than a
           # failing one.
           shellcheck -s bash tests/upgrade/run-tests.sh tests/upgrade/fake-bin/ssh tests/upgrade/fake-bin/scp
+
+      # Windows checkouts do not track the executable bit, so a script
+      # committed from one lands as 100644 and CI fails with "Permission
+      # denied" rather than anything about the script. Cheaper to assert
+      # the invariant than to rediscover it each time.
+      - name: Every shell script must be executable
+        run: |
+          non_exec="$(git ls-files -s '*.sh' | grep -v '^100755' || true)"
+          if [[ -n "$non_exec" ]]; then
+            echo "These scripts are missing the executable bit:"
+            echo "$non_exec"
+            echo "Fix with: git update-index --chmod=+x <path>"
+            exit 1
+          fi
+        shell: bash
 
   markdownlint:
     name: Markdown lint
@@ -512,6 +534,24 @@ jobs:
 
       - name: Exercise scripts/vault-upgrade.sh
         run: ./tests/upgrade/run-tests.sh
+
+  ansible-handoff-test:
+    name: Terraform to Ansible handoff tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # jinja2 renders the role template the way Ansible would, so the
+      # tests exercise the real template rather than a copy of it.
+      - name: Install rendering dependencies
+        run: pip install jinja2 pyyaml
+
+      - name: Exercise the Terraform to Ansible handoff
+        run: ./tests/ansible/run-tests.sh
 
   security-scan:
     name: Security scanning

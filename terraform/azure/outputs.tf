@@ -47,3 +47,8 @@ output "vault_cluster_tag" {
   description = "Tag identifying cluster members. Used by Raft auto-join and by Ansible dynamic inventory."
   value       = "VaultCluster=${var.cluster_name}"
 }
+
+output "subscription_id" {
+  description = "Subscription the cluster is deployed in. Raft auto-join requires it explicitly; go-discover has no MSI fallback for this one value."
+  value       = data.azurerm_client_config.current.subscription_id
+}

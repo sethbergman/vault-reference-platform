@@ -52,3 +52,8 @@ output "vault_cluster_tag" {
   description = "Tag identifying cluster members. Used by Raft auto-join and by Ansible dynamic inventory."
   value       = "VaultCluster=${var.cluster_name}"
 }
+
+output "aws_region" {
+  description = "Region the cluster is deployed in. Consumed by scripts/terraform-to-ansible.sh for Raft auto-join."
+  value       = var.aws_region
+}

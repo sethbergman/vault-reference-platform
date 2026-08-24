@@ -3,8 +3,36 @@ vault_version: "1.17.2"
 vault_cluster_name: vault-reference
 vault_storage_backend: raft
 
+# Which cloud's Raft auto-join to configure: "aws", "azure", or empty.
+#
+# Empty means no retry_join stanza at all — correct for a single node or
+# for the local profile, and wrong for anything else. A node with no
+# retry_join comes up healthy and joins nothing, so a three-node deploy
+# becomes three standalone Vaults with three separate unseal states and
+# no error anywhere. scripts/terraform-to-ansible.sh sets this from the
+# Terraform outputs; it is not meant to be filled in by hand.
+vault_cloud: ""
+
 # Manual Shamir unseal by default — safe with no further configuration.
 # Set to "awskms" or "azurekeyvault" via group_vars for auto-unseal; see
 # ansible/group_vars/vault_nodes_aws.yml.example and
 # vault_nodes_azure.yml.example.
 vault_seal_type: shamir
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+vault_tls_dir: /etc/vault.d/tls
+
+# Where the control machine reads certificates from before copying them
+# to each node. The leaf paths are per-host on purpose: a single shared
+# certificate works right up until you move to per-node issuance, and
+# then fails as a Raft join error that reads like a network problem.
+#
+# Issuing them is deployment-specific — an internal CA, ACM Private CA,
+# or Vault's own PKI engine once a first cluster exists. The local
+# profile uses scripts/generate-dev-certs.sh, which produces exactly this
+# layout. See docs/deployment.md.
+vault_tls_ca_src: "files/tls/ca.crt"
+vault_tls_cert_src: "files/tls/{{ inventory_hostname }}.crt"
+vault_tls_key_src: "files/tls/{{ inventory_hostname }}.key"

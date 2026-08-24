@@ -34,11 +34,16 @@ mock_resource "azurerm_storage_account" {
     id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/mock-rg/providers/Microsoft.Storage/storageAccounts/mockstorage"
     # The system-assigned identity the customer-managed key policy is
     # granted to. The provider validates this is a real UUID.
-    identity = [{
+    # A single object, not a list of one. The provider schema models
+    # identity as a max-1 block, and Terraform's mock type checking wants
+    # the object form — a tuple fails with "expected an object type for
+    # attribute identity". Only surfaces under command = apply, which is
+    # why this went unnoticed until the discovery tests below needed it.
+    identity = {
       type         = "SystemAssigned"
       principal_id = "22222222-2222-2222-2222-222222222222"
       tenant_id    = "00000000-0000-0000-0000-000000000000"
-    }]
+    }
   }
 }
 

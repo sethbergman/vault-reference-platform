@@ -1,15 +1,28 @@
-# Copy to group_vars/vault_nodes.yml (or pass with -e @<this-file>) when
-# deploying against the AWS profile, after filling in the terraform
-# outputs below:
+# Reference only. Generate the real file instead of copying this one:
 #
-#   cd terraform/aws
-#   terraform output vault_autounseal_kms_key_id
-#   terraform output vault_autounseal_kms_region
+#   ./scripts/terraform-to-ansible.sh --cloud aws
 #
-# Also attach the vault_autounseal_iam_policy_arn output to the Vault
-# nodes' instance profile — the seal stanza relies on that role for KMS
-# credentials, not static keys.
+# That writes group_vars/vault_nodes.yml from `terraform output -json`,
+# so the values cannot drift from the infrastructure they describe. This
+# file exists to show the shape and to explain what each value is for.
+#
+# Note vault_cloud: without it the role renders no retry_join stanza and
+# every node comes up as its own single-node cluster, healthy and alone.
 
+vault_cloud: aws
+vault_aws_region: us-east-1
+
+# Auto-unseal. Credentials come from the instance role, not static keys —
+# attach the vault_autounseal_iam_policy_arn output to the nodes'
+# instance profile. See docs/auto-unseal.md.
 vault_seal_type: awskms
 vault_awskms_region: us-east-1
-vault_awskms_key_id: REPLACE_WITH_terraform_output_vault_autounseal_kms_key_id
+vault_awskms_key_id: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE
+
+# Raft auto-join filters EC2 instance tags on this, and so does
+# ansible/inventory/aws.yml.
+vault_cluster_tag: VaultCluster=vault-reference
+vault_cluster_name: vault-reference
+
+vault_snapshot_bucket: vault-reference-snapshots-example
+vault_api_addr: https://vault-reference-nlb.elb.us-east-1.amazonaws.com:8200

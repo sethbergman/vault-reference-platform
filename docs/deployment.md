@@ -64,21 +64,13 @@ pool and writes get forwarded to the leader.
 
 The user-data writes a Vault config with a TLS listener but does **not**
 issue certificates — how you get them is deployment-specific (an internal
-CA, ACM Private CA, or delivered by the Ansible layer). Until they are in
-place at `/etc/vault.d/tls/`, Vault will not start. That is deliberate: a
-Vault serving plaintext is worse than one that refuses to boot.
+CA, ACM Private CA, or Vault's own PKI engine once a first cluster
+exists). Until they are in place at `/etc/vault.d/tls/`, Vault will not
+start. That is deliberate: a Vault serving plaintext is worse than one
+that refuses to boot.
 
-Then configure the nodes:
-
-```bash
-cd ../../ansible
-ansible-playbook -i inventory/aws playbooks/site.yml
-```
-
-Auto-unseal isn't on by default — copy
-`group_vars/vault_nodes_aws.yml.example` to `group_vars/vault_nodes.yml`
-first and fill in the `terraform output` values it references. See
-[`docs/auto-unseal.md`](auto-unseal.md).
+Delivering them is what the Ansible layer is for; see
+[Handing off to Ansible](#handing-off-to-ansible) below.
 
 ### AWS running costs
 
@@ -131,6 +123,79 @@ worth knowing:
 The NAT gateway and the Standard load balancer are the bulk of the idle
 cost, in the same range as the AWS profile's NAT gateways. Premium OS
 disks add to it; `os_disk_size_gb` and `vm_size` are the levers.
+
+## Handing off to Ansible
+
+Terraform builds hosts that cannot serve until something gives them their
+certificates and their configuration. That something is the Ansible
+layer, and the two halves have to agree on a dozen values — the KMS key
+id, the subscription id, the scale set name, the region. Copying them by
+hand out of `terraform output` works exactly once.
+
+```bash
+./scripts/terraform-to-ansible.sh --cloud aws
+```
+
+That reads `terraform output -json` and writes
+`ansible/group_vars/vault_nodes.yml`. Re-run it after any apply rather
+than editing the file — a hand edit drifts from the infrastructure it
+describes and nothing catches that. It refuses to overwrite an existing
+file unless you pass `--force`, and it aborts without writing anything if
+an output it needs is missing, rather than emitting a `null` that becomes
+a Vault which starts and cannot unseal.
+
+Then run the playbook:
+
+```bash
+cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
+```
+
+Substitute `inventory/azure.yml` for the Azure profile.
+
+### Why the inventory is dynamic
+
+`inventory/aws.yml` and `inventory/azure.yml` discover nodes through the
+cloud API by tag, not from a list of addresses. The autoscaling group and
+the scale set both replace instances, so a static inventory is wrong the
+first time a node is recycled — and wrong *silently*: the playbook
+succeeds against hosts that no longer exist and never touches the ones
+that do.
+
+The tag they filter on is the same one Raft's `auto_join` uses, so
+cluster formation and configuration management break together rather than
+one drifting away from the other.
+
+Nodes sit in private subnets with no public address, so reaching them
+needs SSM, a bastion, or a VPN.
+
+### Certificates
+
+The role expects to find certificates on the control machine and copies
+them to each node:
+
+```text
+ansible/files/tls/ca.crt
+ansible/files/tls/<inventory_hostname>.crt
+ansible/files/tls/<inventory_hostname>.key
+```
+
+Per-node leaves rather than one shared certificate, matching what
+`scripts/generate-dev-certs.sh` produces locally. Override
+`vault_tls_ca_src`, `vault_tls_cert_src`, and `vault_tls_key_src` to
+point elsewhere. The role verifies each certificate actually matches the
+host it lands on, because the alternative failure surfaces later as a
+Raft join error that reads like a network problem.
+
+### What this has and has not been tested against
+
+`tests/ansible/run-tests.sh` exercises the handoff against saved
+`terraform output -json` fixtures: the generated `group_vars`, the
+rendered `vault.hcl` for both clouds, and the case where no cloud is
+configured. It needs no credentials and runs in CI.
+
+It does not prove the playbook converges against real hosts. Neither
+cloud profile has been applied end to end — see
+[Provider lock files](#provider-lock-files) and the note in the README.
 
 ## Provider lock files
 

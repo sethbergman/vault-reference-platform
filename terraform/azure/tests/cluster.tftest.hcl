@@ -196,3 +196,71 @@ run "five_nodes_are_accepted" {
     error_message = "Five nodes should be a valid cluster size."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Raft discovery
+# ---------------------------------------------------------------------------
+# These assert on the *rendered* cloud-init rather than on the template
+# file, so they cover the values Terraform substitutes in as well as the
+# literal text. custom_data is computed by templatefile() from this
+# module's own configuration, not supplied by the mock provider, so it is
+# real evidence.
+
+run "raft_discovery_uses_scale_set_mode_not_tags" {
+  # apply, not plan: custom_data is rendered from a key name the mock
+  # provider only supplies at apply time, so at plan it is unknown and
+  # every assertion below would error rather than evaluate. The mock
+  # contributes the key name; the auto_join line these assert on comes
+  # from this module's own template and variables.
+  command = apply
+
+  # go-discover's azure provider accepts (tag_name + tag_value) OR
+  # (resource_group + vm_scale_set) and rejects any config carrying both
+  # with "unclear configuration: use (tag name and value) or
+  # (resouce_group and vm_scale_set)".
+  #
+  # This module shipped both. Vault would have started on every node,
+  # reported healthy, and never formed a cluster — the failure is a line
+  # in a node's log, not anything the infrastructure surfaces.
+  #
+  # Tag mode would be wrong here anyway: it matches tags on network
+  # interfaces, and the tags this module sets land on the scale set.
+  assert {
+    condition = !strcontains(
+      base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data),
+      "tag_name="
+    )
+    error_message = "Azure auto_join must not mix a tag selector with scale-set mode; go-discover rejects the combination outright."
+  }
+
+  assert {
+    condition = strcontains(
+      base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data),
+      "vm_scale_set=${local.vault_scale_set_name}"
+    )
+    error_message = "Azure auto_join must name the scale set it should enumerate."
+  }
+
+  # Scale-set mode has no managed-identity fallback for the subscription:
+  # omit it and discovery fails with "subscription_id not provided".
+  assert {
+    condition = strcontains(
+      base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data),
+      "subscription_id="
+    )
+    error_message = "Azure auto_join requires subscription_id explicitly."
+  }
+}
+
+run "the_scale_set_name_matches_what_discovery_looks_for" {
+  command = apply
+
+  # The name is referenced from inside the scale set's own cloud-init, so
+  # it comes from a local rather than from the resource. If the resource
+  # name were ever changed independently, discovery would enumerate a
+  # scale set that does not exist and quietly find no peers.
+  assert {
+    condition     = azurerm_linux_virtual_machine_scale_set.vault.name == local.vault_scale_set_name
+    error_message = "The scale set must be named by the same local that cloud-init filters on."
+  }
+}

@@ -3,12 +3,51 @@ cluster_name = "{{ vault_cluster_name }}"
 storage "raft" {
   path    = "/opt/vault/data"
   node_id = "{{ inventory_hostname }}"
+
+  # Peers are discovered through the cloud provider's API rather than
+  # listed here. Without this block a node comes up healthy and never
+  # joins anything — the cluster silently becomes N standalone Vaults,
+  # each with its own unseal state, and nothing reports an error.
+  #
+  # Both clouds are configured from the values
+  # scripts/terraform-to-ansible.sh writes out of the Terraform state, so
+  # discovery here cannot drift from what Terraform actually built.
+{% if vault_cloud == "aws" %}
+  # AWS filters on the same EC2 instance tag the dynamic inventory uses
+  # (ansible/inventory/aws.yml), so cluster formation and configuration
+  # management break together rather than one drifting from the other.
+  retry_join {
+    auto_join           = "provider=aws region={{ vault_aws_region }} tag_key={{ vault_cluster_tag.split('=')[0] }} tag_value={{ vault_cluster_tag.split('=')[1] }}"
+    auto_join_scheme    = "https"
+    leader_ca_cert_file = "{{ vault_tls_dir }}/ca.crt"
+  }
+{% elif vault_cloud == "azure" %}
+  # Azure uses scale-set mode, not tag mode. go-discover accepts
+  # (tag_name + tag_value) or (resource_group + vm_scale_set) and rejects
+  # a mix with "unclear configuration" — so unlike AWS this cannot filter
+  # on the VaultCluster tag. Tag mode would be wrong anyway: it matches
+  # tags on network interfaces, not on the VMs Terraform tags.
+  #
+  # This keeps the Ansible path identical to what cloud-init writes; see
+  # terraform/azure/templates/cloud-init.sh.tftpl.
+  retry_join {
+    auto_join           = "provider=azure subscription_id={{ vault_azure_subscription_id }} resource_group={{ vault_resource_group }} vm_scale_set={{ vault_scale_set_name }}"
+    auto_join_scheme    = "https"
+    leader_ca_cert_file = "{{ vault_tls_dir }}/ca.crt"
+  }
+{% endif %}
 }
 
 listener "tcp" {
   address       = "0.0.0.0:8200"
-  tls_cert_file = "/etc/vault.d/tls/vault.crt"
-  tls_key_file  = "/etc/vault.d/tls/vault.key"
+  tls_cert_file = "{{ vault_tls_dir }}/vault.crt"
+  tls_key_file  = "{{ vault_tls_dir }}/vault.key"
+
+  # Peers must present a certificate from the same CA, so reaching the
+  # network is not enough to attempt joining the cluster.
+  tls_client_ca_file = "{{ vault_tls_dir }}/ca.crt"
+
+  tls_min_version = "tls12"
 }
 
 api_addr     = "https://{{ ansible_default_ipv4.address }}:8200"

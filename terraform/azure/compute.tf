@@ -26,8 +26,10 @@ resource "azurerm_key_vault_access_policy" "vault_nodes" {
   key_permissions = ["Get", "WrapKey", "UnwrapKey"]
 }
 
-# Raft auto-join reads VM tags through the Azure API. Reader on the
-# resource group is the smallest built-in role that allows it.
+# Raft auto-join enumerates the scale set's network interfaces through
+# the Azure API. Reader on the resource group is the smallest built-in
+# role that covers the required
+# Microsoft.Compute/virtualMachineScaleSets/*/read.
 resource "azurerm_role_assignment" "vault_autojoin" {
   scope                = azurerm_resource_group.vault.id
   role_definition_name = "Reader"
@@ -44,8 +46,16 @@ resource "azurerm_role_assignment" "vault_snapshots" {
   principal_id         = azurerm_user_assigned_identity.vault.principal_id
 }
 
+# The scale set name is referenced from inside the scale set's own
+# cloud-init (Raft discovery filters on it), which would be a self-
+# reference. A local breaks the cycle and keeps the two in step — see
+# the retry_join note in templates/cloud-init.sh.tftpl.
+locals {
+  vault_scale_set_name = "${var.cluster_name}-vault"
+}
+
 resource "azurerm_linux_virtual_machine_scale_set" "vault" {
-  name                = "${var.cluster_name}-vault"
+  name                = local.vault_scale_set_name
   resource_group_name = azurerm_resource_group.vault.name
   location            = azurerm_resource_group.vault.location
 
@@ -94,6 +104,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
     tenant_id       = data.azurerm_client_config.current.tenant_id
     subscription_id = data.azurerm_client_config.current.subscription_id
     resource_group  = azurerm_resource_group.vault.name
+    vm_scale_set    = local.vault_scale_set_name
   }))
 
   network_interface {

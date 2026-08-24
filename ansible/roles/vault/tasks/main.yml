@@ -10,6 +10,68 @@
     name: "vault={{ vault_version }}"
     state: present
 
+# ---------------------------------------------------------------------------
+# TLS material
+# ---------------------------------------------------------------------------
+# The cloud user-data deliberately does not issue certificates — it writes
+# a config with a TLS listener and lets Vault refuse to start until they
+# exist. This is the step that satisfies that, and it is why the handoff
+# from Terraform to Ansible matters: Terraform builds hosts that cannot
+# serve until something delivers their identity.
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ vault_tls_dir }}"
+    state: directory
+    owner: vault
+    group: vault
+    mode: "0750"
+
+- name: Install the CA certificate
+  ansible.builtin.copy:
+    src: "{{ vault_tls_ca_src }}"
+    dest: "{{ vault_tls_dir }}/ca.crt"
+    owner: vault
+    group: vault
+    mode: "0644"
+  notify: Restart vault
+
+- name: Install the node certificate
+  ansible.builtin.copy:
+    src: "{{ vault_tls_cert_src }}"
+    dest: "{{ vault_tls_dir }}/vault.crt"
+    owner: vault
+    group: vault
+    mode: "0644"
+  notify: Restart vault
+
+- name: Install the node private key
+  ansible.builtin.copy:
+    src: "{{ vault_tls_key_src }}"
+    dest: "{{ vault_tls_dir }}/vault.key"
+    owner: vault
+    group: vault
+    # 0600, and no_log, because this is the one file here that is
+    # genuinely secret. A private key echoed into a CI log is a leaked
+    # private key.
+    mode: "0600"
+  no_log: true
+  notify: Restart vault
+
+# Catches the case where a certificate is delivered for the wrong host —
+# the node starts, serves TLS, and its peers reject it during the Raft
+# join with an error that points at the network rather than the cert.
+- name: Verify the certificate matches this host
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -in {{ vault_tls_dir }}/vault.crt -noout -checkhost
+      {{ ansible_default_ipv4.address }}
+  register: vault_cert_check
+  changed_when: false
+  failed_when: vault_cert_check.rc != 0
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 - name: Deploy Vault configuration
   ansible.builtin.template:
     src: vault.hcl.j2
@@ -17,6 +79,14 @@
     owner: vault
     group: vault
     mode: "0640"
+    # No validate hook: `vault operator diagnose` wants a config
+    # directory and tries to reach storage and the listener, so it cannot
+    # check a single file in isolation, and there is no parse-only
+    # subcommand. A validate that ends in `|| true` would pass on a
+    # config Vault cannot read, which is worse than not having one.
+    #
+    # The health check at the end of this file is the real gate — it only
+    # answers once Vault has actually loaded this config.
   notify: Restart vault
 
 - name: Enable and start Vault service
@@ -24,3 +94,20 @@
     name: vault
     enabled: true
     state: started
+    daemon_reload: true
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+# A running service is not the same as a working node. sys/health answers
+# only once Vault has started, loaded its config and reached a seal state,
+# so this is what distinguishes "systemd says active" from "Vault works".
+- name: Wait for Vault to respond
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"
+    validate_certs: true
+    ca_path: "{{ vault_tls_dir }}/ca.crt"
+  register: vault_health
+  until: vault_health.status == 200
+  retries: 30
+  delay: 5
