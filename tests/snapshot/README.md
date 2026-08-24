@@ -113,3 +113,26 @@ capture and upload path against shims.
 Neither cloud profile has been applied end to end, so the S3 and blob
 uploads have never run against real storage. The status-code and
 credential handling are asserted; the endpoints' actual behaviour is not.
+
+## What the shims got wrong
+
+Worth recording, because it is the clearest argument in this repository
+for having integration tests at all.
+
+`snapshot.sh` decided whether it was the leader by reading `ha_mode` from
+`vault status -format=json`. That field does not exist there — the CLI
+renders "HA Mode: active" for its *text* output only. Every node
+therefore concluded it was not the leader and took no snapshot: three
+green timers, hourly, and zero backups.
+
+This suite did not catch it, because the shim emitted `ha_mode` too. The
+shim agreed with the bug, so the tests were checking that the script
+correctly read a field that only the shim provided.
+
+`tests/integration` found it on the first run against a real cluster.
+Leadership now comes from `sys/leader`'s `is_self`, the shim models the
+real response shape, and the cases above pin it.
+
+The lesson is not "shims are bad" — they catch things a real cluster
+cannot reproduce on demand. It is that a shim written from the same
+assumption as the code confirms the assumption rather than testing it.

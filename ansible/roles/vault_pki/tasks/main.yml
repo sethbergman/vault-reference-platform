@@ -1,0 +1,98 @@
+---
+# Certificate renewal from Vault's own PKI engine.
+#
+# This role does NOT solve the bootstrap problem, and nothing here
+# pretends to. Vault will not start without TLS, so the first
+# certificate on a node comes from generate-dev-certs.sh or an external
+# CA and is installed by the `vault` role. Once the cluster is up and
+# scripts/bootstrap-pki.sh has configured the engine, this takes over
+# renewals — including for nodes that join later.
+
+- name: Check that PKI credentials are configured
+  ansible.builtin.assert:
+    that:
+      - (vault_pki_role_id | length > 0 and vault_pki_secret_id | length > 0)
+        or vault_pki_token | length > 0
+    fail_msg: >-
+      vault_pki_enabled is true but no credentials are set. Provide
+      vault_pki_role_id and vault_pki_secret_id (preferred), or
+      vault_pki_token. bootstrap-pki.sh writes a
+      "{{ vault_pki_role }}-issue" policy for exactly this.
+  when: vault_pki_enabled
+
+# Renewal is pointless if the node has no certificate yet — that is the
+# bootstrap path, and it belongs to the `vault` role. Failing here with a
+# clear message beats a timer that fails silently every night.
+- name: Check that a bootstrap certificate is already installed
+  ansible.builtin.stat:
+    path: "{{ vault_tls_dir }}/vault.crt"
+  register: vault_pki_existing_cert
+  when: vault_pki_enabled
+
+- name: Fail if there is nothing to renew
+  ansible.builtin.fail:
+    msg: >-
+      {{ vault_tls_dir }}/vault.crt does not exist. Vault cannot start
+      without it, so Vault PKI cannot have issued it. Provide a bootstrap
+      certificate first (scripts/generate-dev-certs.sh locally, or your
+      own CA) — see docs/security.md.
+  when:
+    - vault_pki_enabled
+    - not vault_pki_existing_cert.stat.exists
+
+- name: Install the renewal script
+  ansible.builtin.copy:
+    # role_path rather than a copy under files/: one script, used by the
+    # role and by anyone running it by hand, so the two cannot drift.
+    src: "{{ role_path }}/../../../scripts/issue-node-cert.sh"
+    dest: "{{ vault_pki_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: vault_pki_enabled
+
+- name: Install the PKI credentials
+  ansible.builtin.template:
+    src: pki.env.j2
+    dest: /etc/vault.d/pki.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: vault_pki_enabled
+
+- name: Install the renewal service
+  ansible.builtin.template:
+    src: vault-cert-renew.service.j2
+    dest: /etc/systemd/system/vault-cert-renew.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: vault_pki_enabled
+
+- name: Install the renewal timer
+  ansible.builtin.template:
+    src: vault-cert-renew.timer.j2
+    dest: /etc/systemd/system/vault-cert-renew.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: vault_pki_enabled
+
+- name: Enable the renewal timer
+  ansible.builtin.systemd:
+    name: vault-cert-renew.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: vault_pki_enabled
+
+# Turning the feature off has to actually stop it, or a stale timer keeps
+# renewing against a mount someone has since torn down.
+- name: Stop the renewal timer when disabled
+  ansible.builtin.systemd:
+    name: vault-cert-renew.timer
+    enabled: false
+    state: stopped
+  when: not vault_pki_enabled
+  failed_when: false

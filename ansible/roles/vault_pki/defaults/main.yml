@@ -1,0 +1,47 @@
+---
+# Automatic certificate renewal from Vault's own PKI engine.
+#
+# Disabled by default, and deliberately so. Vault's PKI cannot issue the
+# certificates the cluster needs in order to start — see the bootstrap
+# note in scripts/bootstrap-pki.sh. The first set comes from
+# generate-dev-certs.sh or an external CA; this takes over renewals
+# afterwards, once scripts/bootstrap-pki.sh has been run against a
+# working cluster.
+vault_pki_enabled: false
+
+vault_pki_mount: pki
+vault_pki_role: vault-node
+
+# Domain the PKI role is allowed to issue for. Must match --domain as
+# given to bootstrap-pki.sh, or issuance is refused for every node.
+vault_pki_domain: vault.internal
+
+# Short-lived by design. A 72h certificate renewed daily means a
+# compromised key is useful for hours, not months — and it means the
+# renewal path is exercised constantly rather than annually, so it is not
+# discovered to be broken during an outage.
+vault_pki_cert_ttl: 72h
+vault_pki_renew_within_days: 1
+
+# Daily, with jitter: three nodes renewing in the same second is a
+# thundering herd against the active node, which is also the one issuing.
+vault_pki_schedule: daily
+vault_pki_random_delay: 3600
+
+vault_pki_script: /usr/local/bin/vault-issue-node-cert.sh
+
+# Credentials for the renewal agent. AppRole preferred; the policy
+# bootstrap-pki.sh writes ("<role>-issue") grants issuance on one role
+# and nothing else.
+vault_pki_role_id: ""
+vault_pki_secret_id: ""
+vault_pki_token: ""
+
+# The certificate's identity. The common name must fall inside
+# vault_pki_domain or the role refuses to issue.
+#
+# localhost and 127.0.0.1 are included because operators reach a node
+# locally, and the renewal script itself talks to https://127.0.0.1:8200
+# — a certificate without them turns every local call into a TLS error.
+vault_pki_common_name: "{{ inventory_hostname }}.{{ vault_pki_domain }}"
+vault_pki_alt_names: "{{ inventory_hostname }},localhost"

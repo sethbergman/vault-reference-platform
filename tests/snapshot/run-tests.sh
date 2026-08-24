@@ -61,7 +61,9 @@ run_snapshot() {
 # Reset scenario state between cases, so a variable set by one test cannot
 # silently satisfy the next.
 reset_scenario() {
-    export FAKE_HA_MODE=active
+    export FAKE_IS_SELF=true
+    export FAKE_LEADER_IS_SELF=true
+    export FAKE_LEADER_RC=0
     export FAKE_SEALED=false
     export FAKE_SNAPSHOT_RC=0
     export FAKE_SNAPSHOT_SIZE=1024
@@ -128,12 +130,12 @@ printf '\n=== Only the active node snapshots ===\n'
 # state per hour if this check is wrong — triple the storage bill for no
 # additional recovery capability.
 reset_scenario
-export FAKE_HA_MODE=standby
+export FAKE_IS_SELF=false
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a standby exits 0, not an error" 0
 assert_log_lacks "a standby takes no snapshot"     "snapshot save"
 assert_log_lacks "a standby uploads nothing"       "aws s3 cp"
-assert_says      "a standby says why"              "not active"
+assert_says      "a standby says why"              "standby"
 
 # Exiting non-zero here would mean systemd reporting a failed unit on two
 # nodes out of three every hour, which trains everyone to ignore it.
@@ -147,6 +149,42 @@ reset_scenario
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc      "the active node proceeds" 0
 assert_log_has "the active node snapshots" "snapshot save"
+
+# ---------------------------------------------------------------------------
+printf '\n=== Leadership comes from is_self, not ha_mode ===\n'
+# ---------------------------------------------------------------------------
+# `vault status -format=json` has no ha_mode field — the CLI renders that
+# only in its text output. Reading it from the JSON made every node
+# conclude it was not the leader, so no snapshot was ever taken anywhere:
+# three green timers and zero backups.
+#
+# The shim used to emit ha_mode too, so the shim agreed with the bug and
+# the suite stayed green. It took a real cluster to find, which is a fair
+# argument for having one.
+reset_scenario
+export FAKE_IS_SELF=absent
+export FAKE_LEADER_IS_SELF=true
+run_snapshot --cloud aws --bucket vault-snaps
+assert_log_has "falls back to sys/leader when status omits is_self" "sys/leader"
+assert_log_has "and still takes the snapshot"                       "snapshot save"
+
+reset_scenario
+export FAKE_IS_SELF=absent
+export FAKE_LEADER_IS_SELF=false
+run_snapshot --cloud aws --bucket vault-snaps
+assert_log_lacks "a standby identified via sys/leader takes nothing" "snapshot save"
+
+# If leadership cannot be determined at all, take one anyway. A redundant
+# snapshot costs storage; a skipped one costs the backup. This check
+# exists to avoid waste, not to gate correctness, so it fails towards
+# taking one.
+reset_scenario
+export FAKE_IS_SELF=absent
+export FAKE_LEADER_RC=2
+run_snapshot --cloud aws --bucket vault-snaps
+assert_rc      "indeterminate leadership still snapshots" 0
+assert_log_has "it takes one rather than skipping"        "snapshot save"
+assert_says    "and warns that it could not tell"         "could not determine leadership"
 
 # ---------------------------------------------------------------------------
 printf '\n=== A bad snapshot is never uploaded ===\n'

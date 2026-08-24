@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stand-in for systemctl, so a "reload" is observable and never real.
+set -uo pipefail
+printf 'systemctl %s\n' "$*" >> "${FAKE_LOG}"
+exit "${FAKE_RELOAD_RC:-0}"

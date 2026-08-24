@@ -105,12 +105,9 @@ esac
 STATUS_JSON="$(vault status -format=json 2>/dev/null || true)"
 [[ -n "$STATUS_JSON" ]] || die "Could not reach Vault at ${VAULT_ADDR:-<VAULT_ADDR unset>}"
 
-HA_MODE="$(jq -r '.ha_mode // "unknown"' <<< "$STATUS_JSON")"
-
 # Not `.sealed // true`. jq's // treats false as empty, so that form
 # returns true for an unsealed node and this script would exit 0 having
-# done nothing — on every node, every hour, forever. `// "unknown"` above
-# is safe only because ha_mode is a string and never false.
+# done nothing — on every node, every hour, forever.
 SEALED="$(jq -r 'if has("sealed") then .sealed else true end' <<< "$STATUS_JSON")"
 
 if [[ "$SEALED" == "true" ]]; then
@@ -118,10 +115,49 @@ if [[ "$SEALED" == "true" ]]; then
     exit 0
 fi
 
-if [[ "$HA_MODE" != "active" ]]; then
-    log "Node is ${HA_MODE}, not active; the leader takes the snapshot."
-    exit 0
+# Leadership comes from sys/leader's is_self, not from ha_mode.
+#
+# `vault status` prints "HA Mode: active", but ha_mode is a field the CLI
+# renders for its *text* output — it is not in the JSON. Reading it there
+# yields nothing, every node concludes it is not the leader, and no
+# snapshot is ever taken anywhere. That is precisely what happened, and
+# it looked like success: three green timers, zero backups.
+#
+# sys/leader is unauthenticated, like sys/health and sys/seal-status, so
+# this still runs before any login.
+IS_SELF="$(jq -r 'if has("is_self") then .is_self else empty end' <<< "$STATUS_JSON")"
+
+if [[ -z "$IS_SELF" ]]; then
+    LEADER_JSON="$(vault read -format=json sys/leader 2>/dev/null || true)"
+    # No `//` here either. `.data.is_self // .is_self` looks right and is
+    # wrong for the one case that matters: is_self is *false* on a
+    # standby, jq's // treats false as empty, so it falls through to null
+    # and every standby reads as indeterminate — then takes a snapshot.
+    # Same trap as the sealed check above, one screen apart.
+    IS_SELF="$(jq -r '
+        if (.data | type) == "object" and (.data | has("is_self"))
+        then .data.is_self
+        elif has("is_self") then .is_self
+        else empty end' <<< "${LEADER_JSON:-{\}}" 2>/dev/null || true)"
 fi
+
+case "$IS_SELF" in
+    true)
+        : # this node is the leader; carry on
+        ;;
+    false)
+        log "Node is a standby; the leader takes the snapshot."
+        exit 0
+        ;;
+    *)
+        # Indeterminate. Proceed anyway, deliberately: the cost of a
+        # redundant snapshot is some storage, and the cost of skipping is
+        # no backup at all. This check exists to avoid waste, not to gate
+        # correctness, so it fails towards taking one.
+        log "WARNING: could not determine leadership from sys/leader."
+        log "Taking a snapshot anyway — a redundant snapshot beats none."
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Authenticate

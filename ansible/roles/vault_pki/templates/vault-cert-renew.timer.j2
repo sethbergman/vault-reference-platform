@@ -1,0 +1,17 @@
+[Unit]
+Description=Scheduled Vault TLS certificate renewal
+Documentation=https://github.com/sethbergman/vault-reference-platform/blob/main/docs/security.md
+
+[Timer]
+OnCalendar={{ vault_pki_schedule }}
+RandomizedDelaySec={{ vault_pki_random_delay }}
+
+# A node that was down over its renewal window must catch up on boot,
+# not wait for the next one — with a 72h certificate there is not much
+# margin to spend.
+Persistent=true
+
+Unit=vault-cert-renew.service
+
+[Install]
+WantedBy=timers.target

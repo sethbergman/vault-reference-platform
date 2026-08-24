@@ -77,10 +77,17 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck scripts/*.sh
-          # The upgrade test harness and its ssh/scp shims are shell too,
-          # and a bug in them shows up as a passing test rather than a
-          # failing one.
-          shellcheck -s bash tests/upgrade/run-tests.sh tests/upgrade/fake-bin/ssh tests/upgrade/fake-bin/scp
+
+          # Test harnesses and their shims are shell too, and a bug in
+          # them shows up as a *passing* test rather than a failing one.
+          #
+          # Discovered rather than listed: an enumerated list silently
+          # stops covering each new suite, which is the same failure mode
+          # these lint rules exist to catch.
+          mapfile -t harness < <(git ls-files 'tests/**/*.sh' 'tests/*/fake-bin/*')
+          printf 'Linting %d test files\n' "${#harness[@]}"
+          [ "${#harness[@]}" -gt 0 ] || { echo "No test scripts found — the glob is wrong"; exit 1; }
+          shellcheck -s bash "${harness[@]}"
 
       # Windows checkouts do not track the executable bit, so a script
       # committed from one lands as 100644 and CI fails with "Permission
@@ -91,7 +98,7 @@ jobs:
           # Also covers tests/*/fake-bin/*, whose shims deliberately have
           # no .sh suffix — they stand in for `vault`, `aws`, `curl` and
           # must be named exactly that to be found on PATH.
-          non_exec="$(git ls-files -s '*.sh' 'tests/*/fake-bin/*'             | grep -v '^100755' || true)"
+          non_exec="$(git ls-files -s '*.sh' 'tests/*/fake-bin/*' | grep -v '^100755' || true)"
           if [[ -n "$non_exec" ]]; then
             echo "These scripts are missing the executable bit:"
             echo "$non_exec"
@@ -564,6 +571,43 @@ jobs:
 
       - name: Exercise scripts/snapshot.sh
         run: ./tests/snapshot/run-tests.sh
+
+  pki-test:
+    name: Vault PKI node certificate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/bootstrap-pki.sh and scripts/issue-node-cert.sh
+        run: ./tests/pki/run-tests.sh
+
+  integration-test:
+    name: Integration (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The scripts run as a host process against the cluster's published
+      # ports, the way they would on a real node — so the runner needs the
+      # CLI. Pinned to the version the container image uses, because
+      # `snapshot inspect` and the PKI endpoints are version-sensitive and
+      # a floating CLI would make failures hard to attribute.
+      - name: Install the Vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o /tmp/vault.zip             "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o -d /tmp /tmp/vault.zip vault
+          sudo install -m 0755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      - name: Run the operational scripts against a real cluster
+        run: ./tests/integration/run-tests.sh
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v || true
 
   security-scan:
     name: Security scanning

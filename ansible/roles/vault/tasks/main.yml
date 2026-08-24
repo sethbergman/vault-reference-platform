@@ -67,7 +67,11 @@
       {{ ansible_default_ipv4.address }}
   register: vault_cert_check
   changed_when: false
-  failed_when: vault_cert_check.rc != 0
+  # Matched on the output, not the return code. `openssl x509 -checkhost`
+  # exits 1 on a mismatch in OpenSSL 3.5 but exits 0 in the 3.0 that
+  # Ubuntu ships, so `rc != 0` accepted any certificate at all on exactly
+  # the distribution these nodes run — this check never fired.
+  failed_when: "'does match' not in vault_cert_check.stdout or 'NOT match' in vault_cert_check.stdout"
 
 # ---------------------------------------------------------------------------
 # Configuration
