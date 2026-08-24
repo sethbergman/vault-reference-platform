@@ -41,6 +41,34 @@ no re-unseal, and no leadership change. The corollary is that the paths
 must never move: Vault ignores a changed `tls_cert_file` on `SIGHUP` and
 keeps serving from the original path, which would look like it worked.
 
+This is verified rather than assumed. `tests/integration` swaps a
+certificate on a running three-node cluster and checks that the node
+serves the new one while its process start time is unchanged — a restart
+would also swap the certificate, so the start time is what separates the
+two.
+
+### A successful reload command does not mean a successful reload
+
+`systemctl reload vault` exits 0 as soon as the signal is delivered.
+Vault reports reload failures afterwards, in its own log:
+
+```text
+==> Vault reload triggered
+Error(s) were encountered during reload: 1 error occurred:
+    * error encountered reloading listener: open ...vault.key: permission denied
+```
+
+The node keeps serving the previous certificate and nothing upstream
+notices. On a daily timer that is a green unit every day until the
+certificate expires and the node drops out of the cluster.
+
+So `issue-node-cert.sh` connects to the listener afterwards and compares
+the served certificate's serial with the one it just installed, failing
+if they differ. Pass `--no-verify-reload` to skip it.
+
+The usual cause is a key Vault cannot read — worth remembering that the
+renewal process and the Vault process are not the same user.
+
 ### The bootstrap problem
 
 **Vault's PKI cannot issue the certificates the cluster hosting it needs

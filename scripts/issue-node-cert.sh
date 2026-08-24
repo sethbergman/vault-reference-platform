@@ -24,6 +24,11 @@
 #   --force              Renew regardless of remaining lifetime
 #   --reload-cmd <cmd>   How to tell Vault to reload (default: systemctl reload vault)
 #   --no-reload          Write the files but do not signal Vault
+#   --no-verify-reload   Skip confirming Vault picked the certificate up
+#   --verify-addr <h:p>  Where to confirm it (default: from VAULT_ADDR)
+#   --key-mode <mode>    Mode for the private key (default: 0600). The
+#                        local Docker profile needs 0644 because the
+#                        container's vault uid does not own the host file.
 #
 # Runs from a systemd timer on every node. Renews only when the current
 # certificate is close to expiry, so the common case is a no-op that
@@ -82,6 +87,9 @@ RENEW_WITHIN_DAYS=1
 FORCE=false
 RELOAD_CMD="systemctl reload vault"
 NO_RELOAD=false
+VERIFY_RELOAD=true
+VERIFY_ADDR=""
+KEY_MODE="0600"
 
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -107,6 +115,9 @@ while [[ $# -gt 0 ]]; do
         --force)        FORCE=true; shift ;;
         --reload-cmd)   RELOAD_CMD="$2"; shift 2 ;;
         --no-reload)    NO_RELOAD=true; shift ;;
+        --no-verify-reload) VERIFY_RELOAD=false; shift ;;
+        --verify-addr)  VERIFY_ADDR="$2"; shift 2 ;;
+        --key-mode)     KEY_MODE="$2"; shift 2 ;;
         -h|--help)      usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -306,7 +317,7 @@ else
 fi
 
 install -m 0644 "${STAGE}/vault.crt" "$CERT"
-install -m 0600 "${STAGE}/vault.key" "$KEY"
+install -m "$KEY_MODE" "${STAGE}/vault.key" "$KEY"
 chown "$OWNER" "$CA" "$CERT" "$KEY" 2>/dev/null || true
 
 log "Installed ${CERT}, ${KEY}, ${CA}"
@@ -322,6 +333,45 @@ fi
 log "Signalling Vault to reload the certificate..."
 # SIGHUP re-reads the files at the paths Vault started with. It does not
 # drop connections, and it does not reseal.
-$RELOAD_CMD || die "Reload failed — Vault is still serving the previous certificate"
+$RELOAD_CMD || die "Reload command failed — Vault is still serving the previous certificate"
 
-log "Done."
+# ---------------------------------------------------------------------------
+# Confirm the reload actually took
+# ---------------------------------------------------------------------------
+# A zero exit from the reload command means the *signal* was delivered,
+# not that Vault accepted the new material. Vault reports reload failures
+# asynchronously, in its own log:
+#
+#   ==> Vault reload triggered
+#   Error(s) were encountered during reload: 1 error occurred:
+#       * error encountered reloading listener: open ...key: permission denied
+#
+# `systemctl reload` returns 0 in exactly that case too. Without this
+# check the script reports success, the timer reports success, and the
+# node quietly serves the old certificate until it expires — which is the
+# failure this whole thing exists to prevent, arriving on a schedule.
+#
+# Found by tests/integration, which caught precisely this.
+if [[ "$VERIFY_RELOAD" == false ]]; then
+    log "Not verifying the reload (--no-verify-reload)."
+    log "Done."
+    exit 0
+fi
+
+WANT_SERIAL="$(openssl x509 -in "$CERT" -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+VERIFY_HOST="${VERIFY_ADDR:-${VAULT_ADDR#*://}}"
+[[ "$VERIFY_HOST" == *:* ]] || VERIFY_HOST="${VERIFY_HOST}:8200"
+
+log "Confirming ${VERIFY_HOST} is serving the new certificate..."
+for attempt in $(seq 1 10); do
+    SERVED_SERIAL="$(echo | openssl s_client -connect "$VERIFY_HOST" 2>/dev/null \
+        | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+    if [[ -n "$SERVED_SERIAL" && "$SERVED_SERIAL" == "$WANT_SERIAL" ]]; then
+        log "Confirmed: serving ${SERVED_SERIAL}."
+        log "Done."
+        exit 0
+    fi
+    sleep 2
+done
+
+die "Vault still serves ${SERVED_SERIAL:-<unreadable>}, expected ${WANT_SERIAL}. The reload was signalled but did not take — check Vault's log for 'error encountered reloading listener' (a key it cannot read is the usual cause)."

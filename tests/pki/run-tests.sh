@@ -79,8 +79,13 @@ run_issue() {
     local logfile="${WORK}/calls.$$.log"
     : > "$logfile"
     RC=0
+    # --no-verify-reload throughout: confirming the reload means opening a
+    # TLS connection to a listener and reading the certificate back, which
+    # a shim cannot provide. That check is proven in tests/integration
+    # against a real Vault instead — it is exactly the class of thing
+    # shims cannot reach.
     OUT="$(FAKE_LOG="$logfile" PATH="${FAKE_BIN}:${PATH}" \
-        "$ISSUE" --tls-dir "$TLS_DIR" --common-name "$CN" "$@" 2>&1)" || RC=$?
+        "$ISSUE" --tls-dir "$TLS_DIR" --common-name "$CN" --no-verify-reload "$@" 2>&1)" || RC=$?
     LOG="$(cat "$logfile")"
 }
 
@@ -394,6 +399,38 @@ if [[ ! -f "${TLS_DIR}/vault.crt" ]]; then
     ok "and the default name is not written as well"
 else
     bad "and the default name is not written as well"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== Reload verification is on unless disabled ===\n'
+# ---------------------------------------------------------------------------
+# A zero exit from the reload command means the signal was delivered, not
+# that Vault accepted the certificate. Vault reports reload failures in
+# its own log, asynchronously, and `systemctl reload` returns 0 anyway —
+# so without a check the script reports success while the node keeps
+# serving the old certificate until it expires.
+#
+# tests/integration found exactly that. What can be asserted here is that
+# the guard is on by default and that the escape hatch is explicit.
+ISSUE_TEXT="$(cat "$ISSUE")"
+if [[ "$ISSUE_TEXT" == *"VERIFY_RELOAD=true"* ]]; then
+    ok "reload verification defaults to on"
+else
+    bad "reload verification defaults to on"
+fi
+if [[ "$ISSUE_TEXT" == *"--no-verify-reload"* ]]; then
+    ok "and there is an explicit way to skip it"
+else
+    bad "and there is an explicit way to skip it"
+fi
+
+# It compares the served certificate to the one just installed. Anything
+# weaker — that the listener answers, say — would pass while Vault served
+# the previous certificate.
+if [[ "$ISSUE_TEXT" == *"WANT_SERIAL"* && "$ISSUE_TEXT" == *"SERVED_SERIAL"* ]]; then
+    ok "it compares serials, not mere reachability"
+else
+    bad "it compares serials, not mere reachability"
 fi
 
 # ---------------------------------------------------------------------------

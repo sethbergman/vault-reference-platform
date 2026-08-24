@@ -293,18 +293,59 @@ cat > "${WORK}/reload-wrapper.sh" <<EOF
 EOF
 chmod +x "${WORK}/reload-wrapper.sh"
 
-if "${REPO_ROOT}/scripts/issue-node-cert.sh" \
+# issue <label> <key-mode> <logfile> — everything except the key mode is
+# identical between the two runs below.
+issue_cert() {
+    "${REPO_ROOT}/scripts/issue-node-cert.sh" \
         --common-name vault-0.vault.internal \
         --alt-names vault-0,localhost \
         --ip-sans 127.0.0.1 \
         --tls-dir "$TLS_DIR" \
         --cert-name vault-0 \
+        --key-mode "$1" \
         --force \
         --reload-cmd "${WORK}/reload-wrapper.sh" \
-        >"${WORK}/issue.log" 2>&1; then
-    ok "issue-node-cert.sh issued and installed a certificate"
+        --verify-addr 127.0.0.1:8200 \
+        >"$2" 2>&1
+}
+
+# --- The regression case -------------------------------------------------
+#
+# A key at 0600 owned by the host user is unreadable by the container's
+# vault uid. Vault answers the SIGHUP with:
+#
+#   Error(s) were encountered during reload: 1 error occurred:
+#       * error encountered reloading listener: open ...vault-0.key: permission denied
+#
+# and carries on serving the previous certificate. The reload command
+# still exits 0, because the *signal* was delivered — so before this suite
+# existed, the script reported success, the timer reported success, and
+# the node would have served a stale certificate until it expired.
+#
+# This asserts the script now notices. It is the bug this test found,
+# kept as a permanent check.
+if issue_cert 0600 "${WORK}/issue-bad.log"; then
+    bad "an unreadable key makes the reload fail loudly"         "the script reported success while Vault kept the old certificate"
 else
-    bad "issue-node-cert.sh issued and installed a certificate" "$(tail -5 "${WORK}/issue.log")"
+    if grep -q "did not take" "${WORK}/issue-bad.log"; then
+        ok "an unreadable key makes the reload fail loudly"
+    else
+        bad "an unreadable key makes the reload fail loudly"             "it failed, but not with the reload-verification error:"
+        sed 's/^/        /' "${WORK}/issue-bad.log"
+    fi
+fi
+
+# --- The working case ----------------------------------------------------
+#
+# 0644 matches what generate-dev-certs.sh writes for this profile, and for
+# the same reason: the key is mounted read-only into a container running
+# as a uid that does not own it. On a real node the renewal runs as root
+# and 0600 is both correct and readable by Vault.
+if issue_cert 0644 "${WORK}/issue.log"; then
+    ok "issue-node-cert.sh issued, installed and confirmed a certificate"
+else
+    bad "issue-node-cert.sh issued, installed and confirmed a certificate" "log follows"
+    sed 's/^/        /' "${WORK}/issue.log"
 fi
 
 AFTER_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || echo 0)"
