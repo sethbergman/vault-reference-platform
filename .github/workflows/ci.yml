@@ -578,15 +578,6 @@ jobs:
       - name: Exercise scripts/bootstrap-pki.sh and scripts/issue-node-cert.sh
         run: ./tests/pki/run-tests.sh
 
-  pki-test:
-    name: Vault PKI node certificate tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Exercise PKI issuance and renewal
-        run: ./tests/pki/run-tests.sh
-
   security-scan:
     name: Security scanning
     runs-on: ubuntu-latest
