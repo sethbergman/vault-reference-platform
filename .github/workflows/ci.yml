@@ -638,6 +638,15 @@ jobs:
       - name: Exercise the alerting rules
         run: ./tests/alerting/run-tests.sh
 
+  audit-test:
+    name: Audit device tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/bootstrap-audit.sh
+        run: ./tests/audit/run-tests.sh
+
   security-scan:
     name: Security scanning
     runs-on: ubuntu-latest

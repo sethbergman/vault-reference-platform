@@ -17,6 +17,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.5 | Scheduled snapshots, certificate renewal from Vault PKI, integration tests |
 | v0.6 | Dynamic database credentials (PostgreSQL), with root rotation |
 | v0.7 | Alerting on absence: rules, Alertmanager, pushgateway, TLS probes |
+| v0.8 | Audit devices, with the two-device availability tradeoff stated |
 
 ## The honest gap
 
@@ -37,19 +38,18 @@ snapshot, PKI and renewal paths are genuinely exercised.
 
 ## Next
 
-### Audit devices
+### Log shipping
 
-Nothing in this repository enables one. Vault currently records **no
-audit log at all** — there is no answer to "who read that secret", which
-is both a security gap and a compliance blocker for most real
-deployments.
+Audit devices are enabled and tested, but nothing forwards the logs
+anywhere. Where they go, how long they are kept and who can read them are
+deployment decisions — and an audit log that only exists on the node it
+describes is one a compromise can delete.
 
-Deliberately not a small task, because the interesting part is the
-failure mode: a Vault whose only audit device cannot write **stops
-serving requests**. That is correct behaviour — an unauditable Vault
-should refuse — but it means naive configuration turns a full disk into
-an outage. Doing this properly means log rotation, a second device, and a
-runbook for when the sink fills up.
+The local profile demonstrates two devices on one filesystem, which
+proves entries reach both and proves nothing about surviving a full disk.
+A second device on an independent failure domain — syslog to a remote
+collector, or a socket to a shipper — is the part a real deployment
+needs and this repository does not provide.
 
 ### Alert routing
 
@@ -95,10 +95,10 @@ in production. The blockers are, in order:
 
 1. **A real cloud apply.** Until one of the two profiles has been stood
    up and torn down for real, the claim is unproven.
-2. **Audit devices**, including the disk-full failure mode.
-3. **The full PKI migration path**, end to end.
+2. **The full PKI migration path**, end to end.
+3. **Audit log shipping**, to somewhere a compromised node cannot reach.
 
-Dynamic secrets and alerting have both moved off this list. The database
+Dynamic secrets, alerting and audit devices have all moved off this list. The database
 engine is tested against a real Postgres; the alert rules are unit-tested
 with promtool and observed firing end to end against a live cluster.
 

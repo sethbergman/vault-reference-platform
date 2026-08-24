@@ -620,6 +620,141 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== Audit devices ==="
+# ---------------------------------------------------------------------------
+# The question an audit log exists to answer is "who read that secret".
+# Checking the file exists does not answer it; reading the entry back out
+# and finding the request in it does.
+
+if "${REPO_ROOT}/scripts/bootstrap-audit.sh" >"${WORK}/audit.log" 2>&1; then
+    ok "bootstrap-audit.sh enabled the audit devices"
+else
+    bad "bootstrap-audit.sh enabled the audit devices" "log follows"
+    sed 's/^/        /' "${WORK}/audit.log"
+fi
+
+AUDIT_N="$(vault audit list -format=json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
+if [[ "${AUDIT_N:-0}" -ge 2 ]]; then
+    ok "two devices are enabled (one failing must not stop Vault)"
+else
+    bad "two devices are enabled" "found ${AUDIT_N:-0}; Vault refuses requests when it cannot write to any device"
+fi
+
+# audit_cat <file> — read an audit log out of the vault-0 container.
+audit_cat() {
+    compose exec -T vault-0 cat "$1" 2>/dev/null | grep -v 'level=' || true
+}
+
+# A request with a recognisable path, so it can be found again.
+vault kv put itest/audit-canary value=look-for-me >/dev/null 2>&1 || true
+sleep 1
+
+PRIMARY=/vault/audit/vault-audit.log
+AUDIT_TEXT="$(audit_cat "$PRIMARY")"
+
+if [[ -n "$AUDIT_TEXT" ]]; then
+    ok "the primary device is writing entries"
+else
+    bad "the primary device is writing entries" "${PRIMARY} is empty or unreadable"
+fi
+
+if [[ "$AUDIT_TEXT" == *"itest/audit-canary"* ]]; then
+    ok "and the request path appears in the log"
+else
+    bad "and the request path appears in the log" "no entry for itest/audit-canary"
+fi
+
+# Both devices receive every entry. If the secondary is empty, the
+# redundancy the two-device design depends on is not actually there.
+SECOND_TEXT="$(audit_cat /vault/audit/vault-audit-secondary.log)"
+if [[ "$SECOND_TEXT" == *"itest/audit-canary"* ]]; then
+    ok "and the secondary device received the same entry"
+else
+    bad "and the secondary device received the same entry"         "the second device is enabled but not recording"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== The log is safe to ship ==="
+# ---------------------------------------------------------------------------
+# Audit entries HMAC sensitive values rather than recording them. If that
+# were not true, shipping these logs to a central collector would be
+# copying every secret in Vault to a second, less protected place.
+if [[ "$AUDIT_TEXT" == *"look-for-me"* ]]; then
+    bad "the secret value is NOT in the audit log"         "found the plaintext value — log_raw is on, or hashing is not working"
+else
+    ok "the secret value is not in the audit log"
+fi
+
+if [[ "$AUDIT_TEXT" == *"hmac-sha256:"* ]]; then
+    ok "values are recorded as hmac-sha256 digests"
+else
+    bad "values are recorded as hmac-sha256 digests" "no hmac prefix found in the log"
+fi
+
+# The root token is in the request headers of every call made above. It
+# must be hashed too — an audit log containing a usable root token is a
+# credential store with extra steps.
+if [[ "$AUDIT_TEXT" == *"$ROOT_TOKEN"* ]]; then
+    bad "the root token is NOT in the audit log" "found the token in clear text"
+else
+    ok "the root token is not in the audit log"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Rotation ==="
+# ---------------------------------------------------------------------------
+# Vault holds the file open, so rotating means moving it and signalling.
+# Without the signal Vault keeps writing to the moved inode and the new
+# file stays empty — the log looks rotated and nothing lands in it.
+compose exec -T vault-0 sh -c "mv ${PRIMARY} ${PRIMARY}.rotated" >/dev/null 2>&1 || true
+compose kill -s HUP vault-0 >/dev/null 2>&1 || true
+sleep 3
+
+vault kv put itest/audit-after-rotate value=post >/dev/null 2>&1 || true
+sleep 2
+
+ROTATED_NEW="$(audit_cat "$PRIMARY")"
+if [[ "$ROTATED_NEW" == *"itest/audit-after-rotate"* ]]; then
+    ok "SIGHUP reopens the log and writes continue to the new file"
+else
+    bad "SIGHUP reopens the log and writes continue to the new file"         "nothing landed in the reopened path — rotation would silently lose entries"
+fi
+
+# And Vault stayed up through it. A rotation that costs availability is
+# not a rotation anyone will run on a schedule.
+CODE="$(alive_code 8200)"
+if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
+    ok "and Vault kept serving throughout (${CODE})"
+else
+    bad "and Vault kept serving throughout" "health returned ${CODE}"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== A bad device fails at enable time, not at request time ==="
+# ---------------------------------------------------------------------------
+# Vault writes a test entry when a device is enabled, so an unwritable
+# path is rejected immediately. That matters: the alternative is a device
+# that enables cleanly and then blocks every request afterwards.
+if vault audit enable -path=badpath file file_path=/nonexistent/dir/audit.log >/dev/null 2>&1; then
+    bad "an unwritable audit path is rejected" "Vault accepted a device it cannot write to"
+    vault audit disable badpath >/dev/null 2>&1 || true
+else
+    ok "an unwritable audit path is rejected at enable time"
+fi
+
+# And the rejection did not take Vault with it.
+CODE="$(alive_code 8200)"
+if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
+    ok "and the rejected device left Vault serving (${CODE})"
+else
+    bad "and the rejected device left Vault serving" "health returned ${CODE}"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== Alerting on absence ==="
 # ---------------------------------------------------------------------------
 # The rule unit tests prove the expressions behave correctly against

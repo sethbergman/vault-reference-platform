@@ -195,6 +195,19 @@ clouds replace instances and a static inventory goes stale silently.
 
 See [`docs/deployment.md`](docs/deployment.md).
 
+## Audit logging
+
+`scripts/bootstrap-audit.sh` enables audit devices — the only thing in
+Vault that answers "who read that secret".
+
+It enables **two** by default, and that is the important part. Vault
+refuses to service requests when it cannot write to any enabled device,
+so a single audit device turns a full disk into a total outage. Entries
+are HMAC'd rather than recorded in clear, which is what makes the logs
+safe to ship centrally.
+
+See [`docs/audit.md`](docs/audit.md).
+
 ## Monitoring and alerting
 
 Prometheus, Grafana and Alertmanager come up with
@@ -217,13 +230,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs seventeen checks on every PR. Five are static:
+GitHub Actions runs eighteen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Five run against fixtures and shims — fast, no credentials, and able to
+Six run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -241,6 +254,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Alerting rules** — `promtool test rules` drives synthetic series
   through the real rule file, including the case where a series stops
   existing and the threshold alert consequently cannot fire.
+- **Audit devices** — that two are enabled by default, that `--force`
+  cannot disable the only one, and that an enable which succeeds without
+  enabling anything is treated as a failure.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -289,6 +305,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
   PKI (done), integration tests against a real cluster (done)
 - **v0.6** — dynamic database credentials (done)
 - **v0.7** — alerting on absence (done)
+- **v0.8** — audit devices (done)
 - **v1.0** — production-ready reference architecture
 
 **The honest gap:** neither cloud profile has been applied end to end.
@@ -298,9 +315,7 @@ catches more than it sounds like — a Key Vault name over Azure's
 outright — but a plan that succeeds is not a deployment that works. Treat
 those two profiles as reviewed and tested, not as proven.
 
-The largest thing still missing is **audit devices**: nothing here
-enables one, so Vault currently records no answer to "who read that
-secret".
+The largest thing still missing is a **real cloud apply** — see below.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.
