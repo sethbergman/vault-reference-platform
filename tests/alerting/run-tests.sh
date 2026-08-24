@@ -147,6 +147,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== Every alert is tested both ways ===\n'
+# ---------------------------------------------------------------------------
+# An alert only ever asserted SILENT is indistinguishable from one that
+# can never fire. An alert only ever asserted FIRING is indistinguishable
+# from one stuck permanently on. Both need a case.
+#
+# This was not true when the rules were first written: VaultNodeSealed
+# had no test at all, and VaultCertificateProbeMissing was only ever
+# asserted quiet — in a rule file whose entire subject is things that
+# fail by staying silent.
+COVERAGE="$(python3 - "$RULES" "$RULE_TESTS" <<'PY'
+import sys, yaml
+rules = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+tests = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+defined = [r["alert"] for g in rules.get("groups", []) for r in g.get("rules", []) if "alert" in r]
+fires, quiet = set(), set()
+for case in tests.get("tests", []):
+    for a in case.get("alert_rule_test", []):
+        (fires if (a.get("exp_alerts") or []) else quiet).add(a["alertname"])
+for name in defined:
+    if name not in fires:
+        print(f"{name}: never asserted to fire — it may be incapable of firing")
+    if name not in quiet:
+        print(f"{name}: never asserted to stay quiet — it may be permanently on")
+PY
+)"
+
+if [[ -z "$COVERAGE" ]]; then
+    ok "every alert has both a firing and a silent test case"
+else
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && bad "alert coverage" "$line"
+    done <<< "$COVERAGE"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== Runbook pointers lead somewhere ===\n'
+# ---------------------------------------------------------------------------
+# Asserting an alert *has* a runbook annotation is the same weak check as
+# asserting a metric name is spelled like a metric. Eight of these
+# originally pointed at a document that did not mention a single alert by
+# name, so following the link at 3am landed on a general operations page.
+#
+# The annotation has to resolve to a file, and that file has to name the
+# alert it was sent for.
+RUNBOOKS="$(python3 - "$RULES" "$REPO_ROOT" <<'PY'
+import sys, os, yaml
+rules = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+root = sys.argv[2]
+for g in rules.get("groups", []):
+    for r in g.get("rules", []):
+        if "alert" not in r:
+            continue
+        name = r["alert"]
+        target = r.get("annotations", {}).get("runbook", "")
+        path = os.path.join(root, target.split("#")[0])
+        if not target:
+            print(f"{name}: no runbook annotation")
+        elif not os.path.isfile(path):
+            print(f"{name}: runbook {target} does not exist")
+        elif name not in open(path, encoding="utf-8").read():
+            print(f"{name}: {target} exists but never mentions {name}")
+PY
+)"
+
+if [[ -z "$RUNBOOKS" ]]; then
+    ok "every alert's runbook exists and names that alert"
+else
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && bad "runbook check" "$line"
+    done <<< "$RUNBOOKS"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Prometheus actually loads these rules ===\n'
 # ---------------------------------------------------------------------------
 # A rule file nothing loads is the same as no rule file, and the mistake

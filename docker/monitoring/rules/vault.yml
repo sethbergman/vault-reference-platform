@@ -47,7 +47,7 @@ groups:
           description: >-
             Prometheus cannot reach {{ $labels.instance }}. This fires per
             node; losing one of three is survivable, losing two is not.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultnodedown
 
       # up == 0 requires a target that Prometheus knows about. If the
       # scrape config itself is broken or empty, there are no series at
@@ -64,7 +64,7 @@ groups:
             this file is silent while this is true, which is why it is
             here: it is the alert that catches the monitoring itself
             failing.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultalltargetsmissing
 
       - alert: VaultNodeSealed
         expr: vault_core_unsealed == 0
@@ -77,7 +77,7 @@ groups:
             A sealed node serves nothing. With auto-unseal configured this
             usually means the KMS or Transit backend is unreachable rather
             than that someone sealed it.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultnodesealed
 
       # Quorum for a three-node Raft cluster is two. At one remaining node
       # the cluster is read-only and cannot elect a leader.
@@ -91,7 +91,7 @@ groups:
           description: >-
             Raft needs a majority. Below two of three the cluster cannot
             elect a leader or accept writes.
-          runbook: docs/disaster-recovery.md
+          runbook: docs/operations.md#vaultquorumlost
 
       - alert: VaultNoActiveNode
         expr: sum(vault_core_active) < 1
@@ -104,7 +104,7 @@ groups:
             Nodes can all be unsealed and healthy while none holds
             leadership. Writes fail with "local node not active but active
             cluster node not found".
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultnoactivenode
 
   - name: vault-backups
     interval: 15s
@@ -124,7 +124,7 @@ groups:
             The snapshot timer runs hourly. Two hours without a success
             means at least one cycle failed silently. Check the bucket
             before the unit status — a green timer is not a backup.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultsnapshotstale
 
       - alert: VaultSnapshotMetricMissing
         expr: absent(vault_snapshot_last_success_timestamp_seconds)
@@ -138,7 +138,7 @@ groups:
             unreachable. VaultSnapshotStale cannot fire while this is
             true, because it has no series to evaluate — which is
             precisely how snapshots went missing unnoticed before.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultsnapshotmetricmissing
 
   - name: vault-certificates
     interval: 15s
@@ -159,7 +159,7 @@ groups:
             Renewal is daily, so under a day of remaining life means at
             least one renewal has not taken effect. Compare the serial on
             disk with the one being served.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultcertificateexpiringsoon
 
       - alert: VaultCertificateProbeMissing
         expr: absent(probe_ssl_earliest_cert_expiry{job="vault-tls"})
@@ -171,4 +171,4 @@ groups:
           description: >-
             The TLS probe is not reporting, so certificate expiry is
             unmonitored and VaultCertificateExpiringSoon cannot fire.
-          runbook: docs/operations.md
+          runbook: docs/operations.md#vaultcertificateprobemissing

@@ -158,6 +158,118 @@ Vault process are not the same user. `issue-node-cert.sh` performs this
 comparison itself and fails loudly, so a green renewal unit does mean the
 new certificate is live; the manual check is for diagnosing a red one.
 
+## Responding to alerts
+
+One entry per alert in `docker/monitoring/rules/vault.yml`. The `runbook`
+annotation on each alert links here, and
+`tests/alerting/run-tests.sh` fails if an alert points at a document that
+does not name it — a runbook pointer that lands on a general page is
+worse than none, because it looks like it was thought about.
+
+### VaultNodeDown
+
+One node is not answering scrapes. Losing one of three is survivable.
+
+```bash
+docker compose ps            # or: systemctl status vault
+curl -sk https://<node>:8200/v1/sys/health | jq .
+```
+
+If the node is up but not scraping, suspect TLS: Prometheus verifies the
+node certificate, and a failed renewal shows up here first.
+
+### VaultAllTargetsMissing
+
+There are no Vault targets at all, so **every other alert in the file is
+silent**. Treat this as "monitoring is down", not "Vault is fine".
+
+Check the scrape config loaded and the job name still matches:
+
+```bash
+curl -s localhost:9090/api/v1/targets | jq '.data.activeTargets[].labels.job'
+```
+
+### VaultNodeSealed
+
+A sealed node serves nothing. With auto-unseal configured this almost
+always means the KMS or Transit backend is unreachable rather than that
+someone sealed it deliberately.
+
+```bash
+vault status
+journalctl -u vault --since '15 minutes ago' | grep -i seal
+```
+
+### VaultQuorumLost
+
+Fewer than two of three nodes are unsealed. Raft needs a majority, so the
+cluster cannot elect a leader or accept writes. This is an outage.
+
+Restore nodes rather than reconfiguring quorum. If nodes are gone
+permanently, see [`disaster-recovery.md`](disaster-recovery.md).
+
+### VaultNoActiveNode
+
+Every node is unsealed and none holds leadership. Nothing looks wrong on
+an availability dashboard; writes fail with `local node not active but
+active cluster node not found`.
+
+```bash
+vault read -format=json sys/leader | jq '.data.is_self'
+vault operator raft list-peers
+```
+
+Exactly one node should report `is_self: true`.
+
+### VaultSnapshotStale
+
+No successful snapshot in over two hours, against an hourly timer. Check
+the destination before the unit status — a green timer is not a backup:
+
+```bash
+aws s3 ls "s3://<bucket>/snapshots/" | tail -5
+journalctl -u vault-snapshot.service --since '3 hours ago'
+```
+
+### VaultSnapshotMetricMissing
+
+Nothing is reporting snapshot success at all. `VaultSnapshotStale` cannot
+fire while this is true, because it has no series to evaluate.
+
+Either no snapshot has ever run, or the pushgateway is unreachable, or
+the timer is running without `--metrics-push`. Distinguish them:
+
+```bash
+curl -s localhost:9091/metrics | grep vault_snapshot
+systemctl cat vault-snapshot.service | grep metrics-push
+```
+
+A missing `--metrics-push` is a monitoring gap; an empty pushgateway
+after a successful run is a backup gap. They look identical from here.
+
+### VaultCertificateExpiringSoon
+
+The **served** certificate has under 24 hours left, against daily
+renewal, so at least one renewal has not taken effect. The usual cause is
+a reload that was signalled but failed — the reload command exits 0
+either way.
+
+```bash
+openssl x509 -in /etc/vault.d/tls/vault.crt -noout -serial
+echo | openssl s_client -connect 127.0.0.1:8200 2>/dev/null |
+  openssl x509 -noout -serial
+journalctl -u vault --since '1 day ago' | grep -i 'reloading listener'
+```
+
+If the serials differ, Vault is still serving the old certificate. A key
+it cannot read is the usual reason.
+
+### VaultCertificateProbeMissing
+
+Nothing is probing the listeners, so certificate expiry is unmonitored
+and `VaultCertificateExpiringSoon` cannot fire. Check the blackbox
+exporter is up and its target list is not empty.
+
 ## Common incidents
 
 - **Node sealed unexpectedly**: check for KMS/auto-unseal connectivity
