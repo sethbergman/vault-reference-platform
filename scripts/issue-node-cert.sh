@@ -12,6 +12,12 @@
 #   --mount <path>       PKI mount path (default: pki)
 #   --role <name>        PKI role name (default: vault-node)
 #   --tls-dir <dir>      Where the certificate lives (default: /etc/vault.d/tls)
+#   --cert-name <base>   Basename for the cert/key pair (default: vault, so
+#                        vault.crt / vault.key). The local Docker profile
+#                        uses per-node names, e.g. --cert-name vault-0.
+#   --ca-name <file>     Trust bundle filename (default: ca.crt)
+#   --replace-ca         Overwrite the trust bundle instead of adding to it.
+#                        See the note on trust bundles below.
 #   --ttl <duration>     Requested lifetime (default: 72h)
 #   --renew-within <d>   Renew only if the current cert expires within this
 #                        many days (default: 1)
@@ -35,6 +41,22 @@
 # the config at it would appear to work and silently keep serving the old
 # certificate until the next restart.
 #
+# WHY THE TRUST BUNDLE IS ADDED TO, NOT REPLACED
+#
+# Nodes verify each other with tls_client_ca_file. During a migration to
+# Vault PKI, some peers still present bootstrap certificates — so a node
+# whose bundle was *replaced* with the PKI root stops trusting them, and
+# the cluster comes apart one node at a time as the rollout proceeds.
+#
+# So the new chain is appended unless it is already present. The correct
+# rollout order follows from that:
+#
+#   1. Every node's bundle gains the PKI CA (still trusting bootstrap).
+#   2. Certificates are swapped one node at a time.
+#   3. Only once every node is on PKI does the bootstrap CA come out.
+#
+# --replace-ca skips step 1's safety and is for step 3.
+#
 # WHY BOTH FILES MOVE BEFORE THE SIGNAL
 #
 # A certificate and key that do not match means the listener fails to
@@ -52,6 +74,9 @@ IP_SANS=""
 MOUNT="pki"
 ROLE="vault-node"
 TLS_DIR="/etc/vault.d/tls"
+CERT_NAME="vault"
+CA_NAME="ca.crt"
+REPLACE_CA=false
 TTL="72h"
 RENEW_WITHIN_DAYS=1
 FORCE=false
@@ -74,6 +99,9 @@ while [[ $# -gt 0 ]]; do
         --mount)        MOUNT="$2"; shift 2 ;;
         --role)         ROLE="$2"; shift 2 ;;
         --tls-dir)      TLS_DIR="$2"; shift 2 ;;
+        --cert-name)    CERT_NAME="$2"; shift 2 ;;
+        --ca-name)      CA_NAME="$2"; shift 2 ;;
+        --replace-ca)   REPLACE_CA=true; shift ;;
         --ttl)          TTL="$2"; shift 2 ;;
         --renew-within) RENEW_WITHIN_DAYS="$2"; shift 2 ;;
         --force)        FORCE=true; shift ;;
@@ -90,9 +118,9 @@ command -v vault   >/dev/null 2>&1 || die "vault not found on PATH"
 command -v jq      >/dev/null 2>&1 || die "jq not found on PATH"
 command -v openssl >/dev/null 2>&1 || die "openssl not found on PATH"
 
-CERT="${TLS_DIR}/vault.crt"
-KEY="${TLS_DIR}/vault.key"
-CA="${TLS_DIR}/ca.crt"
+CERT="${TLS_DIR}/${CERT_NAME}.crt"
+KEY="${TLS_DIR}/${CERT_NAME}.key"
+CA="${TLS_DIR}/${CA_NAME}"
 
 # ---------------------------------------------------------------------------
 # Does anything need doing?
@@ -228,7 +256,55 @@ if [[ -f "$KEY" ]]; then
     OWNER="$(stat -c '%U:%G' "$KEY" 2>/dev/null || echo "vault:vault")"
 fi
 
-install -m 0644 "${STAGE}/ca.crt"    "$CA"
+# fingerprints_of <pem-bundle> — one SHA256 fingerprint per certificate.
+#
+# Comparing fingerprints, not text. `grep -f newca bundle` looks like it
+# would work and never does: grep -f treats every *line* of the pattern
+# file as its own pattern, and "-----BEGIN CERTIFICATE-----" matches any
+# bundle at all. That reads as "already present" every time, so the CA is
+# never added and the migration quietly cannot proceed.
+fingerprints_of() {
+    local block="" line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        block+="${line}"$'\n'
+        if [[ "$line" == *"END CERTIFICATE"* ]]; then
+            openssl x509 -noout -fingerprint -sha256 2>/dev/null <<< "$block" | cut -d= -f2
+            block=""
+        fi
+    done < "$1"
+}
+
+# The trust bundle is added to rather than replaced — see the note at the
+# top. Replacing it mid-migration makes this node stop trusting every peer
+# still on a bootstrap certificate.
+if [[ "$REPLACE_CA" == true || ! -f "$CA" ]]; then
+    install -m 0644 "${STAGE}/ca.crt" "$CA"
+    [[ "$REPLACE_CA" == true ]] && log "Replaced the trust bundle (--replace-ca)."
+else
+    EXISTING_FPS="$(fingerprints_of "$CA")"
+    ADDED=0
+    cp "$CA" "${STAGE}/bundle.crt"
+
+    BLOCK=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        BLOCK+="${line}"$'\n'
+        [[ "$line" == *"END CERTIFICATE"* ]] || continue
+        FP="$(openssl x509 -noout -fingerprint -sha256 2>/dev/null <<< "$BLOCK" | cut -d= -f2)"
+        if [[ -n "$FP" && "$EXISTING_FPS" != *"$FP"* ]]; then
+            printf '%s' "$BLOCK" >> "${STAGE}/bundle.crt"
+            ADDED=$((ADDED + 1))
+        fi
+        BLOCK=""
+    done < "${STAGE}/ca.crt"
+
+    if [[ "$ADDED" -gt 0 ]]; then
+        install -m 0644 "${STAGE}/bundle.crt" "$CA"
+        log "Added ${ADDED} certificate(s) to ${CA}, keeping what was already trusted."
+    else
+        log "The issuing CA is already in ${CA}; leaving it as is."
+    fi
+fi
+
 install -m 0644 "${STAGE}/vault.crt" "$CERT"
 install -m 0600 "${STAGE}/vault.key" "$KEY"
 chown "$OWNER" "$CA" "$CERT" "$KEY" 2>/dev/null || true

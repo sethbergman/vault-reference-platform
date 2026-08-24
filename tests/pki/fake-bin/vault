@@ -28,7 +28,7 @@ if [[ "$1" == "write" && "$*" == *"/issue/"* ]]; then
     jq -n \
         --arg c "$(cat "$cert")" \
         --arg k "$(cat "$key")" \
-        --arg ca "$(cat "${FIXTURES}/ca.crt")" \
+        --arg ca "$(cat "${FIXTURES}/pkica.crt")" \
         '{data:{certificate:$c, private_key:$k, issuing_ca:$ca, ca_chain:[$ca]}}'
     exit 0
 fi

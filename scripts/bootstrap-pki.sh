@@ -9,6 +9,10 @@
 #   --mount <path>        PKI mount path (default: pki)
 #   --domain <domain>     Domain the node role may issue for
 #                         (default: vault.internal)
+#   --extra-domains <l>   Comma-separated extra names the role may issue
+#                         for. Needed where peers dial each other by a
+#                         bare hostname rather than an FQDN — the local
+#                         Docker profile uses vault-0, vault-1, vault-2.
 #   --role <name>         PKI role name (default: vault-node)
 #   --ca-ttl <duration>   Root CA lifetime (default: 87600h, ten years)
 #   --cert-ttl <duration> Maximum leaf lifetime (default: 72h)
@@ -44,6 +48,7 @@ set -euo pipefail
 
 MOUNT="pki"
 DOMAIN="vault.internal"
+EXTRA_DOMAINS=""
 ROLE="vault-node"
 CA_TTL="87600h"
 CERT_TTL="72h"
@@ -61,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --mount)     MOUNT="$2"; shift 2 ;;
         --domain)    DOMAIN="$2"; shift 2 ;;
+        --extra-domains) EXTRA_DOMAINS="$2"; shift 2 ;;
         --role)      ROLE="$2"; shift 2 ;;
         --ca-ttl)    CA_TTL="$2"; shift 2 ;;
         --cert-ttl)  CERT_TTL="$2"; shift 2 ;;
@@ -146,9 +152,13 @@ vault write "${MOUNT}/config/urls" \
 # allow_ip_sans matters for the same reason: nodes dial each other by IP
 # (api_addr and cluster_addr are addresses, not names), so a certificate
 # with only DNS SANs fails peer verification.
+ALLOWED_DOMAINS="${DOMAIN},localhost"
+[[ -n "$EXTRA_DOMAINS" ]] && ALLOWED_DOMAINS="${ALLOWED_DOMAINS},${EXTRA_DOMAINS}"
+
 log "Creating the ${ROLE} role (max ttl ${CERT_TTL})..."
+log "  allowed domains: ${ALLOWED_DOMAINS}"
 vault write "${MOUNT}/roles/${ROLE}" \
-    allowed_domains="${DOMAIN},localhost" \
+    allowed_domains="${ALLOWED_DOMAINS}" \
     allow_subdomains=true \
     allow_bare_domains=true \
     allow_localhost=true \

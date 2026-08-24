@@ -327,6 +327,76 @@ assert_rc   "a failed reload is an error" 1
 assert_says "and says what that means"    "still serving the previous certificate"
 
 # ---------------------------------------------------------------------------
+printf '\n=== The trust bundle is added to, not replaced ===\n'
+# ---------------------------------------------------------------------------
+# Nodes verify each other with tls_client_ca_file. Replacing the bundle
+# with the PKI root mid-migration makes this node stop trusting every peer
+# still on a bootstrap certificate — the cluster comes apart one node at a
+# time as the rollout proceeds, which looks like a network fault.
+reset_scenario
+install_existing fresh
+BOOTSTRAP_CA="$(cat "${TLS_DIR}/ca.crt")"
+run_issue --force
+NEW_BUNDLE="$(cat "${TLS_DIR}/ca.crt")"
+
+if [[ "$NEW_BUNDLE" == *"$BOOTSTRAP_CA"* ]]; then
+    ok "the bootstrap CA is still trusted after renewal"
+else
+    bad "the bootstrap CA is still trusted after renewal" "it was replaced"
+fi
+
+# Counting BEGIN lines: an appended bundle has more certificates than
+# either input on its own.
+BEFORE_N="$(grep -c 'BEGIN CERTIFICATE' <<< "$BOOTSTRAP_CA")"
+AFTER_N="$(grep -c 'BEGIN CERTIFICATE' <<< "$NEW_BUNDLE")"
+if [[ "$AFTER_N" -gt "$BEFORE_N" ]]; then
+    ok "the issuing CA was added to the bundle"
+else
+    bad "the issuing CA was added to the bundle" "went from ${BEFORE_N} to ${AFTER_N} certificates"
+fi
+
+# Renewing repeatedly must not grow the bundle without bound — a daily
+# timer would otherwise append the same certificate forever.
+run_issue --force
+REPEAT_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt")"
+if [[ "$REPEAT_N" -eq "$AFTER_N" ]]; then
+    ok "re-running does not append the same CA again"
+else
+    bad "re-running does not append the same CA again" "grew from ${AFTER_N} to ${REPEAT_N}"
+fi
+
+# --replace-ca is the deliberate way to drop the bootstrap CA, once every
+# node is on PKI.
+reset_scenario
+install_existing fresh
+BOOTSTRAP_CA="$(cat "${TLS_DIR}/ca.crt")"
+run_issue --force --replace-ca
+if [[ "$(cat "${TLS_DIR}/ca.crt")" != *"$BOOTSTRAP_CA"* ]]; then
+    ok "--replace-ca drops what was there before"
+else
+    bad "--replace-ca drops what was there before"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== Per-node certificate names ===\n'
+# ---------------------------------------------------------------------------
+# The local Docker profile serves /vault/tls/vault-0.crt, not vault.crt.
+# Without --cert-name the script would write files Vault never reads, and
+# report success.
+reset_scenario
+run_issue --force --cert-name vault-0
+if [[ -s "${TLS_DIR}/vault-0.crt" && -s "${TLS_DIR}/vault-0.key" ]]; then
+    ok "--cert-name controls the filenames written"
+else
+    bad "--cert-name controls the filenames written"
+fi
+if [[ ! -f "${TLS_DIR}/vault.crt" ]]; then
+    ok "and the default name is not written as well"
+else
+    bad "and the default name is not written as well"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Authentication ===\n'
 # ---------------------------------------------------------------------------
 reset_scenario

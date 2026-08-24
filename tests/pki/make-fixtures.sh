@@ -22,31 +22,39 @@ cd "$OUT"
 
 CN="vault-0.vault.internal"
 
+# Two distinct CAs, because that is the situation the script exists for:
+# the node already trusts a bootstrap CA, and Vault PKI issues from a
+# different one. A single CA would let the trust-bundle tests pass
+# without proving anything.
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
     -keyout "ca.key" -out "ca.crt" \
-    -subj "/CN=test CA" 2>/dev/null
+    -subj "/CN=bootstrap CA" 2>/dev/null
 
-# leaf <name> <cn> <days>
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+    -keyout "pkica.key" -out "pkica.crt" \
+    -subj "/CN=vault pki CA" 2>/dev/null
+
+# leaf <name> <cn> <days> [ca-basename]
 leaf() {
-    local name="$1" cn="$2" days="$3"
+    local name="$1" cn="$2" days="$3" ca="${4:-ca}"
     openssl req -newkey rsa:2048 -sha256 -nodes \
         -keyout "${name}.key" -out "${name}.csr" \
         -subj "/CN=${cn}" 2>/dev/null
     printf 'subjectAltName=DNS:%s,DNS:localhost,IP:127.0.0.1\n' "$cn" > "${name}.ext"
-    openssl x509 -req -in "${name}.csr" -CA "ca.crt" -CAkey "ca.key" \
+    openssl x509 -req -in "${name}.csr" -CA "${ca}.crt" -CAkey "${ca}.key" \
         -CAcreateserial -out "${name}.crt" -days "$days" -sha256 \
         -extfile "${name}.ext" 2>/dev/null
     rm -f "${name}.csr" "${name}.ext"
 }
 
-# The certificate Vault "issues" in the happy path.
-leaf good "$CN" 30
+# What Vault "issues" — signed by the PKI CA, not the bootstrap one.
+leaf good "$CN" 30 pkica
 
 # A different key, for the mismatched-pair case.
 openssl genrsa -out "other.key" 2048 2>/dev/null
 
 # A certificate for a different host entirely.
-leaf wronghost "someone-else.vault.internal" 30
+leaf wronghost "someone-else.vault.internal" 30 pkica
 
 # Already installed on the node: far from expiry, so a renewal run should
 # decide there is nothing to do.
@@ -55,4 +63,4 @@ leaf fresh "$CN" 30
 # Already installed and nearly expired, so a renewal run must act.
 leaf expiring "$CN" 1
 
-rm -f "ca.srl"
+rm -f "ca.srl" "pkica.srl"
