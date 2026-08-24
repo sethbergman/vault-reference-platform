@@ -203,8 +203,16 @@ KEY_MOD="$(openssl rsa -noout -modulus -in "${STAGE}/vault.key" 2>/dev/null | op
 # And it must actually be for this node. A certificate for the wrong host
 # installs cleanly, serves TLS, and is rejected by peers during the Raft
 # join with an error that reads like a network problem.
-openssl x509 -in "${STAGE}/vault.crt" -noout -checkhost "$COMMON_NAME" >/dev/null 2>&1 \
-    || die "Issued certificate does not match ${COMMON_NAME} — refusing to install it"
+#
+# Matched on the output, not the exit code. `openssl x509 -checkhost`
+# exits 1 on a mismatch in OpenSSL 3.5 but exits 0 in the 3.0 that Ubuntu
+# ships — so an exit-code check silently accepts any certificate on
+# exactly the distribution these nodes run. The wording has been stable
+# across both: "does match" / "does NOT match".
+CHECKHOST_OUT="$(openssl x509 -in "${STAGE}/vault.crt" -noout -checkhost "$COMMON_NAME" 2>&1 || true)"
+if [[ "$CHECKHOST_OUT" != *"does match"* || "$CHECKHOST_OUT" == *"NOT match"* ]]; then
+    die "Issued certificate does not match ${COMMON_NAME} — refusing to install it"
+fi
 
 log "Certificate verified."
 

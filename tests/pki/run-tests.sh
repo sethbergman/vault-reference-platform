@@ -139,6 +139,28 @@ else
     ok "the 'expiring' fixture expires inside the renewal window"
 fi
 
+# The hostname check keys off openssl's *output*, because `x509
+# -checkhost` exits 1 on a mismatch in OpenSSL 3.5 and exits 0 in the 3.0
+# Ubuntu ships. Relying on the exit code accepted any certificate on
+# exactly the distribution the nodes run.
+#
+# That makes the wording load-bearing, so pin it here: if a future
+# OpenSSL rephrases this, the failure lands on this line rather than
+# turning every certificate into an accepted one.
+MATCH_OUT="$(openssl x509 -in "${FIXTURES}/good.crt" -noout -checkhost "$CN" 2>&1 || true)"
+MISMATCH_OUT="$(openssl x509 -in "${FIXTURES}/wronghost.crt" -noout -checkhost "$CN" 2>&1 || true)"
+
+if [[ "$MATCH_OUT" == *"does match"* && "$MATCH_OUT" != *"NOT match"* ]]; then
+    ok "openssl still says 'does match' for a matching certificate"
+else
+    bad "openssl still says 'does match' for a matching certificate" "got: ${MATCH_OUT}"
+fi
+if [[ "$MISMATCH_OUT" == *"NOT match"* ]]; then
+    ok "openssl still says 'NOT match' for a mismatched certificate"
+else
+    bad "openssl still says 'NOT match' for a mismatched certificate" "got: ${MISMATCH_OUT}"
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n=== Argument handling ===\n'
 # ---------------------------------------------------------------------------
