@@ -5,7 +5,8 @@ deploy: ## Bring up the local 3-node Vault cluster + Prometheus/Grafana
 
 status: ## Check status of the local cluster
 	docker compose -f docker/dev/docker-compose.yml ps
-	curl -s http://localhost:8200/v1/sys/health | jq . || true
+	curl -s --cacert docker/dev/tls/ca.crt \
+	  https://localhost:8200/v1/sys/health | jq . || true
 
 destroy: ## Tear down the local cluster
 	docker compose -f docker/dev/docker-compose.yml down -v

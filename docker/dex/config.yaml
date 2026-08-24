@@ -38,7 +38,9 @@ staticClients:
       - "http://localhost:8250/oidc/callback"
       - "http://127.0.0.1:8250/oidc/callback"
       # Vault's web UI callback.
-      - "http://localhost:8200/ui/vault/auth/oidc/oidc/callback"
+      # https now that the listener serves TLS — a redirect URI has to
+      # match exactly, so leaving this as http silently breaks UI login.
+      - "https://localhost:8200/ui/vault/auth/oidc/oidc/callback"
 
 enablePasswordDB: true
 

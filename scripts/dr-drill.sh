@@ -44,6 +44,7 @@ KEEP_RUNNING=false
 NODE="vault-0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
+TLS_DIR="${COMPOSE_DIR}/tls"
 SNAPSHOT_HOST_PATH=""
 
 CANARY_PATH="secret/dr-drill/canary"
@@ -143,7 +144,7 @@ export VAULT_TRANSIT_TOKEN="$TRANSIT_TOKEN"
 compose up -d "$NODE" >&2 || die "Failed to start a replacement ${NODE}"
 
 for i in $(seq 1 30); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:8200/v1/sys/seal-status"; then
+    if curl --cacert "${TLS_DIR}/ca.crt" -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/seal-status"; then
         log "Replacement node is responding."
         break
     fi
@@ -153,7 +154,7 @@ done
 
 # Confirm it really is empty — if this node still had the old data, the
 # rest of the drill would prove nothing.
-INITIALIZED="$(curl -fsS "http://127.0.0.1:8200/v1/sys/seal-status" | jq -r '.initialized')"
+INITIALIZED="$(curl --cacert "${TLS_DIR}/ca.crt" -fsS "https://127.0.0.1:8200/v1/sys/seal-status" | jq -r '.initialized')"
 [[ "$INITIALIZED" == "false" ]] \
     || die "Replacement node is already initialized — the disaster did not actually destroy its storage"
 log "Confirmed: the replacement node is empty."

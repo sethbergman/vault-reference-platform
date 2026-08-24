@@ -55,6 +55,7 @@ WITH_MONITORING=false
 WITH_OIDC=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
+TLS_DIR="${COMPOSE_DIR}/tls"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -71,10 +72,20 @@ compose() {
     docker compose --project-directory "$COMPOSE_DIR" -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
 }
 
+# Every Vault endpoint is TLS now. This wrapper passes the dev CA so no
+# call has to reach for --insecure, which would make the checks pass
+# while verifying nothing — the failure mode that makes a TLS rollout
+# look finished when it isn't.
+vcurl() {
+    curl --cacert "${TLS_DIR}/ca.crt" "$@"
+}
+
 wait_for() {
     local url="$1" label="$2" attempts="${3:-30}" delay="${4:-2}"
     for i in $(seq 1 "$attempts"); do
-        if curl -fsS -o /dev/null "$url"; then
+        # --cacert is harmless against the plain-HTTP endpoints (Dex,
+        # Prometheus) and required for the Vault ones.
+        if curl --cacert "${TLS_DIR}/ca.crt" -fsS -o /dev/null "$url"; then
             log "${label} is responding."
             return 0
         fi
@@ -100,6 +111,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ---------------------------------------------------------------------------
+# Step 0: TLS material
+# ---------------------------------------------------------------------------
+# Vault refuses to start without its certificate, so this has to happen
+# before anything is brought up. The script is idempotent — it does
+# nothing if the certificates already exist.
+log "Ensuring development TLS certificates exist..."
+"${SCRIPT_DIR}/generate-dev-certs.sh" >&2 || die "Failed to generate TLS certificates"
+[[ -f "${TLS_DIR}/ca.crt" ]] || die "No CA certificate at ${TLS_DIR}/ca.crt"
+
 IFS=',' read -r -a NODE_LIST <<< "$NODES"
 [[ ${#NODE_LIST[@]} -ge 1 ]] || die "No nodes parsed from --nodes"
 LEADER="${NODE_LIST[0]}"
@@ -120,7 +141,7 @@ fi
 # ---------------------------------------------------------------------------
 log "Starting vault-unseal..."
 compose up -d --build vault-unseal >&2
-wait_for "http://127.0.0.1:8300/v1/sys/seal-status" "vault-unseal"
+wait_for "https://127.0.0.1:8300/v1/sys/seal-status" "vault-unseal"
 
 log "Initializing vault-unseal..."
 INIT_JSON="$(compose exec -T vault-unseal vault operator init -key-shares=1 -key-threshold=1 -format=json)"
@@ -138,14 +159,14 @@ compose exec -T vault-unseal vault operator unseal "$UNSEAL_KEY" >/dev/null
 log "Waiting for vault-unseal to become the active node..."
 for i in $(seq 1 30); do
     # /sys/health returns 200 only when initialized, unsealed and active.
-    if curl -fsS -o /dev/null "http://127.0.0.1:8300/v1/sys/health"; then
+    if vcurl -fsS -o /dev/null "https://127.0.0.1:8300/v1/sys/health"; then
         log "vault-unseal is active."
         break
     fi
     log "  unsealed but not active yet... (${i}/30)"
     sleep 2
 done
-curl -fsS -o /dev/null "http://127.0.0.1:8300/v1/sys/health" \
+vcurl -fsS -o /dev/null "https://127.0.0.1:8300/v1/sys/health" \
     || die "vault-unseal never became the active node"
 
 log "Enabling the Transit secrets engine and creating the auto-unseal key..."
@@ -174,7 +195,7 @@ log "vault-unseal is ready."
 # ---------------------------------------------------------------------------
 log "Starting ${NODES}..."
 compose up -d --build "${NODE_LIST[@]}" >&2
-wait_for "http://127.0.0.1:8200/v1/sys/seal-status" "$LEADER"
+wait_for "https://127.0.0.1:8200/v1/sys/seal-status" "$LEADER"
 
 # ---------------------------------------------------------------------------
 # Step 3: Initialize the leader — it auto-unseals itself immediately
@@ -197,14 +218,14 @@ done
 # return from here straight into `vault secrets enable`.
 log "Waiting for ${LEADER} to become the active node..."
 for i in $(seq 1 30); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:8200/v1/sys/health"; then
+    if vcurl -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/health"; then
         log "${LEADER} is active."
         break
     fi
     log "  unsealed but not active yet... (${i}/30)"
     sleep 2
 done
-curl -fsS -o /dev/null "http://127.0.0.1:8200/v1/sys/health" \
+vcurl -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/health" \
     || die "${LEADER} never became the active node"
 
 # ---------------------------------------------------------------------------
