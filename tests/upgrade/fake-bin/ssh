@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Stand-in for ssh, used only by tests/upgrade/run-tests.sh.
+#
+# vault-upgrade.sh drives real hosts over SSH and systemd. The local
+# profile is containers, which have neither, so the rolling-upgrade
+# sequencing has never been exercised by anything. This shim makes that
+# sequencing testable: it records every command the script issues and
+# answers with whatever the scenario needs.
+#
+# What this does and does not prove
+# ---------------------------------
+# It proves the *orchestration* is right — that the leader is stepped
+# down before it is touched, that nodes are done strictly one at a time,
+# that an unhealthy node aborts the run instead of rolling on. That
+# ordering is where the "don't break quorum" correctness lives, and it is
+# the part that is dangerous to get wrong.
+#
+# It does not prove systemd restarts Vault, that scp lands the binary
+# where it should, or that a real node comes back. Only a real upgrade
+# against real hosts shows that.
+#
+# Controlled by environment variables:
+#   FAKE_SSH_LOG        file to append each issued command to
+#   FAKE_SSH_LEADER     hostname that should report itself as the leader
+#   FAKE_SSH_UNHEALTHY  hostname whose health check never succeeds
+#   FAKE_SSH_FAIL_STOP  hostname where `systemctl stop` should fail
+
+set -uo pipefail
+
+# Skip ssh's own options to find "user@host" and the remote command.
+host=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o|-i) shift 2 ;;
+        -*) shift ;;
+        *)
+            host="${1#*@}"
+            shift
+            break
+            ;;
+    esac
+done
+
+command_str="$*"
+
+if [[ -n "${FAKE_SSH_LOG:-}" ]]; then
+    printf '%s\t%s\n' "$host" "$command_str" >> "$FAKE_SSH_LOG"
+fi
+
+# ---------------------------------------------------------------------------
+# Canned responses
+# ---------------------------------------------------------------------------
+case "$command_str" in
+    *"sys/leader"*)
+        # jq -e '.is_self == true' decides whether a step-down is needed.
+        if [[ "$host" == "${FAKE_SSH_LEADER:-}" ]]; then
+            echo '{"is_self":true}'
+        else
+            echo '{"is_self":false}'
+        fi
+        ;;
+
+    *"sys/step-down"*)
+        # A real step-down returns 204 with no body.
+        ;;
+
+    *"sys/health"*)
+        # The script greps for 200/429/472/473. An unhealthy node returns
+        # 503 (sealed), so the wait loop times out and the run aborts.
+        if [[ "$host" == "${FAKE_SSH_UNHEALTHY:-}" ]]; then
+            echo "503"
+        else
+            echo "200"
+        fi
+        ;;
+
+    *"systemctl stop"*)
+        if [[ "$host" == "${FAKE_SSH_FAIL_STOP:-}" ]]; then
+            echo "Failed to stop vault.service" >&2
+            exit 1
+        fi
+        ;;
+
+    *"version"*)
+        echo "Vault v1.17.2 (built 2024-07-05T15:19:12Z)"
+        ;;
+
+    *)
+        # systemctl start, mv, chmod — succeed quietly.
+        ;;
+esac
+
+exit 0
