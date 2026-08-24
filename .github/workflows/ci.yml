@@ -81,6 +81,10 @@ jobs:
           # and a bug in them shows up as a passing test rather than a
           # failing one.
           shellcheck -s bash tests/upgrade/run-tests.sh tests/upgrade/fake-bin/ssh tests/upgrade/fake-bin/scp
+          # Same reasoning for the PKI test harness and its vault/systemctl
+          # shims.
+          shellcheck tests/pki/run-tests.sh tests/pki/make-fixtures.sh
+          shellcheck -s bash tests/pki/fake-bin/vault tests/pki/fake-bin/systemctl
 
       # Windows checkouts do not track the executable bit, so a script
       # committed from one lands as 100644 and CI fails with "Permission
@@ -91,7 +95,7 @@ jobs:
           # Also covers tests/*/fake-bin/*, whose shims deliberately have
           # no .sh suffix — they stand in for `vault`, `aws`, `curl` and
           # must be named exactly that to be found on PATH.
-          non_exec="$(git ls-files -s '*.sh' 'tests/*/fake-bin/*'             | grep -v '^100755' || true)"
+          non_exec="$(git ls-files -s '*.sh' 'tests/*/fake-bin/*' | grep -v '^100755' || true)"
           if [[ -n "$non_exec" ]]; then
             echo "These scripts are missing the executable bit:"
             echo "$non_exec"
@@ -564,6 +568,24 @@ jobs:
 
       - name: Exercise scripts/snapshot.sh
         run: ./tests/snapshot/run-tests.sh
+
+  pki-test:
+    name: Vault PKI node certificate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/bootstrap-pki.sh and scripts/issue-node-cert.sh
+        run: ./tests/pki/run-tests.sh
+
+  pki-test:
+    name: Vault PKI node certificate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise PKI issuance and renewal
+        run: ./tests/pki/run-tests.sh
 
   security-scan:
     name: Security scanning

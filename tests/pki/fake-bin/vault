@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI. Records invocations; answers per scenario.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+if [[ "$1" == "write" && "$*" == *"auth/approle/login"* ]]; then
+    if [[ "${FAKE_APPROLE_RC:-0}" != "0" ]]; then
+        echo "permission denied" >&2; exit "${FAKE_APPROLE_RC}"
+    fi
+    printf '{"auth":{"client_token":"s.faketoken"}}\n'
+    exit 0
+fi
+
+# vault write -format=json pki/issue/<role> ...
+if [[ "$1" == "write" && "$*" == *"/issue/"* ]]; then
+    if [[ "${FAKE_ISSUE_RC:-0}" != "0" ]]; then
+        echo "1 error occurred: permission denied" >&2
+        exit "${FAKE_ISSUE_RC}"
+    fi
+    case "${FAKE_ISSUE_MODE:-good}" in
+        good)      cert="${FIXTURES}/good.crt";     key="${FIXTURES}/good.key" ;;
+        mismatch)  cert="${FIXTURES}/good.crt";     key="${FIXTURES}/other.key" ;;
+        wronghost) cert="${FIXTURES}/wronghost.crt"; key="${FIXTURES}/wronghost.key" ;;
+        empty)     printf '{"data":{"certificate":"","private_key":"","issuing_ca":""}}\n'; exit 0 ;;
+        nokey)     printf '{"data":{"certificate":"x","issuing_ca":"y"}}\n'; exit 0 ;;
+        notpem)    printf '{"data":{"certificate":"not a certificate","private_key":"nope","issuing_ca":"z"}}\n'; exit 0 ;;
+    esac
+    jq -n \
+        --arg c "$(cat "$cert")" \
+        --arg k "$(cat "$key")" \
+        --arg ca "$(cat "${FIXTURES}/ca.crt")" \
+        '{data:{certificate:$c, private_key:$k, issuing_ca:$ca, ca_chain:[$ca]}}'
+    exit 0
+fi
+
+if [[ "$1 ${2:-}" == "token revoke" ]]; then exit 0; fi
+if [[ "$1" == "secrets" || "$1" == "policy" || "$1" == "read" ]]; then
+    exit "${FAKE_GENERIC_RC:-0}"
+fi
+
+echo "fake vault: unhandled: $*" >&2
+exit 64

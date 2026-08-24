@@ -12,7 +12,7 @@ Certificates come from different places per profile:
 | Profile | Issued by |
 |---|---|
 | Local / CI | `scripts/generate-dev-certs.sh` — a local CA, per-node leaves |
-| AWS / Azure | Your own CA, ACM Private CA, or the Ansible layer |
+| AWS / Azure | Your own CA or ACM Private CA to bootstrap; Vault PKI for renewals |
 
 The local CA is generated on demand into `docker/dev/tls/`, which is
 gitignored. Nothing there is committed: a private key in version control
@@ -22,6 +22,48 @@ The cloud profiles deliberately do **not** issue certificates in the
 Terraform. Nodes come up expecting them at `/etc/vault.d/tls/` and Vault
 refuses to start without them, which is the correct failure — a Vault
 serving plaintext is worse than one that will not boot.
+
+### Renewal from Vault's own PKI
+
+Once a cluster is running, `scripts/bootstrap-pki.sh` configures Vault's
+PKI engine to issue node certificates, and a daily systemd timer on each
+node renews them through `scripts/issue-node-cert.sh`.
+
+Certificates default to a 72-hour lifetime, renewed when less than a day
+remains. Short-lived on purpose: a stolen key is useful for hours rather
+than months, and the renewal path runs constantly instead of annually, so
+it is not discovered to be broken during an incident.
+
+Renewal is graceful. Vault reloads the *contents* of `tls_cert_file` and
+`tls_key_file` on `SIGHUP`, using the paths it was given at startup — so
+writing new material to the same paths and signalling means no restart,
+no re-unseal, and no leadership change. The corollary is that the paths
+must never move: Vault ignores a changed `tls_cert_file` on `SIGHUP` and
+keeps serving from the original path, which would look like it worked.
+
+### The bootstrap problem
+
+**Vault's PKI cannot issue the certificates the cluster hosting it needs
+in order to start.** Vault will not serve without TLS, so the first
+certificate on every node has to come from somewhere else:
+
+1. Bootstrap certificates from `generate-dev-certs.sh` (local) or your
+   own CA / ACM Private CA (cloud) bring the cluster up.
+2. `bootstrap-pki.sh` configures the PKI engine on the running cluster.
+3. Nodes renew from Vault PKI from then on, including nodes that join
+   later.
+
+The bootstrap CA stays load-bearing until every node has been re-issued
+from Vault PKI and reloaded, and it has to remain in the trust bundle
+until then. There is no way around that ordering. The `vault_pki` Ansible
+role is off by default and refuses to run on a node with no existing
+certificate, rather than producing a timer that fails quietly every night.
+
+A production deployment would more likely make this PKI mount an
+*intermediate* signed by an offline root, so that compromising this Vault
+does not compromise the whole chain. `bootstrap-pki.sh` generates an
+internal root instead, because an offline root is not something this
+repository can provide — that is a real limitation, not a recommendation.
 
 ## Unsealing
 

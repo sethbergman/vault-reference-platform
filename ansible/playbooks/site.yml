@@ -9,3 +9,6 @@
     # Ordered last because it asserts on values the vault role's
     # group_vars supply.
     - vault_snapshots
+    # Renewal only. The bootstrap certificate comes from the vault role
+    # above; see the note at the top of the role's tasks.
+    - vault_pki
