@@ -130,6 +130,24 @@ UNSEAL_ROOT_TOKEN="$(jq -r '.root_token' <<< "$INIT_JSON")"
 log "Unsealing vault-unseal..."
 compose exec -T vault-unseal vault operator unseal "$UNSEAL_KEY" >/dev/null
 
+# `vault operator unseal` returns as soon as the node is unsealed, which is
+# earlier than it being ready to serve writes: it still has to finish
+# post-unseal setup and become the active node. Writing to sys/mounts in
+# that window fails with "local node not active but active cluster node
+# not found". Poll until it reports active rather than assuming.
+log "Waiting for vault-unseal to become the active node..."
+for i in $(seq 1 30); do
+    # /sys/health returns 200 only when initialized, unsealed and active.
+    if curl -fsS -o /dev/null "http://127.0.0.1:8300/v1/sys/health"; then
+        log "vault-unseal is active."
+        break
+    fi
+    log "  unsealed but not active yet... (${i}/30)"
+    sleep 2
+done
+curl -fsS -o /dev/null "http://127.0.0.1:8300/v1/sys/health" \
+    || die "vault-unseal never became the active node"
+
 log "Enabling the Transit secrets engine and creating the auto-unseal key..."
 compose exec -T -e VAULT_TOKEN="$UNSEAL_ROOT_TOKEN" vault-unseal \
     vault secrets enable -path=transit transit >/dev/null
@@ -173,6 +191,21 @@ for i in $(seq 1 30); do
     sleep 2
 done
 [[ "$SEALED" == "false" ]] || die "${LEADER} did not auto-unseal in time"
+
+# Unsealed is not the same as ready to serve writes — same race as
+# vault-unseal above. This matters most for single-node callers, which
+# return from here straight into `vault secrets enable`.
+log "Waiting for ${LEADER} to become the active node..."
+for i in $(seq 1 30); do
+    if curl -fsS -o /dev/null "http://127.0.0.1:8200/v1/sys/health"; then
+        log "${LEADER} is active."
+        break
+    fi
+    log "  unsealed but not active yet... (${i}/30)"
+    sleep 2
+done
+curl -fsS -o /dev/null "http://127.0.0.1:8200/v1/sys/health" \
+    || die "${LEADER} never became the active node"
 
 # ---------------------------------------------------------------------------
 # Step 4: If clustering, wait for the rest to join and become voters

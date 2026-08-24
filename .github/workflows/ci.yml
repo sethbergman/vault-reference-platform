@@ -7,11 +7,15 @@ on:
 
 jobs:
   terraform:
-    name: Terraform fmt/validate
+    name: Terraform fmt/validate/test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+        with:
+          # terraform_wrapper wraps the binary in a script that mangles
+          # exit codes and output, which breaks `terraform test`.
+          terraform_wrapper: false
       - name: terraform fmt
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (aws)
@@ -24,6 +28,16 @@ jobs:
           cd terraform/azure
           terraform init -backend=false
           terraform validate
+
+      - name: terraform test (aws)
+        run: |
+          # Runs against mocked providers, so no AWS credentials and
+          # nothing is created. These assert on configuration semantics
+          # that validate cannot see — quorum arithmetic, whether an
+          # "internal" load balancer really lands in private subnets,
+          # whether the health check keeps standby nodes in the pool.
+          cd terraform/aws
+          terraform test
 
   ansible-lint:
     name: Ansible lint
@@ -68,6 +82,29 @@ jobs:
           ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh --with-monitoring)
           echo "::add-mask::$ROOT_TOKEN"
           echo "VAULT_ROOT_TOKEN=$ROOT_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Wait for the cluster to be ready to serve writes
+        run: |
+          # Defence in depth. bootstrap-dev-cluster.sh already waits for
+          # the leader to become active, but every step below writes to
+          # Vault, and "unsealed" is not the same as "active" — writing in
+          # that window fails with "local node not active but active
+          # cluster node not found". Cheap to re-check here so a failure
+          # points at the cluster rather than at whichever write happened
+          # to go first.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8200/v1/sys/health; then
+              echo "Cluster is active and ready for writes."
+              exit 0
+            fi
+            echo "Waiting for an active node... ($i/30)"
+            sleep 2
+          done
+          echo "No active node after 60s. Seal status:"
+          curl -fsS http://127.0.0.1:8200/v1/sys/seal-status | jq . || true
+          echo "Leader status:"
+          curl -fsS http://127.0.0.1:8200/v1/sys/leader | jq . || true
+          exit 1
 
       - name: Verify cluster health
         run: |

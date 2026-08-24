@@ -29,10 +29,40 @@ terraform apply plan.tfplan
 
 Provisions:
 
-- 3x EC2 instances (or ASG, depending on module config) for Vault nodes
-- Application Load Balancer with health checks against `/v1/sys/health`
-- KMS key for auto-unseal
-- S3 bucket for Raft snapshots
+- A VPC with public and private subnets across `az_count` availability
+  zones, one NAT gateway per AZ, and an S3 gateway endpoint
+- An autoscaling group of Vault nodes in the private subnets, sized to
+  `node_count`
+- A **network** load balancer on port 8200, internal by default
+- A KMS key for auto-unseal, plus the instance role that uses it
+- An S3 bucket for Raft snapshots, versioned and lifecycle-expired
+
+### Why a network load balancer
+
+[`docs/security.md`](security.md) commits to TLS terminating at the Vault
+process rather than being offloaded. An application load balancer can't
+do that — it terminates the client's TLS and opens a separate connection
+to the backend, so plaintext exists inside the load balancer. An NLB
+forwards TCP untouched, so the client's TLS session runs end to end with
+Vault and the load balancer never holds a certificate or sees a token.
+
+The health check still speaks HTTPS to `/v1/sys/health`, accepting both
+`200` (active) and `429` (standby), so every unsealed node stays in the
+pool and writes get forwarded to the leader.
+
+### Nodes need TLS certificates before they will start
+
+The user-data writes a Vault config with a TLS listener but does **not**
+issue certificates — how you get them is deployment-specific (an internal
+CA, ACM Private CA, or delivered by the Ansible layer). Until they are in
+place at `/etc/vault.d/tls/`, Vault will not start. That is deliberate: a
+Vault serving plaintext is worse than one that refuses to boot.
+
+### Cost note
+
+Three NAT gateways at roughly $32/month each are the bulk of the idle
+cost. Dropping `az_count` to 2, or sharing a single NAT, trades that
+against AZ independence.
 
 Then configure the nodes:
 
