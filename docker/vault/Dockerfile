@@ -14,6 +14,12 @@ RUN sed "s/{{NODE_ID}}/${VAULT_NODE_ID}/g" /tmp/vault.hcl.tpl > /vault/config/va
 # creates this, but we replace the entrypoint below, so create it ourselves.
 RUN mkdir -p /vault/data && chown -R vault:vault /vault/data
 
+# Audit devices write here. Vault validates a device when it is enabled by
+# writing a test entry, so an unwritable path fails at enable time rather
+# than silently later — but the directory still has to exist and be owned
+# by the user Vault runs as, or enabling never succeeds at all.
+RUN mkdir -p /vault/audit && chown -R vault:vault /vault/audit
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI.
+#
+# Stateful on purpose. An enable followed by a list has to reflect the
+# enable, or the script's own final verification ("are any devices
+# actually enabled now?") can never pass — and that verification is one
+# of the things worth testing.
+#
+# State lives in $FAKE_STATE, seeded from FAKE_DEVICES on first use.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+STATE="${FAKE_STATE:-${FAKE_LOG}.devices}"
+if [[ ! -f "$STATE" ]]; then
+    : > "$STATE"
+    for d in ${FAKE_DEVICES//,/ }; do printf '%s\n' "$d" >> "$STATE"; done
+fi
+
+if [[ "$1 ${2:-}" == "audit list" ]]; then
+    if [[ "$*" == *"-format=json"* ]]; then
+        python3 - "$STATE" <<'PY'
+import json, sys
+names = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+print(json.dumps({f"{n}/": {"type": "file"} for n in names}))
+PY
+    else
+        printf 'Path    Type    Description\n'
+        while read -r d; do [[ -n "$d" ]] && printf '%s/  file\n' "$d"; done < "$STATE"
+    fi
+    exit 0
+fi
+
+if [[ "$1 ${2:-}" == "audit enable" ]]; then
+    # Vault writes a test entry when enabling, so a path it cannot write
+    # is rejected here rather than blocking requests later.
+    #
+    # The two failure sources exit separately on purpose. Folding them
+    # into one `exit "${FAKE_ENABLE_RC:-2}"` meant the unwritable-path
+    # case exited 0 whenever the scenario had set FAKE_ENABLE_RC=0 — it
+    # printed an error and reported success, which is precisely the shape
+    # of bug these tests exist to catch.
+    # A socket device whose endpoint is not listening is rejected at
+    # enable time too, the same as an unwritable file path.
+    if [[ "$*" == *"socket"* && "${FAKE_COLLECTOR_UP:-true}" != "true" ]]; then
+        echo "error enabling audit device: dial tcp: connection refused" >&2
+        exit 2
+    fi
+    if [[ "$*" == *"/nonexistent/"* ]]; then
+        echo "error enabling audit device: permission denied" >&2
+        exit 2
+    fi
+    if [[ "${FAKE_ENABLE_RC:-0}" != "0" ]]; then
+        echo "error enabling audit device: request failed" >&2
+        exit "${FAKE_ENABLE_RC}"
+    fi
+    # FAKE_ENABLE_SILENT_NOOP models the nastiest shape: the call
+    # succeeds and the device is not there afterwards. The script's final
+    # "are any devices actually enabled" check exists for exactly this,
+    # and without modelling it that check cannot be tested at all.
+    if [[ "${FAKE_ENABLE_SILENT_NOOP:-false}" == "true" ]]; then
+        exit 0
+    fi
+    name="$(printf '%s\n' "$@" | sed -n 's/^-path=//p' | head -1)"
+    [[ -n "$name" ]] && printf '%s\n' "$name" >> "$STATE"
+    exit 0
+fi
+
+if [[ "$1 ${2:-}" == "audit disable" ]]; then
+    if [[ "${FAKE_DISABLE_RC:-0}" != "0" ]]; then exit "${FAKE_DISABLE_RC}"; fi
+    grep -vxF "${3:-}" "$STATE" > "${STATE}.tmp" 2>/dev/null || true
+    mv "${STATE}.tmp" "$STATE"
+    exit 0
+fi
+
+echo "fake vault: unhandled command: $*" >&2
+exit 64

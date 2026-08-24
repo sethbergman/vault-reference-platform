@@ -5,7 +5,7 @@
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
 #                              [--with-monitoring] [--with-oidc]
-#                              [--with-database]
+#                              [--with-database] [--with-audit]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
@@ -13,6 +13,7 @@
 #   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
 #   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
 #   ./bootstrap-dev-cluster.sh --with-database         # + Postgres for dynamic creds
+#   ./bootstrap-dev-cluster.sh --with-audit            # + collector for socket audit
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -56,6 +57,7 @@ NODES="vault-0,vault-1,vault-2"
 WITH_MONITORING=false
 WITH_OIDC=false
 WITH_DATABASE=false
+WITH_AUDIT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
 TLS_DIR="${COMPOSE_DIR}/tls"
@@ -110,6 +112,7 @@ while [[ $# -gt 0 ]]; do
         --with-monitoring) WITH_MONITORING=true; shift ;;
         --with-oidc) WITH_OIDC=true; shift ;;
         --with-database) WITH_DATABASE=true; shift ;;
+        --with-audit) WITH_AUDIT=true; shift ;;
         -h|--help) usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -151,6 +154,17 @@ if [[ "$WITH_DATABASE" == true ]]; then
     log "Starting Postgres (target for the database secrets engine)..."
     compose up -d --wait postgres >&2         || die "Postgres did not become healthy"
     log "Postgres is accepting queries."
+fi
+
+# ---------------------------------------------------------------------------
+# Step 0: Optionally start the audit collector
+# ---------------------------------------------------------------------------
+# Target for a socket audit device. Starting it before Vault matters:
+# Vault writes a test entry when a device is enabled and refuses the
+# device if the endpoint is not listening.
+if [[ "$WITH_AUDIT" == true ]]; then
+    log "Starting the audit collector (target for the socket audit device)..."
+    compose up -d audit-collector >&2 || die "Could not start the audit collector"
 fi
 
 # ---------------------------------------------------------------------------
