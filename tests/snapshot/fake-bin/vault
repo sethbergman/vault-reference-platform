@@ -6,11 +6,32 @@ printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
 
 case "$1 ${2:-}" in
     "status -format=json")
-        printf '{"sealed":%s,"ha_mode":"%s","initialized":true}\n' \
-            "${FAKE_SEALED:-false}" "${FAKE_HA_MODE:-active}"
+        # Mirrors the real `vault status -format=json`, which does NOT
+        # contain ha_mode — that field exists only in the CLI's text
+        # output. This shim used to emit it, which is exactly how the
+        # script came to depend on a field that is never there: the shim
+        # agreed with the bug.
+        #
+        # FAKE_IS_SELF=absent models the shape where leadership has to be
+        # resolved from sys/leader instead.
+        if [[ "${FAKE_IS_SELF:-true}" == "absent" ]]; then
+            printf '{"sealed":%s,"initialized":true}\n' "${FAKE_SEALED:-false}"
+        else
+            printf '{"sealed":%s,"initialized":true,"is_self":%s}\n' \
+                "${FAKE_SEALED:-false}" "${FAKE_IS_SELF:-true}"
+        fi
         exit 0
         ;;
 esac
+
+# vault read -format=json sys/leader
+if [[ "$1" == "read" && "$*" == *"sys/leader"* ]]; then
+    if [[ "${FAKE_LEADER_RC:-0}" != "0" ]]; then
+        exit "${FAKE_LEADER_RC}"
+    fi
+    printf '{"data":{"is_self":%s,"ha_enabled":true}}\n' "${FAKE_LEADER_IS_SELF:-true}"
+    exit 0
+fi
 
 # vault write -format=json auth/approle/login ...
 if [[ "$1" == "write" && "$*" == *"auth/approle/login"* ]]; then
