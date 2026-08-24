@@ -102,9 +102,21 @@ node_port() {
     esac
 }
 
-# health_code <port>
+# health_code <port> — the *role* of the node.
+#
+# Deliberately without standbyok: that parameter tells Vault to answer 200
+# for a standby, which is exactly the distinction being drawn here. With it
+# set no node ever reports 429 and the standby search finds nothing.
+#
+#   200 active   429 standby   472/473 DR/perf standby   503 sealed
 health_code() {
-    curl --cacert "$VAULT_CACERT" -fsS -o /dev/null -w '%{http_code}' \
+    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
+        "https://127.0.0.1:$1/v1/sys/health" 2>/dev/null || echo "000"
+}
+
+# alive_code <port> — is the node serving at all, whatever its role.
+alive_code() {
+    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
         "https://127.0.0.1:$1/v1/sys/health?standbyok=true" 2>/dev/null || echo "000"
 }
 
@@ -133,10 +145,19 @@ info ""
 info "=== Snapshots against real Raft data ==="
 # ---------------------------------------------------------------------------
 SNAP_DIR="${WORK}/snapshots"
+info "  node role at 8200: HTTP $(health_code 8200)"
 if "${REPO_ROOT}/scripts/snapshot.sh" --cloud none --output-dir "$SNAP_DIR" >"${WORK}/snap.log" 2>&1; then
-    ok "snapshot.sh succeeded against the active node"
+    # Exit 0 alone proves nothing — a standby and a sealed node also exit
+    # 0, by design. The assertion has to be that it actually took one.
+    if grep -q "Snapshot verified" "${WORK}/snap.log"; then
+        ok "snapshot.sh took and verified a snapshot"
+    else
+        bad "snapshot.sh took and verified a snapshot" "exited 0 without taking one; log follows"
+        sed 's/^/        /' "${WORK}/snap.log"
+    fi
 else
-    bad "snapshot.sh succeeded against the active node" "$(tail -3 "${WORK}/snap.log")"
+    bad "snapshot.sh failed against the active node" "log follows"
+    sed 's/^/        /' "${WORK}/snap.log"
 fi
 
 # `set -o pipefail` plus `set -e` makes a failing `find` abort the whole
@@ -174,7 +195,11 @@ info "=== Standby detection against a real HA cluster ==="
 STANDBY_PORT=""
 for n in vault-0 vault-1 vault-2; do
     p="$(node_port "$n")"
-    [[ "$(health_code "$p")" == "429" ]] && { STANDBY_PORT="$p"; break; }
+    c="$(health_code "$p")"
+    info "  ${n} (port ${p}): HTTP ${c}"
+    if [[ "$c" == "429" && -z "$STANDBY_PORT" ]]; then
+        STANDBY_PORT="$p"
+    fi
 done
 
 if [[ -n "$STANDBY_PORT" ]]; then
@@ -252,11 +277,21 @@ cat > "${WORK}/reload.sh" <<EOF
 set -euo pipefail
 cd "${COMPOSE_DIR}"
 for n in vault-0 vault-1 vault-2; do
-    docker compose kill -s HUP "\$n" >/dev/null 2>&1 || true
+    echo "HUP \$n"
+    docker compose kill -s HUP "\$n" || echo "  (kill failed for \$n)"
 done
-sleep 3
+sleep 5
 EOF
 chmod +x "${WORK}/reload.sh"
+
+# The hook runs as an opaque command from issue-node-cert.sh, so its
+# output is captured separately. If the signal never lands, that is the
+# one line worth seeing.
+cat > "${WORK}/reload-wrapper.sh" <<EOF
+#!/usr/bin/env bash
+"${WORK}/reload.sh" > "${WORK}/reload.out" 2>&1
+EOF
+chmod +x "${WORK}/reload-wrapper.sh"
 
 if "${REPO_ROOT}/scripts/issue-node-cert.sh" \
         --common-name vault-0.vault.internal \
@@ -265,7 +300,7 @@ if "${REPO_ROOT}/scripts/issue-node-cert.sh" \
         --tls-dir "$TLS_DIR" \
         --cert-name vault-0 \
         --force \
-        --reload-cmd "${WORK}/reload.sh" \
+        --reload-cmd "${WORK}/reload-wrapper.sh" \
         >"${WORK}/issue.log" 2>&1; then
     ok "issue-node-cert.sh issued and installed a certificate"
 else
@@ -286,7 +321,25 @@ info "=== SIGHUP reloads the certificate without restarting Vault ==="
 # ---------------------------------------------------------------------------
 # The claim the whole renewal design rests on. Until now it rested on
 # HashiCorp's listener documentation and nothing else.
+# On-disk vs served. If they agree, SIGHUP worked. If the on-disk serial
+# changed but the served one did not, Vault did not reload — which would
+# falsify the claim the renewal design rests on, so it has to be visible
+# rather than inferred from a single failing assertion.
+DISK_SERIAL="$(openssl x509 -in "${TLS_DIR}/vault-0.crt" -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+info "  serial before:  ${BEFORE_SERIAL:-<none>}"
+info "  serial on disk: ${DISK_SERIAL:-<none>}"
+
+if [[ -n "$DISK_SERIAL" && "$DISK_SERIAL" != "$BEFORE_SERIAL" ]]; then
+    ok "a new certificate was written to disk"
+else
+    bad "a new certificate was written to disk" "on-disk serial is still ${DISK_SERIAL:-<none>}"
+fi
+
+info "  reload hook output:"
+sed 's/^/        /' "${WORK}/reload.out" 2>/dev/null || true
+
 AFTER_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
+info "  serial served:  ${AFTER_SERIAL:-<none>}"
 AFTER_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null || true)"
 AFTER_STARTED="$(docker inspect -f '{{.State.StartedAt}}' "$(compose ps -q vault-0)" 2>/dev/null || echo unknown)"
 
@@ -318,7 +371,7 @@ fi
 info ""
 info "=== The cluster survived the swap ==="
 # ---------------------------------------------------------------------------
-CODE="$(health_code 8200)"
+CODE="$(alive_code 8200)"
 if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
     ok "vault-0 is still healthy and unsealed (${CODE})"
 else
