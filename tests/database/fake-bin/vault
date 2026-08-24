@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI. Records every invocation; answers per scenario.
+set -uo pipefail
+# One invocation, one log line. The role creation statements are
+# multi-line SQL, so logging them verbatim splits a single call across
+# many lines and makes "did this call contain X" unanswerable.
+printf 'vault %s\n' "$(printf '%s' "$*" | tr '\n' ' ' | tr -s ' ')" >> "${FAKE_LOG}"
+
+if [[ "$1 ${2:-}" == "secrets list" ]]; then
+    if [[ "${FAKE_MOUNT_EXISTS:-false}" == "true" ]]; then
+        printf '{"database/":{"type":"database"}}\n'
+    else
+        printf '{"cubbyhole/":{"type":"cubbyhole"}}\n'
+    fi
+    exit 0
+fi
+
+if [[ "$1 ${2:-}" == "secrets enable" ]]; then
+    exit "${FAKE_ENABLE_RC:-0}"
+fi
+
+# vault read database/config/<name>
+if [[ "$1" == "read" && "$*" == *"/config/"* ]]; then
+    [[ "${FAKE_CONFIG_EXISTS:-false}" == "true" ]] || exit 2
+    printf '{"data":{"plugin_name":"postgresql-database-plugin"}}\n'
+    exit 0
+fi
+
+if [[ "$1" == "write" && "$*" == *"/config/"* ]]; then
+    exit "${FAKE_CONFIG_RC:-0}"
+fi
+
+if [[ "$1" == "write" && "$*" == *"/roles/"* ]]; then
+    exit "${FAKE_ROLE_RC:-0}"
+fi
+
+if [[ "$1" == "write" && "$*" == *"rotate-root"* ]]; then
+    exit "${FAKE_ROTATE_RC:-0}"
+fi
+
+if [[ "$1 ${2:-}" == "policy write" ]]; then
+    # Consume the policy on stdin so the caller's heredoc does not block.
+    cat > "${FAKE_POLICY_DIR:-/tmp}/policy-${3:-unknown}.hcl" 2>/dev/null || cat >/dev/null
+    exit "${FAKE_POLICY_RC:-0}"
+fi
+
+echo "fake vault: unhandled command: $*" >&2
+exit 64

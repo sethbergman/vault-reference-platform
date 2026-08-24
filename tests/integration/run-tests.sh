@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh")"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -457,6 +457,165 @@ if "${REPO_ROOT}/scripts/issue-node-cert.sh" \
     ok "a second run correctly does nothing"
 else
     bad "a second run correctly does nothing" "$(tail -3 "${WORK}/noop.log")"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Dynamic database credentials ==="
+# ---------------------------------------------------------------------------
+# The claim: the credential does not exist until it is asked for, works,
+# is scoped, and dies. None of that can be shown with a shim — a shim can
+# only confirm the right API calls were made. Here the credentials are
+# used against the database they were minted for.
+
+# psql <user> <password> <sql> — run SQL as a specific role.
+psql_as() {
+    # stderr is kept, because the interesting answers arrive there:
+    # "permission denied" is how a readonly role proves it is readonly.
+    #
+    # But docker compose writes its own diagnostics to the same stream,
+    # and one of them — the obsolete-`version` warning — silently
+    # prefixed every result and turned a passing query into a failed
+    # assertion. Filtered by `level=` rather than by that one message,
+    # since any future compose warning would break this identically.
+    # Over the service name, not loopback. initdb gives 127.0.0.1 a trust
+    # rule, so a loopback connection accepts any password at all — which
+    # would make the root-rotation assertion below meaningless.
+    compose exec -T -e PGPASSWORD="$2" postgres \
+        psql -h postgres -U "$1" -d appdata -tAc "$3" 2>&1 \
+        | grep -v 'level=' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | grep -v '^$' || true
+}
+
+BOOTSTRAP_PW="bootstrap-only-rotated-immediately"
+
+# A table for the grants to mean something. Created before the engine is
+# configured so both roles see it.
+psql_as vaultadmin "$BOOTSTRAP_PW"     "CREATE TABLE IF NOT EXISTS widgets (id int); INSERT INTO widgets VALUES (1);" >/dev/null 2>&1 || true
+
+if "${REPO_ROOT}/scripts/bootstrap-database-secrets.sh"         --host postgres:5432         --password "$BOOTSTRAP_PW"         --default-ttl 1h         >"${WORK}/dbsecrets.log" 2>&1; then
+    ok "bootstrap-database-secrets.sh configured the engine"
+else
+    bad "bootstrap-database-secrets.sh configured the engine" "log follows"
+    sed 's/^/        /' "${WORK}/dbsecrets.log"
+fi
+
+CREDS_A="$(vault read -format=json database/creds/appdata-readonly 2>/dev/null || true)"
+USER_A="$(jq -r '.data.username // empty' <<< "${CREDS_A:-{\}}" 2>/dev/null || true)"
+PASS_A="$(jq -r '.data.password // empty' <<< "${CREDS_A:-{\}}" 2>/dev/null || true)"
+LEASE_A="$(jq -r '.lease_id // empty' <<< "${CREDS_A:-{\}}" 2>/dev/null || true)"
+
+if [[ -n "$USER_A" && -n "$PASS_A" ]]; then
+    ok "Vault issued a credential"
+else
+    bad "Vault issued a credential" "$(head -3 "${WORK}/dbsecrets.log" 2>/dev/null)"
+fi
+
+# The whole point: every consumer gets its own. If two reads returned the
+# same user this would be a shared password with extra steps.
+CREDS_B="$(vault read -format=json database/creds/appdata-readonly 2>/dev/null || true)"
+USER_B="$(jq -r '.data.username // empty' <<< "${CREDS_B:-{\}}" 2>/dev/null || true)"
+PASS_B="$(jq -r '.data.password // empty' <<< "${CREDS_B:-{\}}" 2>/dev/null || true)"
+if [[ -n "$USER_B" && "$USER_B" != "$USER_A" ]]; then
+    ok "a second read returns a different user"
+else
+    bad "a second read returns a different user" "both were '${USER_A}'"
+fi
+
+# It has to actually work, not merely be returned.
+if [[ "$(psql_as "$USER_A" "$PASS_A" "SELECT 1;")" == "1" ]]; then
+    ok "the issued credential can connect and query"
+else
+    bad "the issued credential can connect and query" "$(psql_as "$USER_A" "$PASS_A" "SELECT 1;")"
+fi
+
+# And the grants have to be real. A readonly role that can write is a
+# readonly role in name only.
+WRITE_OUT="$(psql_as "$USER_A" "$PASS_A" "INSERT INTO widgets VALUES (2);")"
+if [[ "$WRITE_OUT" == *"permission denied"* ]]; then
+    ok "the readonly credential cannot write"
+else
+    bad "the readonly credential cannot write" "insert returned: ${WRITE_OUT}"
+fi
+
+CREDS_RW="$(vault read -format=json database/creds/appdata-readwrite 2>/dev/null || true)"
+USER_RW="$(jq -r '.data.username // empty' <<< "${CREDS_RW:-{\}}" 2>/dev/null || true)"
+PASS_RW="$(jq -r '.data.password // empty' <<< "${CREDS_RW:-{\}}" 2>/dev/null || true)"
+RW_OUT="$(psql_as "$USER_RW" "$PASS_RW" "INSERT INTO widgets VALUES (3); SELECT count(*) FROM widgets;")"
+if [[ "$RW_OUT" != *"permission denied"* && -n "$USER_RW" ]]; then
+    ok "the readwrite credential can write"
+else
+    bad "the readwrite credential can write" "insert returned: ${RW_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Revocation actually revokes ==="
+# ---------------------------------------------------------------------------
+# A lease that expires in Vault but leaves the account alive in the
+# database is the worst outcome here: it looks managed and is not.
+if [[ -n "$LEASE_A" ]] && vault lease revoke "$LEASE_A" >/dev/null 2>&1; then
+    ok "the lease was revoked"
+else
+    bad "the lease was revoked" "lease id was '${LEASE_A}'"
+fi
+
+sleep 2
+REVOKED_OUT="$(psql_as "$USER_A" "$PASS_A" "SELECT 1;")"
+if [[ "$REVOKED_OUT" != "1" ]]; then
+    ok "the revoked credential can no longer connect"
+else
+    bad "the revoked credential can no longer connect" "it still works"
+fi
+
+# Gone from the database, not merely unable to log in.
+# Asked using a *live* Vault-issued credential, not the bootstrap
+# account — by this point root rotation has run and the bootstrap
+# password is correctly dead. pg_roles is a public catalog view, so an
+# ordinary credential can answer this, and using one keeps the check
+# working regardless of what happened to the admin password.
+ROLE_LEFT="$(psql_as "$USER_B" "$PASS_B"     "SELECT count(*) FROM pg_roles WHERE rolname = '${USER_A}';")"
+if [[ "$ROLE_LEFT" == "0" ]]; then
+    ok "and the role is dropped from Postgres entirely"
+else
+    bad "and the role is dropped from Postgres entirely" "pg_roles still has it (count=${ROLE_LEFT})"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Root rotation ==="
+# ---------------------------------------------------------------------------
+# After bootstrap, nobody knows the password to the account Vault connects
+# with — not the operator who ran the script, not this test. That is the
+# end state dynamic secrets are for, and it is only demonstrable against a
+# real database.
+# Control first. Under a trust rule Postgres accepts *any* password, so
+# the assertion after this one would pass or fail for reasons having
+# nothing to do with rotation. Proving a bogus password is rejected is
+# what makes the next line evidence rather than decoration.
+WRONG_OUT="$(psql_as vaultadmin "definitely-not-the-password" "SELECT 1;")"
+if [[ "$WRONG_OUT" != "1" ]]; then
+    ok "a wrong password is rejected, so the next check means something"
+else
+    bad "a wrong password is rejected, so the next check means something" \
+        "Postgres accepted a bogus password — auth is not enforced on this path"
+fi
+
+ROOT_OUT="$(psql_as vaultadmin "$BOOTSTRAP_PW" "SELECT 1;")"
+if [[ "$ROOT_OUT" != "1" ]]; then
+    ok "the bootstrap password no longer works"
+else
+    bad "the bootstrap password no longer works" \
+        "the password in docker-compose.yml still authenticates — rotate-root did not run"
+fi
+
+# And Vault can still issue, which is what makes the rotation safe rather
+# than merely destructive.
+if vault read -format=json database/creds/appdata-readonly >/dev/null 2>&1; then
+    ok "but Vault can still issue credentials"
+else
+    bad "but Vault can still issue credentials" "rotation broke the connection"
 fi
 
 # ---------------------------------------------------------------------------

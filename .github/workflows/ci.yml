@@ -609,6 +609,15 @@ jobs:
           cd docker/dev
           docker compose down -v || true
 
+  database-test:
+    name: Dynamic database credentials tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/bootstrap-database-secrets.sh
+        run: ./tests/database/run-tests.sh
+
   security-scan:
     name: Security scanning
     runs-on: ubuntu-latest
