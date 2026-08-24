@@ -1,0 +1,21 @@
+# Blackbox exporter — probes Vault's TLS listeners.
+#
+# This exists to answer one question: what certificate is the node
+# actually serving right now?
+#
+# Reading the certificate from disk answers a different and weaker
+# question. A renewal can write a new certificate and fail to reload it —
+# the reload command exits 0 whether or not Vault accepted the file — and
+# the node then serves the old certificate with a correct-looking file
+# sitting next to it. That happened here; see docs/security.md.
+#
+# Probing the listener is the only way to see what clients see.
+
+modules:
+  vault_tls:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      tls: true
+      tls_config:
+        ca_file: /etc/blackbox/vault-ca.crt

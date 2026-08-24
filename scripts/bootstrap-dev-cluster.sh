@@ -271,8 +271,12 @@ fi
 # Step 5: Optionally start monitoring and confirm metrics are actually flowing
 # ---------------------------------------------------------------------------
 if [[ "$WITH_MONITORING" == true ]]; then
-    log "Starting Prometheus and Grafana..."
-    compose up -d prometheus grafana >&2
+    log "Starting Prometheus, Grafana and the alerting stack..."
+    # alertmanager receives what the rules fire; pushgateway is where
+    # batch jobs record success so its absence can be alerted on;
+    # blackbox probes the TLS listeners so certificate expiry is
+    # measured from what is served rather than what is on disk.
+    compose up -d prometheus grafana alertmanager pushgateway blackbox >&2
     wait_for "http://127.0.0.1:9090/-/ready" "prometheus"
 
     # Containers being up proves nothing about scraping — Vault could be
@@ -299,6 +303,11 @@ if [[ "$WITH_MONITORING" == true ]]; then
 
     log "Grafana: http://localhost:3000 (anonymous admin, dev only)"
     log "Prometheus: http://localhost:9090"
+    log "Alertmanager: http://localhost:9093"
+    log ""
+    log "Note: VaultSnapshotMetricMissing will fire after ~2 minutes."
+    log "That is correct — nothing has taken a snapshot yet. See"
+    log "docs/monitoring.md."
 fi
 
 log "Cluster is up. Root token is a fresh dev-only credential, printed to stdout."

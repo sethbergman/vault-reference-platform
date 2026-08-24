@@ -1,0 +1,30 @@
+# Alertmanager configuration for the local profile.
+#
+# Routing is deliberately minimal. Where alerts should go — PagerDuty,
+# Slack, an on-call rotation — is site-specific and cannot be
+# demonstrated meaningfully here, so this receives everything into a
+# webhook sink that does nothing with it.
+#
+# What that still buys, and the reason Alertmanager is here at all: the
+# tests can assert an alert travelled the whole path from rule
+# evaluation to Alertmanager's API, rather than only that Prometheus
+# evaluated an expression. A rule that fires and reaches nobody is the
+# same class of problem as a backup nobody takes.
+
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: default
+  group_by: [alertname]
+  # Short intervals so a CI run sees the alert rather than waiting out a
+  # production-shaped delay. See docs/monitoring.md for real values.
+  group_wait: 5s
+  group_interval: 10s
+  repeat_interval: 1h
+
+receivers:
+  - name: default
+    # No receiver configured. Alerts are still visible via
+    # /api/v2/alerts, which is what the integration tests query.
+    webhook_configs: []

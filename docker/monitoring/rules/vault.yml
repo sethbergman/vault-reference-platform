@@ -1,0 +1,174 @@
+# Alert rules for the Vault cluster.
+#
+# The organising idea here is alerting on ABSENCE. Nearly every failure
+# this repository has produced looked like success from the outside:
+#
+#   - snapshots were never taken on any node, for weeks, with three
+#     green systemd timers
+#   - a certificate reload failed and Vault kept serving the old one,
+#     while the reload command exited 0
+#   - a certificate hostname check accepted every certificate because
+#     openssl reports the result in its output, not its exit code
+#
+# None of those would have been caught by a dashboard, because nothing
+# was wrong on screen — the graphs simply had one fewer line than they
+# should have. Absence does not draw attention to itself.
+#
+# THE TRAP THIS FILE EXISTS TO AVOID
+#
+# A threshold alert on a metric that is not being reported NEVER FIRES.
+#
+#   time() - vault_snapshot_last_success_timestamp_seconds > 7200
+#
+# reads like "alert if the last snapshot was over two hours ago". It is
+# not. If snapshots stop entirely and the metric stops being pushed, the
+# expression has no series to evaluate and produces no result — which
+# Prometheus treats as nothing to alert on. The alert is silent in
+# exactly the situation it was written for.
+#
+# So every freshness alert here is paired with an absent() alert. The
+# pair is the unit; one without the other is a false sense of coverage.
+#
+# The `for:` durations are deliberately short so the integration tests
+# can observe alerts firing within a CI run. Production values are
+# suggested in docs/monitoring.md and are considerably longer.
+
+groups:
+  - name: vault-availability
+    interval: 15s
+    rules:
+      - alert: VaultNodeDown
+        expr: up{job="vault"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault node {{ $labels.instance }} is not responding to scrapes"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. This fires per
+            node; losing one of three is survivable, losing two is not.
+          runbook: docs/operations.md
+
+      # up == 0 requires a target that Prometheus knows about. If the
+      # scrape config itself is broken or empty, there are no series at
+      # all and VaultNodeDown stays silent while nothing is monitored.
+      - alert: VaultAllTargetsMissing
+        expr: absent(up{job="vault"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Vault scrape targets exist at all"
+          description: >-
+            Prometheus has no targets for job=vault. Every other alert in
+            this file is silent while this is true, which is why it is
+            here: it is the alert that catches the monitoring itself
+            failing.
+          runbook: docs/operations.md
+
+      - alert: VaultNodeSealed
+        expr: vault_core_unsealed == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault node {{ $labels.instance }} is sealed"
+          description: >-
+            A sealed node serves nothing. With auto-unseal configured this
+            usually means the KMS or Transit backend is unreachable rather
+            than that someone sealed it.
+          runbook: docs/operations.md
+
+      # Quorum for a three-node Raft cluster is two. At one remaining node
+      # the cluster is read-only and cannot elect a leader.
+      - alert: VaultQuorumLost
+        expr: sum(vault_core_unsealed) < 2
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fewer than two Vault nodes are unsealed"
+          description: >-
+            Raft needs a majority. Below two of three the cluster cannot
+            elect a leader or accept writes.
+          runbook: docs/disaster-recovery.md
+
+      - alert: VaultNoActiveNode
+        expr: sum(vault_core_active) < 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Vault node reports itself as active"
+          description: >-
+            Nodes can all be unsealed and healthy while none holds
+            leadership. Writes fail with "local node not active but active
+            cluster node not found".
+          runbook: docs/operations.md
+
+  - name: vault-backups
+    interval: 15s
+    rules:
+      # Paired with the absent() alert below. This one alone would not
+      # have caught the real failure: when snapshots stopped entirely,
+      # nothing pushed the metric, and an expression over a series that
+      # does not exist produces no result to alert on.
+      - alert: VaultSnapshotStale
+        expr: time() - vault_snapshot_last_success_timestamp_seconds > 7200
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful Vault snapshot in over two hours"
+          description: >-
+            The snapshot timer runs hourly. Two hours without a success
+            means at least one cycle failed silently. Check the bucket
+            before the unit status — a green timer is not a backup.
+          runbook: docs/operations.md
+
+      - alert: VaultSnapshotMetricMissing
+        expr: absent(vault_snapshot_last_success_timestamp_seconds)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nothing is reporting Vault snapshot success"
+          description: >-
+            No snapshot has ever been recorded, or the pushgateway is
+            unreachable. VaultSnapshotStale cannot fire while this is
+            true, because it has no series to evaluate — which is
+            precisely how snapshots went missing unnoticed before.
+          runbook: docs/operations.md
+
+  - name: vault-certificates
+    interval: 15s
+    rules:
+      # Observed on the wire rather than read from disk, deliberately.
+      # A renewal can write a new certificate to disk and fail to reload
+      # it — the reload command exits 0 either way — leaving Vault
+      # serving the old one. Only the served certificate answers the
+      # question that matters.
+      - alert: VaultCertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="vault-tls"} - time()) < 86400
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault certificate on {{ $labels.instance }} expires within 24h"
+          description: >-
+            Renewal is daily, so under a day of remaining life means at
+            least one renewal has not taken effect. Compare the serial on
+            disk with the one being served.
+          runbook: docs/operations.md
+
+      - alert: VaultCertificateProbeMissing
+        expr: absent(probe_ssl_earliest_cert_expiry{job="vault-tls"})
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nothing is probing Vault's served certificates"
+          description: >-
+            The TLS probe is not reporting, so certificate expiry is
+            unmonitored and VaultCertificateExpiringSoon cannot fire.
+          runbook: docs/operations.md

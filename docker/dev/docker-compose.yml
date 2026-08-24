@@ -117,9 +117,36 @@ services:
       - "9090:9090"
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/rules:/etc/prometheus/rules:ro
       # Needed to verify the Vault nodes it scrapes, now that they serve
       # TLS. Without it every scrape fails certificate verification.
       - ./tls/ca.crt:/etc/prometheus/vault-ca.crt:ro
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  # Where batch jobs record that they succeeded. A snapshot timer that
+  # stops running stops pushing, and the absence is what gets alerted on
+  # — see docker/monitoring/rules/vault.yml.
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    ports:
+      - "9091:9091"
+
+  # Probes the Vault listeners so certificate expiry is measured from
+  # what is served, not from what is on disk.
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    ports:
+      - "9115:9115"
+    volumes:
+      - ../monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - ./tls/ca.crt:/etc/blackbox/vault-ca.crt:ro
 
   grafana:
     image: grafana/grafana:11.2.0

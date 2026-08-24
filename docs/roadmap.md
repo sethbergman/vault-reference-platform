@@ -16,6 +16,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.4 | AWS and Azure profiles, TLS everywhere, Terraform → Ansible handoff |
 | v0.5 | Scheduled snapshots, certificate renewal from Vault PKI, integration tests |
 | v0.6 | Dynamic database credentials (PostgreSQL), with root rotation |
+| v0.7 | Alerting on absence: rules, Alertmanager, pushgateway, TLS probes |
 
 ## The honest gap
 
@@ -50,22 +51,16 @@ should refuse — but it means naive configuration turns a full disk into
 an outage. Doing this properly means log rotation, a second device, and a
 runbook for when the sink fills up.
 
-### Alerting on absence
+### Alert routing
 
-Prometheus scrapes and Grafana has a dashboard, but nothing alerts. There
-are no `rule_files` in `docker/monitoring/prometheus.yml`.
+Alertmanager is wired up and the tests confirm alerts reach its API, but
+no receiver is configured. Where alerts should go — PagerDuty, Slack, an
+on-call rotation — is site-specific, and a fake receiver would prove
+nothing a reader could reuse.
 
-The alerts worth having are the ones for things *not* happening, which is
-the failure shape this project keeps running into:
-
-- no snapshot object written in the last two hours
-- a node's certificate within 24 hours of expiry
-- fewer than three Raft voters
-- a node sealed for more than a few minutes
-
-Every one of those has already occurred here as a silent success: a green
-timer, an exit code of zero, and no backup. Dashboards do not catch that;
-alerts on absence do.
+Related: the cloud profiles have no monitoring stack at all. The rule
+file is ordinary PromQL against standard Vault metrics and would port
+directly, but nothing here deploys it outside the local profile.
 
 ### Finishing the PKI migration
 
@@ -101,12 +96,11 @@ in production. The blockers are, in order:
 1. **A real cloud apply.** Until one of the two profiles has been stood
    up and torn down for real, the claim is unproven.
 2. **Audit devices**, including the disk-full failure mode.
-3. **Alerting**, particularly on absence.
-4. **The full PKI migration path**, end to end.
+3. **The full PKI migration path**, end to end.
 
-Dynamic secrets have moved off this list: the database engine is
-configured, tested against a real Postgres, and documented — including
-what it does not cover.
+Dynamic secrets and alerting have both moved off this list. The database
+engine is tested against a real Postgres; the alert rules are unit-tested
+with promtool and observed firing end to end against a live cluster.
 
 Explicitly *not* planned: Vault Enterprise features (performance
 replication, DR replication, namespaces, HSM auto-unseal). They would

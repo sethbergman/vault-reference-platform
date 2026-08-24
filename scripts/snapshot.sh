@@ -7,6 +7,12 @@
 #   ./snapshot.sh --cloud azure --account <name> --container <name>
 #   ./snapshot.sh --cloud none  --output-dir /var/backups/vault
 #
+# Options beyond the destination:
+#   --metrics-push <url>  Pushgateway base URL. On success, records the
+#                         completion time so that its ABSENCE can be
+#                         alerted on. A freshness alert has nothing to
+#                         evaluate unless something reports success.
+#
 # Designed to run from a systemd timer on every node. Only the active
 # node actually takes a snapshot; standbys exit 0 having done nothing, so
 # the timer does not report a failure on two nodes out of three every
@@ -42,6 +48,7 @@ CONTAINER=""
 OUTPUT_DIR=""
 PREFIX="snapshots"
 KEEP_LOCAL=false
+METRICS_PUSH=""
 
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -60,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --prefix)     PREFIX="$2"; shift 2 ;;
         --keep-local) KEEP_LOCAL=true; shift ;;
+        --metrics-push) METRICS_PUSH="$2"; shift 2 ;;
         -h|--help)    usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -291,3 +299,33 @@ case "$CLOUD" in
         log "No retention policy applies to a local directory — prune it yourself."
         ;;
 esac
+
+# ---------------------------------------------------------------------------
+# Record the success
+# ---------------------------------------------------------------------------
+# Not observability for its own sake. A snapshot freshness alert has
+# nothing to evaluate unless something reports success, and an alert
+# expression over a series that does not exist produces no result — so it
+# stays silent in exactly the situation it was written for. Pushing here
+# is what makes the absence detectable at all.
+#
+# Deliberately last, and deliberately non-fatal: a snapshot that reached
+# storage but failed to report is still a snapshot, and failing the run
+# here would turn a monitoring problem into a backup problem.
+if [[ -n "$METRICS_PUSH" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+        NOW="$(date -u +%s)"
+        if printf 'vault_snapshot_last_success_timestamp_seconds %s
+' "$NOW" \
+            | curl -sS --max-time 10 --data-binary @- \
+                "${METRICS_PUSH}/metrics/job/vault-snapshot/instance/${NODE}" \
+                >/dev/null 2>&1; then
+            log "Recorded snapshot success at ${METRICS_PUSH}."
+        else
+            log "WARNING: could not record success to ${METRICS_PUSH}."
+            log "The snapshot itself is safe; freshness alerting will look stale."
+        fi
+    else
+        log "WARNING: curl not found, cannot record snapshot success."
+    fi
+fi

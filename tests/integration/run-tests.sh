@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -616,6 +616,111 @@ if vault read -format=json database/creds/appdata-readonly >/dev/null 2>&1; then
     ok "but Vault can still issue credentials"
 else
     bad "but Vault can still issue credentials" "rotation broke the connection"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Alerting on absence ==="
+# ---------------------------------------------------------------------------
+# The rule unit tests prove the expressions behave correctly against
+# synthetic series. What they cannot show is whether the metrics those
+# rules name actually exist — and an alert on a metric nobody reports is
+# permanently silent, which is the failure mode this whole rule file was
+# written for.
+
+prom() {
+    curl -sS --max-time 10 "http://127.0.0.1:9090/api/v1/$1" 2>/dev/null || echo '{}'
+}
+
+# Wait for Prometheus to have scraped at least once.
+for _ in $(seq 1 30); do
+    [[ "$(prom 'query?query=up' | jq -r '.status // empty' 2>/dev/null)" == "success" ]] && break
+    sleep 2
+done
+
+RULE_COUNT="$(prom 'rules' | jq '[.data.groups[]?.rules[]? | select(.type=="alerting")] | length' 2>/dev/null || echo 0)"
+if [[ "${RULE_COUNT:-0}" -ge 8 ]]; then
+    ok "Prometheus loaded ${RULE_COUNT} alerting rules"
+else
+    bad "Prometheus loaded the alerting rules" "found ${RULE_COUNT:-0} — is rule_files pointing at the right path?"
+fi
+
+# Every metric the rules name must actually be reported by something. A
+# typo or a metric renamed between Vault versions produces a rule that
+# parses, loads, and can never fire.
+for metric in vault_core_unsealed vault_core_active; do
+    N="$(prom "query?query=${metric}" | jq '.data.result | length' 2>/dev/null || echo 0)"
+    if [[ "${N:-0}" -gt 0 ]]; then
+        ok "${metric} is being reported (${N} series)"
+    else
+        bad "${metric} is being reported"             "no series — every rule naming this metric is permanently silent"
+    fi
+done
+
+# The TLS probe: certificate expiry measured from what is served.
+PROBE_N="$(prom 'query?query=probe_ssl_earliest_cert_expiry' | jq '.data.result | length' 2>/dev/null || echo 0)"
+if [[ "${PROBE_N:-0}" -gt 0 ]]; then
+    ok "probe_ssl_earliest_cert_expiry is being reported (${PROBE_N} series)"
+else
+    bad "probe_ssl_earliest_cert_expiry is being reported"         "the blackbox probe is not working, so certificate expiry is unmonitored"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== A missing backup actually pages someone ==="
+# ---------------------------------------------------------------------------
+# Nothing has pushed a snapshot metric, so the series does not exist.
+# VaultSnapshotStale cannot fire — it has nothing to evaluate — and
+# VaultSnapshotMetricMissing is what must speak instead. This is the
+# whole design, observed end to end rather than in a unit test.
+info "  waiting for VaultSnapshotMetricMissing to fire (for: 2m)..."
+FIRING=""
+for _ in $(seq 1 75); do
+    FIRING="$(prom 'alerts' | jq -r '[.data.alerts[]? | select(.labels.alertname=="VaultSnapshotMetricMissing" and .state=="firing")] | length' 2>/dev/null || echo 0)"
+    [[ "${FIRING:-0}" -gt 0 ]] && break
+    sleep 2
+done
+
+if [[ "${FIRING:-0}" -gt 0 ]]; then
+    ok "VaultSnapshotMetricMissing fires when nothing reports a snapshot"
+else
+    bad "VaultSnapshotMetricMissing fires when nothing reports a snapshot"         "state: $(prom 'alerts' | jq -c '[.data.alerts[]? | {alertname: .labels.alertname, state}]' 2>/dev/null)"
+fi
+
+# And it must reach Alertmanager. A rule that fires and reaches nobody is
+# the same class of problem as a backup nobody takes.
+DELIVERED=""
+for _ in $(seq 1 30); do
+    DELIVERED="$(curl -sS --max-time 10 'http://127.0.0.1:9093/api/v2/alerts' 2>/dev/null         | jq -r '[.[]? | select(.labels.alertname=="VaultSnapshotMetricMissing")] | length' 2>/dev/null || echo 0)"
+    [[ "${DELIVERED:-0}" -gt 0 ]] && break
+    sleep 2
+done
+
+if [[ "${DELIVERED:-0}" -gt 0 ]]; then
+    ok "and it reaches Alertmanager"
+else
+    bad "and it reaches Alertmanager" "Prometheus fired it but Alertmanager never received it"
+fi
+
+# Now record a snapshot and watch the alert clear. An alert that fires and
+# never resolves is one people learn to ignore.
+if "${REPO_ROOT}/scripts/snapshot.sh" --cloud none --output-dir "${WORK}/alerting-snap"         --metrics-push http://127.0.0.1:9091 >"${WORK}/push.log" 2>&1; then
+    ok "snapshot.sh recorded a success to the pushgateway"
+else
+    bad "snapshot.sh recorded a success to the pushgateway" "$(tail -3 "${WORK}/push.log")"
+fi
+
+PUSHED=""
+for _ in $(seq 1 30); do
+    PUSHED="$(prom 'query?query=vault_snapshot_last_success_timestamp_seconds' | jq '.data.result | length' 2>/dev/null || echo 0)"
+    [[ "${PUSHED:-0}" -gt 0 ]] && break
+    sleep 2
+done
+
+if [[ "${PUSHED:-0}" -gt 0 ]]; then
+    ok "and Prometheus can now see the snapshot metric"
+else
+    bad "and Prometheus can now see the snapshot metric"         "the push did not land, so the absence alert would never clear"
 fi
 
 # ---------------------------------------------------------------------------
