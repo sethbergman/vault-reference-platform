@@ -82,7 +82,8 @@ vault-reference-platform/
 │   ├── monitoring/    # Prometheus + Grafana config
 │   ├── tooling/       # CLI/dev tooling image
 │   └── dev/           # docker-compose for local dev
-├── scripts/           # bootstrap, auth setup, rotation, DR drill
+├── scripts/           # bootstrap, auth, rotation, snapshots, PKI, DR
+├── tests/             # test suites (see CI/CD below)
 ├── examples/          # example least-privilege policies
 ├── docs/              # runbooks and guides
 ├── diagrams/
@@ -140,6 +141,40 @@ restore procedures. `make test` runs the restore drill end to end — take a
 snapshot, destroy the node and its storage, restore, verify the data came
 back — and CI runs it on every PR, so the procedure can't rot unnoticed.
 
+## Scheduled snapshots
+
+Raft snapshots run hourly from a systemd timer on every node, installed by
+the `vault_snapshots` Ansible role. Only the active node takes one;
+standbys exit cleanly rather than failing a timer on two nodes out of
+three. Retention is a server-side lifecycle rule, and the AWS instance
+role deliberately has no `s3:DeleteObject` — a node that can prune backups
+is a node that can destroy them.
+
+See [`docs/disaster-recovery.md`](docs/disaster-recovery.md).
+
+## Certificate renewal
+
+Once a cluster is running, `scripts/bootstrap-pki.sh` configures Vault's
+PKI engine to issue node certificates, and a daily timer renews them.
+Certificates are short-lived (72h by default) so the renewal path is
+exercised constantly rather than annually.
+
+Vault's PKI cannot issue the certificates the cluster hosting it needs in
+order to *start* — the bootstrap CA stays load-bearing until every node
+has been re-issued. That ordering is spelled out in
+[`docs/security.md`](docs/security.md); the role is off by default and
+refuses to run on a node with no existing certificate.
+
+## Terraform to Ansible
+
+`scripts/terraform-to-ansible.sh` generates `group_vars` from
+`terraform output -json`, so the KMS key id, subscription id and scale set
+name cannot drift from what Terraform built. Nodes are discovered through
+the cloud API by the same tag Raft's `auto_join` filters on, because both
+clouds replace instances and a static inventory goes stale silently.
+
+See [`docs/deployment.md`](docs/deployment.md).
+
 ## Operations
 
 See [`docs/operations.md`](docs/operations.md) for day-2 runbooks: health
@@ -147,12 +182,27 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs eleven checks on every PR. Five are static:
+GitHub Actions runs fifteen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
-[`docs/security.md`](docs/security.md)). The other six deploy the Docker
-Compose cluster and actually exercise it:
+[`docs/security.md`](docs/security.md)).
+
+Three run against fixtures and shims — fast, no credentials, and able to
+reach failure modes a live cluster will not reproduce on demand:
+
+- **Terraform to Ansible handoff** — generates `group_vars` from saved
+  `terraform output -json` payloads and renders the real role template
+  with them, so a rename on either side of the seam fails here.
+- **Scheduled snapshot tests** — the cases that end in a green timer and
+  no usable backup: an empty snapshot, a failed upload, a standby that
+  should do nothing.
+- **Vault PKI tests** — mostly what the renewal script must *refuse* to
+  do, since almost every failure there ends with a node that cannot serve
+  TLS.
+
+The remaining seven bring up the Docker Compose cluster and exercise it
+for real:
 
 - **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
   does a live secret write/read.
@@ -170,6 +220,18 @@ Compose cluster and actually exercise it:
 - **Rolling upgrade tests** — proves a bad checksum aborts before any
   node is touched, and that an unhealthy node stops the rollout rather
   than costing a second node and quorum.
+- **Integration (real cluster)** — runs the operational scripts against
+  the real three-node cluster: a snapshot Vault itself accepts back,
+  standby detection against a node genuinely reporting 429, and a
+  certificate swap that leaves the node unsealed, still a voter, with its
+  data intact and its process never restarted.
+
+The last one exists because shims can only prove a script issues the
+commands you expected. On its first run it found that snapshots had never
+been taken on any node — the leadership check read a field that does not
+exist in `vault status -format=json`, and the shim emitted that field
+too, so both sides agreed and the suite stayed green. See
+[`tests/integration/README.md`](tests/integration/README.md).
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
@@ -178,7 +240,25 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
 - **v0.2** — HA cluster (done), auto-unseal (done), monitoring (done)
 - **v0.3** — automated tests (done), CI security scanning (done)
+- **v0.4** — AWS and Azure profiles (done), TLS everywhere (done),
+  Terraform → Ansible handoff (done)
+- **v0.5** — scheduled snapshots (done), certificate renewal from Vault
+  PKI (done), integration tests against a real cluster (done)
 - **v1.0** — production-ready reference architecture
+
+**The honest gap:** neither cloud profile has been applied end to end.
+Both are covered by `terraform test` against mocked providers, which
+catches more than it sounds like — a Key Vault name over Azure's
+24-character limit, a Raft `auto_join` configuration go-discover rejects
+outright — but a plan that succeeds is not a deployment that works. Treat
+those two profiles as reviewed and tested, not as proven.
+
+The largest thing still missing is **audit devices**: nothing here
+enables one, so Vault currently records no answer to "who read that
+secret".
+
+See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
+deliberately excluded, and what "done" is taken to mean.
 
 ## License
 
