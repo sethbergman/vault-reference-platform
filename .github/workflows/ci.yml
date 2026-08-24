@@ -88,7 +88,10 @@ jobs:
       # the invariant than to rediscover it each time.
       - name: Every shell script must be executable
         run: |
-          non_exec="$(git ls-files -s '*.sh' | grep -v '^100755' || true)"
+          # Also covers tests/*/fake-bin/*, whose shims deliberately have
+          # no .sh suffix — they stand in for `vault`, `aws`, `curl` and
+          # must be named exactly that to be found on PATH.
+          non_exec="$(git ls-files -s '*.sh' 'tests/*/fake-bin/*'             | grep -v '^100755' || true)"
           if [[ -n "$non_exec" ]]; then
             echo "These scripts are missing the executable bit:"
             echo "$non_exec"
@@ -552,6 +555,15 @@ jobs:
 
       - name: Exercise the Terraform to Ansible handoff
         run: ./tests/ansible/run-tests.sh
+
+  snapshot-test:
+    name: Scheduled snapshot tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/snapshot.sh
+        run: ./tests/snapshot/run-tests.sh
 
   security-scan:
     name: Security scanning

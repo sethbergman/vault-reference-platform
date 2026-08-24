@@ -1,0 +1,33 @@
+---
+# Scheduled Raft snapshots.
+#
+# Disabled by default: turning this on without somewhere to put the
+# snapshots would fill the node's disk on an hourly timer. The handoff
+# script sets vault_cloud and the destination from the Terraform
+# outputs, which is when it becomes safe to enable.
+vault_snapshots_enabled: false
+
+# systemd OnCalendar expression. Hourly matches what
+# docs/disaster-recovery.md describes; the recovery point objective this
+# implies is "up to an hour of writes", which is the number to argue
+# about before changing anything else here.
+vault_snapshots_schedule: hourly
+
+# Spread the timer across a window so three nodes do not all wake at
+# :00. Only the leader does real work, but all three call sys/health.
+vault_snapshots_random_delay: 300
+
+vault_snapshots_script: /usr/local/bin/vault-snapshot.sh
+vault_snapshots_prefix: snapshots
+
+# Credentials for the snapshot agent. AppRole by preference — a
+# long-lived token in a file on every node is the thing this avoids.
+# Both are written to an EnvironmentFile readable only by root.
+vault_snapshots_role_id: ""
+vault_snapshots_secret_id: ""
+vault_snapshots_token: ""
+
+# Where snapshots go when vault_cloud is neither aws nor azure. Only
+# used by the "none" backend, which exists for testing and for
+# air-gapped deployments that ship snapshots somewhere else.
+vault_snapshots_local_dir: /var/backups/vault

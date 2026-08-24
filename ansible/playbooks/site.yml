@@ -5,3 +5,7 @@
   roles:
     - vault
     - vault_hardening
+    # Off unless vault_snapshots_enabled is set; see the role defaults.
+    # Ordered last because it asserts on values the vault role's
+    # group_vars supply.
+    - vault_snapshots

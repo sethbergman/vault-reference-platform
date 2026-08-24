@@ -1,0 +1,16 @@
+[Unit]
+Description=Scheduled Vault Raft snapshots
+Documentation=https://github.com/sethbergman/vault-reference-platform/blob/main/docs/disaster-recovery.md
+
+[Timer]
+OnCalendar={{ vault_snapshots_schedule }}
+RandomizedDelaySec={{ vault_snapshots_random_delay }}
+
+# Take a snapshot on boot if the timer was missed — a node that was down
+# over its window should not silently skip a backup cycle.
+Persistent=true
+
+Unit=vault-snapshot.service
+
+[Install]
+WantedBy=timers.target

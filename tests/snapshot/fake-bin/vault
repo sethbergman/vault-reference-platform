@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI. Records every invocation and answers with
+# whatever the scenario needs. See tests/snapshot/README.md.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+case "$1 ${2:-}" in
+    "status -format=json")
+        printf '{"sealed":%s,"ha_mode":"%s","initialized":true}\n' \
+            "${FAKE_SEALED:-false}" "${FAKE_HA_MODE:-active}"
+        exit 0
+        ;;
+esac
+
+# vault write -format=json auth/approle/login ...
+if [[ "$1" == "write" && "$*" == *"auth/approle/login"* ]]; then
+    if [[ "${FAKE_APPROLE_RC:-0}" != "0" ]]; then
+        echo "permission denied" >&2
+        exit "${FAKE_APPROLE_RC}"
+    fi
+    printf '{"auth":{"client_token":"%s"}}\n' "${FAKE_APPROLE_TOKEN:-s.faketoken}"
+    exit 0
+fi
+
+if [[ "$1 ${2:-} ${3:-} ${4:-}" == "operator raft snapshot save" ]]; then
+    dest="$5"
+    if [[ "${FAKE_SNAPSHOT_RC:-0}" != "0" ]]; then
+        echo "snapshot failed" >&2
+        exit "${FAKE_SNAPSHOT_RC}"
+    fi
+    # FAKE_SNAPSHOT_SIZE=none means "succeed but write nothing", which is
+    # the failure the script has to notice.
+    case "${FAKE_SNAPSHOT_SIZE:-1024}" in
+        none) : ;;
+        0)    : > "$dest" ;;
+        *)    head -c "${FAKE_SNAPSHOT_SIZE:-1024}" /dev/zero > "$dest" ;;
+    esac
+    exit 0
+fi
+
+if [[ "$1 ${2:-} ${3:-} ${4:-}" == "operator raft snapshot inspect" ]]; then
+    exit "${FAKE_INSPECT_RC:-0}"
+fi
+
+if [[ "$1 ${2:-}" == "token revoke" ]]; then
+    exit 0
+fi
+
+echo "fake vault: unhandled command: $*" >&2
+exit 64

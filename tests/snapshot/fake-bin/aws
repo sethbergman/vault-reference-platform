@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI.
+set -uo pipefail
+printf 'aws %s\n' "$*" >> "${FAKE_LOG}"
+exit "${FAKE_AWS_RC:-0}"
