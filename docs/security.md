@@ -126,6 +126,31 @@ Each phase gates on the node coming back healthy *and* the cluster still
 having every voter before moving on. A run that fails stops where it is
 and says which nodes were untouched.
 
+#### What else trusts the bundle
+
+Vault is not the only thing that reads the trust bundle, and the prune is
+the step that invalidates every other copy of it. Anything verifying
+Vault's TLS loaded that file once at startup: after the bootstrap CA is
+dropped it is validating against a CA that no longer signs anything.
+
+In the local profile that is Prometheus and the blackbox exporter, which
+both mount `docker/dev/tls/ca.crt`:
+
+```bash
+docker compose -f docker/dev/docker-compose.yml restart prometheus blackbox
+```
+
+The failure mode is worth stating because it is quiet. The blackbox probe
+does not error in a way anyone sees — it simply stops producing
+`probe_ssl_earliest_cert_expiry`, and certificate expiry becomes
+unmonitored while every dashboard still looks fine. That is the exact
+shape the `absent()` alerts in [`docs/monitoring.md`](monitoring.md) exist
+to catch, and it is why they are paired with every freshness rule.
+
+`migrate-to-vault-pki.sh` prints this reminder after pruning. It does not
+do the restart: which processes hold a copy of the bundle is deployment
+knowledge the script does not have.
+
 A production deployment would more likely make this PKI mount an
 *intermediate* signed by an offline root, so that compromising this Vault
 does not compromise the whole chain. `bootstrap-pki.sh` generates an

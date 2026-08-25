@@ -515,6 +515,22 @@ else
     bad "re-running the swap phase is a no-op" "$(tail -5 "${WORK}/migrate2.log")"
 fi
 
+# Vault is not the only thing that reads the trust bundle. Prometheus and
+# the blackbox exporter both bind-mount docker/dev/tls/ca.crt to verify
+# the TLS of the nodes they scrape and probe, and both read it once at
+# startup. The prune above replaced it, so until they are restarted they
+# are validating against a bootstrap CA that no longer signs anything:
+# the blackbox probe fails, probe_ssl_earliest_cert_expiry stops being
+# reported, and certificate expiry goes unmonitored without an error
+# anywhere. The assertion further down caught exactly that.
+#
+# Restarting them here is the documented remedy, and running it before
+# that assertion is what makes the assertion proof that the remedy works.
+info "Restarting monitoring so it reloads the new trust bundle..."
+compose restart prometheus blackbox >/dev/null 2>&1 \
+    || info "  (could not restart monitoring; probe assertions may fail)"
+sleep 10
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== The cluster survived the swap ==="

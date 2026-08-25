@@ -332,6 +332,22 @@ phase_prune() {
             >&2 || die "Could not prune the trust bundle on ${n}"
         gate "$n" "the trust bundle prune"
     done
+
+    # The bundle on disk has changed, and Vault is not the only thing that
+    # reads it. Anything holding a copy loaded it once at startup and is
+    # now verifying against a CA that signs nothing.
+    #
+    # This is stated rather than done, because the set of consumers is
+    # site-specific and this script cannot know it. It is not hypothetical:
+    # in the local profile Prometheus and the blackbox exporter both mount
+    # this bundle to verify Vault's TLS, and until they are restarted the
+    # probe stops reporting -- certificate expiry silently unmonitored,
+    # which is precisely the shape the absent() alerts exist to catch.
+    log ""
+    log "NOTE: the bootstrap CA is gone from the trust bundle. Anything else"
+    log "      that reads it -- monitoring, probes, application clients --"
+    log "      loaded it at startup and must be restarted to pick up the"
+    log "      new contents. See docs/security.md."
 }
 
 case "$PHASE" in
