@@ -21,6 +21,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.9 | The full PKI migration path, sequenced and tested end to end |
 | v0.10 | Vault Agent: an application consuming a secret without a token |
 | v0.11 | Audit logs that outlive the node they describe |
+| v0.12 | Tamper-evident audit: a hash chain, and anchors the collector cannot reach |
 
 ## The honest gap
 
@@ -102,8 +103,15 @@ in production. The blockers are, in order:
    evidence; it exists so that whoever spends the money gets a full set
    of answers from one session instead of half of them.
 2. **Off-host audit collection**, so a compromised host cannot reach the
-   evidence. The trail now outlives the node; it does not yet leave the
-   machine.
+   evidence. The trail now outlives the node and an edit to it is now
+   detectable -- entries are hash-chained as they arrive, and the
+   `audit-anchor` service holds the chain head on a volume the collector
+   cannot write to, which catches even a chain rewritten to be
+   self-consistent.
+
+   Both volumes still live on the same Docker daemon, so what exists is
+   tamper *evidence* rather than tamper proofing, and the trail does not
+   yet leave the machine. That is the remaining half.
 
 Dynamic secrets, alerting, audit devices and the PKI migration path have
 all moved off this list. The database

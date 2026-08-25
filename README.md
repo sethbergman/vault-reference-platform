@@ -385,7 +385,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-Everything through v0.11 has shipped — see
+Everything through v0.12 has shipped — see
 [Releases](https://github.com/sethbergman/vault-reference-platform/releases)
 for the log. "Shipped" here means there is a test that fails if the
 feature breaks, not that the code exists.
@@ -401,12 +401,15 @@ What stands between here and v1.0, in order:
    [`docs/cloud-apply.md`](docs/cloud-apply.md) lists exactly which
    claims that apply would settle, so the session produces evidence
    rather than a vague impression that it worked.
-2. **Off-host audit shipping.** The audit trail now outlives the node —
-   the collector writes to a volume with an independent lifecycle, and
-   the integration suite proves it by destroying the Vault container
-   outright and reading the trail back. But the collector still runs on
-   the same host, so a compromised host can still reach the evidence.
-   Shipping it somewhere else is the remaining half.
+2. **Off-host audit shipping.** The audit trail now outlives the node,
+   and an edit to it is now detectable: entries are hash-chained as they
+   arrive, and a separate `audit-anchor` service holds the chain head
+   where the collector cannot write, which catches even a chain rewritten
+   to be self-consistent over an edited log.
+
+   Both volumes still sit on the same Docker daemon, so this is tamper
+   *evidence*, not tamper proofing, and the trail does not yet leave the
+   machine. Shipping it somewhere else is the remaining half.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.
