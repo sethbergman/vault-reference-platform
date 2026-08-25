@@ -19,6 +19,26 @@ COPY collect.sh /usr/local/bin/collect.sh
 COPY anchor.sh  /usr/local/bin/anchor.sh
 RUN chmod +x /usr/local/bin/collect.sh /usr/local/bin/anchor.sh
 
+# Not root. This container holds the audit trail and serves a network
+# listener, which is the combination the tooling image was exempted for
+# not having — a container escape from here reaches the evidence of what
+# happened on the cluster.
+#
+# The mount points are created and owned here rather than left to Docker.
+# An empty named volume inherits the ownership of the image directory it
+# is mounted over, so this is what makes the volumes writable by a
+# non-root user. It only applies to a *fresh* volume: an audit-logs
+# volume created by an earlier root-owned build stays root-owned, and
+# needs `docker compose down -v` to be recreated.
+#
+# 9090 is above 1024, so the listener does not need privileges either.
+RUN addgroup -S collector \
+    && adduser -S -G collector -h /collector collector \
+    && mkdir -p /collector /anchors \
+    && chown collector:collector /collector /anchors
+
+USER collector
+
 # -u is unidirectional: data flows from the socket into the program and
 # nothing is ever written back to Vault. An audit collector that can talk
 # back to the thing it audits is a channel nobody asked for.
