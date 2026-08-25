@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+# vault read -field=role_id auth/approle/role/<name>/role-id
+if [[ "$1" == "read" && "$*" == *"role-id"* ]]; then
+    [[ "${FAKE_ROLE_ID_RC:-0}" == "0" ]] || exit "${FAKE_ROLE_ID_RC}"
+    printf '%s' "${FAKE_ROLE_ID:-11111111-2222-3333-4444-555555555555}"
+    exit 0
+fi
+
+exit "${FAKE_GENERIC_RC:-0}"

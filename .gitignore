@@ -18,3 +18,8 @@
 # Private keys must never be committed — a key in version control is
 # compromised from the moment it lands, whether or not anyone notices.
 docker/dev/tls/
+
+# Vault Agent credentials, written by scripts/bootstrap-agent.sh.
+# role_id is not a secret; secret_id is, and Agent deletes it after
+# reading it anyway. Neither belongs in the repository.
+docker/dev/agent/

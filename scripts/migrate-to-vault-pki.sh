@@ -148,18 +148,29 @@ served_issuer() {
 }
 
 # node_healthy <host:port> — 200 active, 429 standby; anything else is not.
-node_healthy() {
+# http_code_of <url>
+#
+# Not `curl ... || echo 000`. On a connection failure curl still prints
+# its %{http_code} -- "000" -- so the fallback appends a second one and
+# the caller sees "000000", which matches nothing and turns a clear
+# failure into an unreadable one. Fall back only when curl printed
+# nothing at all.
+http_code_of() {
     local code
     code="$(curl --cacert "${VAULT_CACERT:-/dev/null}" -sS -o /dev/null \
-        -w '%{http_code}' "https://$1/v1/sys/health?standbyok=true" 2>/dev/null || echo 000)"
+        -w '%{http_code}' "$1" 2>/dev/null)" || true
+    [[ -n "$code" ]] || code="000"
+    printf '%s' "$code"
+}
+
+node_healthy() {
+    local code; code="$(http_code_of "https://$1/v1/sys/health?standbyok=true")"
     [[ "$code" == "200" || "$code" == "429" ]]
 }
 
 # is_active <host:port>
 is_active() {
-    local code
-    code="$(curl --cacert "${VAULT_CACERT:-/dev/null}" -sS -o /dev/null \
-        -w '%{http_code}' "https://$1/v1/sys/health" 2>/dev/null || echo 000)"
+    local code; code="$(http_code_of "https://$1/v1/sys/health")"
     [[ "$code" == "200" ]]
 }
 

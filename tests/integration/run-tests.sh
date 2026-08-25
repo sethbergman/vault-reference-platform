@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit --with-agent)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -109,15 +109,25 @@ node_port() {
 # set no node ever reports 429 and the standby search finds nothing.
 #
 #   200 active   429 standby   472/473 DR/perf standby   503 sealed
+# `|| echo "000"` is wrong here, and was: on a connection failure curl
+# still prints its %{http_code} — "000" — and then the fallback prints
+# "000" as well, so the caller sees "000000". It matches nothing, every
+# retry loop runs to exhaustion, and the diagnostic reads as nonsense.
+# Fall back only when curl produced nothing at all.
+http_code_of() {
+    local code
+    code="$(curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || true
+    [[ -n "$code" ]] || code="000"
+    printf '%s' "$code"
+}
+
 health_code() {
-    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:$1/v1/sys/health" 2>/dev/null || echo "000"
+    http_code_of "https://127.0.0.1:$1/v1/sys/health"
 }
 
 # alive_code <port> — is the node serving at all, whatever its role.
 alive_code() {
-    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:$1/v1/sys/health?standbyok=true" 2>/dev/null || echo "000"
+    http_code_of "https://127.0.0.1:$1/v1/sys/health?standbyok=true"
 }
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1046,144 @@ if [[ "${PUSHED:-0}" -gt 0 ]]; then
 else
     bad "and Prometheus can now see the snapshot metric"         "the push did not land, so the absence alert would never clear"
 fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== An application gets a secret without holding a token ==="
+# ---------------------------------------------------------------------------
+# Everything else here configures Vault. This is the only part that shows
+# something consuming it, and the interesting property is negative: the
+# consumer never authenticates, never holds a token, and makes no Vault
+# API call. It reads a file.
+
+AGENT_CREDS="${COMPOSE_DIR}/agent"
+rm -rf "$AGENT_CREDS"
+
+if "${REPO_ROOT}/scripts/bootstrap-agent.sh" --creds-dir "$AGENT_CREDS"         >"${WORK}/agent-bootstrap.log" 2>&1; then
+    ok "bootstrap-agent.sh provisioned the AppRole"
+else
+    bad "bootstrap-agent.sh provisioned the AppRole" "log follows"
+    sed 's/^/        /' "${WORK}/agent-bootstrap.log"
+fi
+
+# role_id is an identifier and secret_id is a credential. They should not
+# have the same permissions, and the credential should not be readable by
+# anyone who happens to be on the host.
+if [[ -s "${AGENT_CREDS}/role_id" && -s "${AGENT_CREDS}/secret_id" ]]; then
+    ok "both credentials were written"
+else
+    bad "both credentials were written"
+fi
+
+# Agent is started BEFORE its credentials exist. It retries auth, so this
+# is harmless — and it is the realistic order: the container is scheduled,
+# then something provisions its credential.
+compose up -d --build vault-agent >/dev/null 2>&1 || true
+sleep 3
+
+# Piped in with `exec ... cat >`, which writes as the image's user, so
+# Agent can delete the secret_id afterwards. `compose cp` writes as root
+# and would leave a file Agent cannot remove — the same trap the DR drill
+# hit in #10.
+compose exec -T vault-agent sh -c 'cat > /vault/agent/creds/role_id'     < "${AGENT_CREDS}/role_id" 2>/dev/null || true
+compose exec -T vault-agent sh -c 'cat > /vault/agent/creds/secret_id'     < "${AGENT_CREDS}/secret_id" 2>/dev/null || true
+
+# Agent authenticates, then renders. Give it a window rather than a fixed
+# sleep, so a slow start is not read as a failure.
+RENDERED=""
+for _ in $(seq 1 40); do
+    RENDERED="$(compose exec -T vault-agent cat /rendered/db.env 2>/dev/null | grep -v 'level=' || true)"
+    [[ "$RENDERED" == *"DB_USERNAME"* ]] && break
+    sleep 2
+done
+
+if [[ "$RENDERED" == *"DB_USERNAME="* && "$RENDERED" == *"DB_PASSWORD="* ]]; then
+    ok "Agent rendered a credential into the template"
+else
+    bad "Agent rendered a credential into the template" "agent logs follow"
+    compose logs --tail=20 vault-agent 2>&1 | sed 's/^/        /' || true
+fi
+
+# The payoff: the rendered credential is real. A file containing
+# plausible-looking values proves nothing until something authenticates
+# with them.
+AGENT_USER="$(sed -n 's/^DB_USERNAME=//p' <<< "$RENDERED" | tr -d '' | head -1)"
+AGENT_PASS="$(sed -n 's/^DB_PASSWORD=//p' <<< "$RENDERED" | tr -d '' | head -1)"
+
+if [[ -n "$AGENT_USER" && "$(psql_as "$AGENT_USER" "$AGENT_PASS" "SELECT 1;")" == "1" ]]; then
+    ok "and the rendered credential actually connects to Postgres"
+else
+    bad "and the rendered credential actually connects to Postgres" \
+        "rendered user ${AGENT_USER} could not connect"
+fi
+
+# The whole point. If the agent container held a token, the demonstration
+# would be circular.
+AGENT_ENV="$(compose exec -T vault-agent env 2>/dev/null | grep -c '^VAULT_TOKEN=' || true)"
+if [[ "${AGENT_ENV:-0}" == "0" ]]; then
+    ok "the agent container holds no VAULT_TOKEN"
+else
+    bad "the agent container holds no VAULT_TOKEN" "found one in its environment"
+fi
+
+# Agent removes the secret_id once it has read it, so the credential does
+# not linger on disk. This is Agent's default and it surprises people, so
+# it is asserted rather than assumed.
+# Checked inside the container, which is where Agent reads from. The
+# copy left on the host is the provisioning system's to clean up; Agent
+# only ever sees the one it was given.
+LEFTOVER="$(compose exec -T vault-agent sh -c 'ls /vault/agent/creds/secret_id 2>/dev/null || true' 2>/dev/null | tr -d '[:space:]' || true)"
+if [[ -z "$LEFTOVER" ]]; then
+    ok "the secret_id was removed after Agent read it"
+else
+    bad "the secret_id was removed after Agent read it" \
+        "still present — remove_secret_id_file_after_reading did not take effect"
+fi
+
+# Agent's default perms are 0644. For a file holding a live database
+# password that means every account on the host can read it.
+RENDER_MODE="$(compose exec -T vault-agent stat -c '%a' /rendered/db.env 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+if [[ "$RENDER_MODE" == "600" ]]; then
+    ok "the rendered secret is mode 0600 (Agent defaults to 0644)"
+else
+    bad "the rendered secret is mode 0600 (Agent defaults to 0644)" "got ${RENDER_MODE} — 'unknown' means the file was never rendered, not that the mode is wrong"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== A Vault outage is not immediately an application outage ==="
+# ---------------------------------------------------------------------------
+# The reason to put Agent in front of an application at all. With the
+# secret already on disk, losing Vault stops new credentials being issued
+# — it does not stop the application working.
+info "  stopping vault-0, the node Agent talks to..."
+compose stop vault-0 >/dev/null 2>&1 || true
+sleep 5
+
+STILL_THERE="$(compose exec -T vault-agent cat /rendered/db.env 2>/dev/null | grep -v 'level=' || true)"
+if [[ "$STILL_THERE" == *"DB_USERNAME="* ]]; then
+    ok "the rendered secret survives Vault becoming unreachable"
+else
+    bad "the rendered secret survives Vault becoming unreachable" \
+        "the file went away with Vault, which defeats the purpose"
+fi
+
+if [[ "$(psql_as "$AGENT_USER" "$AGENT_PASS" "SELECT 1;")" == "1" ]]; then
+    ok "and the application can still reach its database"
+else
+    bad "and the application can still reach its database" \
+        "the credential stopped working when Vault did"
+fi
+
+# Deliberately not restarted. This section is last, so cleanup() tears
+# the whole cluster down within seconds of it finishing — a restart here
+# recovers a cluster that is about to be destroyed.
+#
+# It was there originally, and it was the only part of this section that
+# ever failed: a node stopped mid-run has to re-read its config,
+# auto-unseal through Transit and rejoin Raft, and on a loaded runner
+# that outlasted the wait. Retrying harder would have been fixing
+# ceremony. The two assertions above are the ones with something to say.
 
 # ---------------------------------------------------------------------------
 info ""

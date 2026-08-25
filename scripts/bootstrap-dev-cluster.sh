@@ -5,7 +5,7 @@
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
 #                              [--with-monitoring] [--with-oidc]
-#                              [--with-database] [--with-audit]
+#                              [--with-database] [--with-audit] [--with-agent]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
@@ -14,6 +14,7 @@
 #   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
 #   ./bootstrap-dev-cluster.sh --with-database         # + Postgres for dynamic creds
 #   ./bootstrap-dev-cluster.sh --with-audit            # + collector for socket audit
+#   ./bootstrap-dev-cluster.sh --with-agent            # + Vault Agent for app secrets
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -58,6 +59,7 @@ WITH_MONITORING=false
 WITH_OIDC=false
 WITH_DATABASE=false
 WITH_AUDIT=false
+WITH_AGENT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker/dev"
 TLS_DIR="${COMPOSE_DIR}/tls"
@@ -113,6 +115,7 @@ while [[ $# -gt 0 ]]; do
         --with-oidc) WITH_OIDC=true; shift ;;
         --with-database) WITH_DATABASE=true; shift ;;
         --with-audit) WITH_AUDIT=true; shift ;;
+        --with-agent) WITH_AGENT=true; shift ;;
         -h|--help) usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -322,6 +325,20 @@ if [[ "$WITH_MONITORING" == true ]]; then
     log "Note: VaultSnapshotMetricMissing will fire after ~2 minutes."
     log "That is correct — nothing has taken a snapshot yet. See"
     log "docs/monitoring.md."
+fi
+
+if [[ "$WITH_AGENT" == true ]]; then
+    log ""
+    log "Vault Agent is NOT started here. It needs an AppRole and a"
+    log "rendered secret to exist, which means running these in order"
+    log "once the cluster is up:"
+    log "  ./scripts/bootstrap-database-secrets.sh --password <bootstrap-pw>"
+    log "  ./scripts/bootstrap-agent.sh"
+    log "  docker compose -f docker/dev/docker-compose.yml up -d vault-agent"
+    log ""
+    log "Starting it before its AppRole exists would just make it retry"
+    log "auth in a loop, which looks like a broken agent rather than an"
+    log "unconfigured one. See docs/vault-agent.md."
 fi
 
 log "Cluster is up. Root token is a fresh dev-only credential, printed to stdout."
