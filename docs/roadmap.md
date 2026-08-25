@@ -19,6 +19,8 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.7 | Alerting on absence: rules, Alertmanager, pushgateway, TLS probes |
 | v0.8 | Audit devices, with the two-device availability tradeoff stated |
 | v0.9 | The full PKI migration path, sequenced and tested end to end |
+| v0.10 | Vault Agent: an application consuming a secret without a token |
+| v0.11 | Audit logs that outlive the node they describe |
 
 ## The honest gap
 
@@ -39,19 +41,18 @@ snapshot, PKI and renewal paths are genuinely exercised.
 
 ## Next
 
-### Log shipping
+### Off-host audit collection
 
-Audit devices are enabled and tested, but nothing forwards the logs
-anywhere. Where they go, how long they are kept and who can read them are
-deployment decisions — and an audit log that only exists on the node it
-describes is one a compromise can delete.
+Audit logs now survive the loss of the Vault node — the collector writes
+to a volume with its own lifecycle, and the integration suite destroys
+vault-0 outright to prove it.
 
-The local profile now uses a socket device to a collector container, so
-the two devices fail independently and the integration suite can stop one
-and show Vault still serving. What is still missing is the destination
-being somewhere durable and off-host — the collector here writes to a
-file in a sibling container, which survives a Vault disk filling and not
-much else.
+What remains is that the collector is still on the same host. Anything
+with Docker access can reach it, so a sufficiently privileged compromise
+still reaches the evidence. Moving it is a one-line change to
+`--second-address`; what is missing here is a demonstration of the far
+end, and of the append-only storage that makes the trail tamper-evident
+rather than merely present.
 
 ### Alert routing
 
@@ -85,7 +86,9 @@ in production. The blockers are, in order:
 
 1. **A real cloud apply.** Until one of the two profiles has been stood
    up and torn down for real, the claim is unproven.
-2. **Audit log shipping**, to somewhere a compromised node cannot reach.
+2. **Off-host audit collection**, so a compromised host cannot reach the
+   evidence. The trail now outlives the node; it does not yet leave the
+   machine.
 
 Dynamic secrets, alerting, audit devices and the PKI migration path have
 all moved off this list. The database

@@ -149,6 +149,9 @@ a real cluster:
 - an unwritable path is rejected at enable time and leaves Vault serving
 - stopping the collector leaves Vault serving, healthy, and still
   recording to the file device
+- destroying the Vault node outright leaves the shipped trail readable
+- recreating the collector does not lose it, because the log lives in a
+  volume rather than in a container
 
 ## What is not covered
 
@@ -162,9 +165,31 @@ accepting writes, still healthy, and still recording to the surviving
 device. That is the at-least-one guarantee doing its job, and it is the
 reason to run two devices rather than one.
 
-**No log shipping.** Where audit logs go, how long they are kept, and who
-can read them are deployment decisions. Nothing here forwards them
-anywhere.
+**Off-host shipping.** The collector here writes to a Docker named
+volume. That is enough to outlive the Vault node — which is the property
+that matters and the one the tests prove — and it is *not* off-host:
+anything with access to the Docker daemon can still reach it.
+
+A real deployment points the socket device at a collector somewhere else
+entirely. The device configuration does not change; only the address
+does:
+
+```bash
+./scripts/bootstrap-audit.sh     --second-type socket     --second-address logs.internal:9090
+```
+
+What sits behind that address is the deployment's choice. Anything
+speaking a TCP stream works — Vector, Fluent Bit, rsyslog, a managed
+collector. The properties worth insisting on, in rough order:
+
+| Property | Why |
+|---|---|
+| Different host | A compromise of the Vault node cannot reach it |
+| Append-only or object-locked | Nor can a compromise of the collector rewrite history |
+| Different credentials | Vault's identity should not grant deletion of its own audit trail |
+
+The last two are the ones people skip. Shipping a log to a place the
+same attacker can edit is a change of address, not of risk.
 
 **Nothing enables audit devices by default.** The `vault_audit` role
 exists and is wired into `playbooks/site.yml`, but
