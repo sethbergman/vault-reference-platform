@@ -16,6 +16,11 @@
 #                        vault.crt / vault.key). The local Docker profile
 #                        uses per-node names, e.g. --cert-name vault-0.
 #   --ca-name <file>     Trust bundle filename (default: ca.crt)
+#   --ca-only            Update the trust bundle only. Issues no
+#                        certificate and leaves the existing one in
+#                        place. This is step 1 of a migration: every
+#                        node must trust the new CA before any node
+#                        starts presenting a certificate from it.
 #   --replace-ca         Overwrite the trust bundle instead of adding to it.
 #                        See the note on trust bundles below.
 #   --ttl <duration>     Requested lifetime (default: 72h)
@@ -82,6 +87,7 @@ TLS_DIR="/etc/vault.d/tls"
 CERT_NAME="vault"
 CA_NAME="ca.crt"
 REPLACE_CA=false
+CA_ONLY=false
 TTL="72h"
 RENEW_WITHIN_DAYS=1
 FORCE=false
@@ -110,6 +116,7 @@ while [[ $# -gt 0 ]]; do
         --cert-name)    CERT_NAME="$2"; shift 2 ;;
         --ca-name)      CA_NAME="$2"; shift 2 ;;
         --replace-ca)   REPLACE_CA=true; shift ;;
+        --ca-only)      CA_ONLY=true; shift ;;
         --ttl)          TTL="$2"; shift 2 ;;
         --renew-within) RENEW_WITHIN_DAYS="$2"; shift 2 ;;
         --force)        FORCE=true; shift ;;
@@ -123,7 +130,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$COMMON_NAME" ]] || die "--common-name is required"
+# --ca-only issues nothing, so it needs no identity.
+[[ -n "$COMMON_NAME" || "$CA_ONLY" == true ]] || die "--common-name is required"
 
 command -v vault   >/dev/null 2>&1 || die "vault not found on PATH"
 command -v jq      >/dev/null 2>&1 || die "jq not found on PATH"
@@ -138,7 +146,9 @@ CA="${TLS_DIR}/${CA_NAME}"
 # ---------------------------------------------------------------------------
 # Checked before authenticating, so the hourly no-op case never touches
 # Vault at all.
-if [[ "$FORCE" == false && -f "$CERT" ]]; then
+if [[ "$CA_ONLY" == true ]]; then
+    log "Updating the trust bundle only; leaving ${CERT} alone."
+elif [[ "$FORCE" == false && -f "$CERT" ]]; then
     SECONDS_AHEAD=$(( RENEW_WITHIN_DAYS * 86400 ))
     if openssl x509 -in "$CERT" -noout -checkend "$SECONDS_AHEAD" >/dev/null 2>&1; then
         NOT_AFTER="$(openssl x509 -in "$CERT" -noout -enddate 2>/dev/null | cut -d= -f2-)"
@@ -195,6 +205,19 @@ trap cleanup EXIT INT TERM
 # ---------------------------------------------------------------------------
 # Issue
 # ---------------------------------------------------------------------------
+if [[ "$CA_ONLY" == true ]]; then
+    log "Fetching the CA chain from ${MOUNT}..."
+    # The chain, not just the root: an intermediate deployment needs every
+    # certificate between the leaf and the root in the bundle, and asking
+    # for cert/ca alone would silently produce a bundle peers reject.
+    if ! vault read -field=ca_chain "${MOUNT}/cert/ca_chain" > "${STAGE}/ca.crt" 2>/dev/null         || [[ ! -s "${STAGE}/ca.crt" ]]; then
+        vault read -field=certificate "${MOUNT}/cert/ca" > "${STAGE}/ca.crt" 2>/dev/null             || die "Could not read the CA from ${MOUNT}"
+    fi
+    [[ -s "${STAGE}/ca.crt" ]] || die "${MOUNT} returned an empty CA chain"
+    openssl x509 -in "${STAGE}/ca.crt" -noout >/dev/null 2>&1         || die "What ${MOUNT} returned is not valid PEM"
+    log "CA chain fetched."
+else
+
 log "Requesting a certificate for ${COMMON_NAME} from ${MOUNT}/issue/${ROLE}..."
 
 ISSUE_ARGS=(
@@ -255,6 +278,7 @@ if [[ "$CHECKHOST_OUT" != *"does match"* || "$CHECKHOST_OUT" == *"NOT match"* ]]
 fi
 
 log "Certificate verified."
+fi
 
 # ---------------------------------------------------------------------------
 # Install
@@ -317,11 +341,16 @@ else
     fi
 fi
 
+if [[ "$CA_ONLY" == true ]]; then
+    chown "$OWNER" "$CA" 2>/dev/null || true
+    log "Updated ${CA}. No certificate was issued or installed."
+else
 install -m 0644 "${STAGE}/vault.crt" "$CERT"
 install -m "$KEY_MODE" "${STAGE}/vault.key" "$KEY"
 chown "$OWNER" "$CA" "$CERT" "$KEY" 2>/dev/null || true
 
 log "Installed ${CERT}, ${KEY}, ${CA}"
+fi
 
 # ---------------------------------------------------------------------------
 # Reload
@@ -355,6 +384,17 @@ $RELOAD_CMD || die "Reload command failed — Vault is still serving the previou
 # Found by tests/integration, which caught precisely this.
 if [[ "$VERIFY_RELOAD" == false ]]; then
     log "Not verifying the reload (--no-verify-reload)."
+    log "Done."
+    exit 0
+fi
+
+# Nothing was swapped, so there is no new serial to look for. Whether
+# Vault reloaded its trust bundle is not observable from outside — the
+# served certificate is unchanged either way — so this says so rather
+# than inventing a check that would pass regardless.
+if [[ "$CA_ONLY" == true ]]; then
+    log "Signalled. A trust bundle reload is not externally observable,"
+    log "so this is not verified the way a certificate swap is."
     log "Done."
     exit 0
 fi

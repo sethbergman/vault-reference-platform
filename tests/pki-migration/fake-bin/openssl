@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Stand-in for openssl, so a node's *served* issuer is controllable.
+#
+# FAKE_NODE_ISSUERS maps node address -> issuer, e.g.
+#   "127.0.0.1:8200=pki,127.0.0.1:8210=bootstrap"
+# Anything not listed defaults to FAKE_DEFAULT_ISSUER.
+set -uo pipefail
+
+REAL_OPENSSL="${FAKE_REAL_OPENSSL:-/usr/bin/openssl}"
+
+# The migration script pipes `s_client` into `x509 -noout -issuer`. The
+# connect address is what identifies the node, so it is recorded and the
+# issuer decided here; x509 then just echoes what s_client produced.
+if [[ "${1:-}" == "s_client" ]]; then
+    addr=""
+    for ((i = 1; i <= $#; i++)); do
+        if [[ "${!i}" == "-connect" ]]; then
+            j=$((i + 1)); addr="${!j}"
+        fi
+    done
+    printf 'connect %s\n' "$addr" >> "${FAKE_LOG}"
+
+    issuer="${FAKE_DEFAULT_ISSUER:-pki}"
+    for pair in ${FAKE_NODE_ISSUERS//,/ }; do
+        [[ "${pair%%=*}" == "$addr" ]] && issuer="${pair#*=}"
+    done
+
+    # DN form, matching what real `openssl x509 -subject` produces for the
+    # fixture CA. The driver compares a node's served issuer against that
+    # subject, so a bare common name here would never match and every node
+    # would look un-migrated — which is exactly how this first behaved.
+    case "$issuer" in
+        pki)       printf 'ISSUER:CN=vault pki CA\n' ;;
+        bootstrap) printf 'ISSUER:CN=bootstrap CA\n' ;;
+        none)      : ;;
+    esac
+    exit 0
+fi
+
+# x509 reading from stdin: pass the marker through as an issuer line.
+if [[ "${1:-}" == "x509" && "$*" == *"-issuer"* ]]; then
+    line="$(cat)"
+    [[ -z "$line" ]] && exit 1
+    printf 'issuer=%s\n' "${line#ISSUER:}"
+    exit 0
+fi
+
+# Anything else (reading the CA fixture for its subject) is real.
+exec "$REAL_OPENSSL" "$@"

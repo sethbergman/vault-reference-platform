@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stand-in for curl: node health.
+#
+# FAKE_NODE_HEALTH maps address -> code, e.g. "127.0.0.1:8210=503".
+# Unlisted addresses return FAKE_DEFAULT_HEALTH; the active node returns
+# 200 without standbyok, standbys return 429.
+set -uo pipefail
+url=""
+for a in "$@"; do [[ "$a" == https://* ]] && url="$a"; done
+addr="${url#https://}"; addr="${addr%%/*}"
+printf 'curl %s\n' "$url" >> "${FAKE_LOG}"
+
+for pair in ${FAKE_NODE_HEALTH//,/ }; do
+    if [[ "${pair%%=*}" == "$addr" ]]; then printf '%s' "${pair#*=}"; exit 0; fi
+done
+
+if [[ "$addr" == "${FAKE_ACTIVE_ADDR:-}" ]]; then
+    printf '200'
+elif [[ "$url" == *"standbyok=true"* ]]; then
+    printf '429'
+else
+    printf '429'
+fi
+exit 0

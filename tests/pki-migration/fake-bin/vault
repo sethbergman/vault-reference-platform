@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI, for the migration driver's tests.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+if [[ "$*" == *"raft list-peers"* ]]; then
+    n="${FAKE_VOTERS:-3}"
+    # FAKE_VOTERS_DROP_AFTER models a node falling out of the cluster
+    # partway through a run: the first N calls report a full cluster,
+    # every call after that reports one fewer. Without this the gate's
+    # voter check can only ever compare a constant against itself.
+    if [[ -n "${FAKE_VOTERS_DROP_AFTER:-}" ]]; then
+        c="${FAKE_LOG}.votercalls"
+        printf 'x' >> "$c"
+        if [[ "$(wc -c < "$c" | tr -d '[:space:]')" -gt "$FAKE_VOTERS_DROP_AFTER" ]]; then
+            n=$((n - 1))
+        fi
+    fi
+    python3 - "$n" <<'PY'
+import json, sys
+n = int(sys.argv[1])
+servers = [{"node_id": f"vault-{i}", "voter": True} for i in range(n)]
+print(json.dumps({"data": {"config": {"servers": servers}}}))
+PY
+    exit 0
+fi
+
+# vault read -field=certificate pki/cert/ca
+if [[ "$*" == *"/cert/ca"* ]]; then
+    [[ "${FAKE_PKI_READY:-true}" == "true" ]] || exit 2
+    cat "${FIXTURES}/pkica.crt"
+    exit 0
+fi
+
+echo "fake vault: unhandled command: $*" >&2
+exit 64
