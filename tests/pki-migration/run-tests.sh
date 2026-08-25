@@ -104,6 +104,21 @@ mkdir -p "$FIXTURES" "${WORK}/tls" "${WORK}/bin"
   openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 30 \
       -keyout pkica.key -out pkica.crt -subj "/CN=vault pki CA" 2>/dev/null )
 
+# Read the fixture's subject with the same binary the driver will use, and
+# hand it to the openssl shim. The shim used to hardcode "CN=vault pki CA",
+# which matched the author's openssl and not CI's: OpenSSL 3.0 renders the
+# same DN as "CN = vault pki CA". Every node then read as un-migrated and
+# the prune cases failed for a reason with nothing to do with the driver.
+FAKE_PKI_ISSUER="$("$FAKE_REAL_OPENSSL" x509 -in "${FIXTURES}/pkica.crt" \
+    -noout -subject 2>/dev/null | sed 's/^subject= *//')"
+export FAKE_PKI_ISSUER
+
+if [[ -n "$FAKE_PKI_ISSUER" ]]; then
+    ok "the fixture subject was read with the driver's own openssl"
+else
+    red "ERROR: could not read the fixture CA subject"; exit 1
+fi
+
 # A stand-in for issue-node-cert.sh. The driver's job is orchestration —
 # what it calls, in what order, and when it stops — so the thing being
 # orchestrated is replaced with something that records and obeys.

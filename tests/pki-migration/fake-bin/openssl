@@ -25,13 +25,16 @@ if [[ "${1:-}" == "s_client" ]]; then
         [[ "${pair%%=*}" == "$addr" ]] && issuer="${pair#*=}"
     done
 
-    # DN form, matching what real `openssl x509 -subject` produces for the
-    # fixture CA. The driver compares a node's served issuer against that
-    # subject, so a bare common name here would never match and every node
-    # would look un-migrated — which is exactly how this first behaved.
+    # The driver compares a node's served issuer against the subject it
+    # reads off the fixture CA using the real openssl. Never hardcode that
+    # DN here: openssl renders it differently between builds -- 3.0 prints
+    # "CN = vault pki CA" and others print "CN=vault pki CA" -- so a
+    # literal matches on the machine it was written on and nowhere else.
+    # It arrives in FAKE_PKI_ISSUER, read from the fixture by the same
+    # binary the driver will use.
     case "$issuer" in
-        pki)       printf 'ISSUER:CN=vault pki CA\n' ;;
-        bootstrap) printf 'ISSUER:CN=bootstrap CA\n' ;;
+        pki)       printf 'ISSUER:%s\n' "${FAKE_PKI_ISSUER:?FAKE_PKI_ISSUER is not set}" ;;
+        bootstrap) printf 'ISSUER:CN=a bootstrap CA, not the pki fixture\n' ;;
         none)      : ;;
     esac
     exit 0
