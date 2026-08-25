@@ -801,7 +801,7 @@ fi
 
 # Both devices receive every entry. If the secondary is empty, the
 # redundancy the two-device design depends on is not actually there.
-SECOND_TEXT="$(compose exec -T audit-collector cat /tmp/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
+SECOND_TEXT="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
 if [[ "$SECOND_TEXT" == *"itest/audit-canary"* ]]; then
     ok "and the socket device delivered the same entry to the collector"
 else
@@ -1156,8 +1156,32 @@ info "=== A Vault outage is not immediately an application outage ==="
 # The reason to put Agent in front of an application at all. With the
 # secret already on disk, losing Vault stops new credentials being issued
 # — it does not stop the application working.
-info "  stopping vault-0, the node Agent talks to..."
-compose stop vault-0 >/dev/null 2>&1 || true
+# Destroyed rather than stopped, and deliberately in this one place.
+#
+# Two properties share a single teardown here. Agent's is that a Vault
+# outage does not take the application with it. The audit trail's is that
+# it outlives the node it describes — which needs the node's own copy
+# genuinely gone, so `rm -sf` and not `stop`.
+#
+# This is also the last section in the suite. Nothing after it needs
+# three nodes, and cleanup() destroys the rest seconds later, so there is
+# no recovery to perform and none is attempted.
+
+# Recorded before the node dies, so there is something whose survival
+# means anything.
+vault kv put itest/before-node-loss value=recorded >/dev/null 2>&1 || true
+sleep 3
+
+PRE_LOSS="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
+if [[ "$PRE_LOSS" == *"itest/before-node-loss"* ]]; then
+    ok "the collector recorded a request before the node was destroyed"
+else
+    bad "the collector recorded a request before the node was destroyed" \
+        "nothing to lose means nothing is proven by losing it"
+fi
+
+info "  destroying vault-0 — container and filesystem, not a stop..."
+compose rm -sf vault-0 >/dev/null 2>&1 || true
 sleep 5
 
 STILL_THERE="$(compose exec -T vault-agent cat /rendered/db.env 2>/dev/null | grep -v 'level=' || true)"
@@ -1175,15 +1199,52 @@ else
         "the credential stopped working when Vault did"
 fi
 
-# Deliberately not restarted. This section is last, so cleanup() tears
-# the whole cluster down within seconds of it finishing — a restart here
-# recovers a cluster that is about to be destroyed.
+# ---------------------------------------------------------------------------
+info ""
+info "=== The audit trail outlives the node it describes ==="
+# ---------------------------------------------------------------------------
+# The reason to ship audit logs off the node at all. A trail that lives
+# only where it was generated is one that anything able to destroy that
+# host can destroy — which is exactly what someone who has just used the
+# Vault would want to do.
 #
-# It was there originally, and it was the only part of this section that
-# ever failed: a node stopped mid-run has to re-read its config,
-# auto-unseal through Transit and rejoin Raft, and on a loaded runner
-# that outlasted the wait. Retrying harder would have been fixing
-# ceremony. The two assertions above are the ones with something to say.
+# vault-0 is gone above: container and filesystem, so its local
+# /vault/audit/vault-audit.log went with it.
+
+if compose ps -a --format '{{.Service}}' 2>/dev/null | grep -qx 'vault-0'; then
+    bad "vault-0 and its local audit file are gone" "the container still exists"
+else
+    ok "vault-0 and its local audit file are gone"
+fi
+
+POST_LOSS="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
+if [[ "$POST_LOSS" == *"itest/before-node-loss"* ]]; then
+    ok "and the shipped trail is still readable from the collector"
+else
+    bad "and the shipped trail is still readable from the collector" \
+        "the trail died with the node, which is the failure shipping exists to prevent"
+fi
+
+# The collector's storage is a named volume, so it is not tied to any
+# container's lifecycle either. Recreating the collector must not lose
+# what it already holds — otherwise the durability is one `docker compose
+# up --force-recreate` deep.
+info "  recreating the collector to check the volume, not the container, holds the log..."
+compose rm -sf audit-collector >/dev/null 2>&1 || true
+compose up -d audit-collector >/dev/null 2>&1 || true
+sleep 5
+
+AFTER_RECREATE="$(compose exec -T audit-collector cat /collector/audit-socket.log 2>/dev/null | grep -v 'level=' || true)"
+if [[ "$AFTER_RECREATE" == *"itest/before-node-loss"* ]]; then
+    ok "and it survives the collector being recreated"
+else
+    bad "and it survives the collector being recreated" \
+        "the log was in the container filesystem, not the volume"
+fi
+
+# Nothing is restarted. This is the last section, nothing after it needs
+# three nodes, and cleanup() destroys the rest seconds later — the same
+# ceremony removed from this section in #27.
 
 # ---------------------------------------------------------------------------
 info ""

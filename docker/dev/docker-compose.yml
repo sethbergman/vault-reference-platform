@@ -56,12 +56,23 @@ services:
     command:
       - "-u"
       - "TCP-LISTEN:9090,fork,reuseaddr"
-      # /tmp, not a directory of our own: socat's `creat` creates the
-      # file, not its parent, so a path under a directory that does not
-      # exist in the image fails silently per connection — the TCP
-      # listener still accepts, so Vault enables the device happily and
+      # /collector exists because the named volume below mounts it.
+      # socat's `creat` makes the file, not its parent, so a path under a
+      # directory that does not exist fails silently per connection: the
+      # TCP listener still accepts, Vault enables the device happily, and
       # nothing is ever written.
-      - "OPEN:/tmp/audit-socket.log,creat,append"
+      - "OPEN:/collector/audit-socket.log,creat,append"
+    volumes:
+      # A named volume, not the container filesystem. This is the whole
+      # point of shipping the log anywhere: an audit trail that lives
+      # only inside the thing it describes dies with it, and anything
+      # able to destroy the Vault node is able to destroy the evidence of
+      # what it did there.
+      #
+      # The volume outlives `docker compose rm` of any container, which
+      # is what the integration suite checks by destroying vault-0
+      # outright and reading the trail back afterwards.
+      - audit-logs:/collector
     # Deliberately no host port. Vault reaches this over the container
     # network as audit-collector:9090, and the tests read the file with
     # `compose exec`, so publishing it buys nothing — and 9090 on the
@@ -222,3 +233,8 @@ services:
       - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+
+volumes:
+  # Audit logs, kept deliberately separate from every container's
+  # lifecycle. See the audit-collector service above.
+  audit-logs:
