@@ -75,7 +75,7 @@ run_migrate() {
     RC=0
     OUT="$(FAKE_LOG="$logfile" ISSUE_LOG="${WORK}/issue-calls.log" \
         PATH="${FAKE_BIN}:${WORK}/bin:${PATH}" \
-        "$MIGRATE" --nodes "$NODES" --tls-dir "${WORK}/tls"         --issue-script "$ISSUE_STUB" "$@" 2>&1)" || RC=$?
+        "$MIGRATE" --nodes "$NODES" --tls-dir "${WORK}/tls"         --issue-script "$ISSUE_STUB" --health-retries 2 "$@" 2>&1)" || RC=$?
     # shellcheck disable=SC2034  # kept for debugging a failing run
     LOG="$(cat "$logfile")"
     ISSUE_LOG="$(cat "${WORK}/issue-calls.log" 2>/dev/null || true)"
@@ -211,11 +211,17 @@ issue_lacks "and never reaches the active node" "--cert-name vault-0 "
 
 # A node that is unhealthy afterwards stops the run just as firmly, even
 # though the swap command itself succeeded.
+# Driven through the trust phase for the same reason as the voter case:
+# the swap path checks the served certificate before it reaches the gate,
+# so an unhealthy node would abort on that check instead and this
+# assertion would pass without the health gate existing at all. It did,
+# until a mutation that deleted the health check changed nothing.
 reset_scenario
 export FAKE_NODE_HEALTH="127.0.0.1:8210=503"
-run_migrate --phase swap
-assert_rc   "an unhealthy node after a swap aborts" 1
-assert_says "and names the node"                    "vault-1"
+run_migrate --phase trust
+assert_rc   "a node that does not come back healthy aborts" 1
+assert_says "and names the node"                            "vault-1"
+assert_says "and says the rest are untouched"               "untouched"
 
 # Losing a voter is the other way a swap goes wrong: the node answers
 # health checks but has dropped out of the cluster.

@@ -18,6 +18,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.6 | Dynamic database credentials (PostgreSQL), with root rotation |
 | v0.7 | Alerting on absence: rules, Alertmanager, pushgateway, TLS probes |
 | v0.8 | Audit devices, with the two-device availability tradeoff stated |
+| v0.9 | The full PKI migration path, sequenced and tested end to end |
 
 ## The honest gap
 
@@ -63,18 +64,6 @@ Related: the cloud profiles have no monitoring stack at all. The rule
 file is ordinary PromQL against standard Vault metrics and would port
 directly, but nothing here deploys it outside the local profile.
 
-### Finishing the PKI migration
-
-`tests/integration` swaps one node's certificate and verifies the cluster
-survives — the risky step. It does not run the full rollout across every
-node, so the final `--replace-ca` that drops the bootstrap CA from the
-trust bundle is still covered only by shims.
-
-Doing this properly means a script that sequences the whole migration:
-distribute the combined trust bundle everywhere, swap one node at a time
-with a health gate between each, then remove the bootstrap CA — the same
-shape as `vault-upgrade.sh`.
-
 ### More database engines
 
 The database engine is wired up for PostgreSQL only. Vault supports
@@ -96,10 +85,10 @@ in production. The blockers are, in order:
 
 1. **A real cloud apply.** Until one of the two profiles has been stood
    up and torn down for real, the claim is unproven.
-2. **The full PKI migration path**, end to end.
-3. **Audit log shipping**, to somewhere a compromised node cannot reach.
+2. **Audit log shipping**, to somewhere a compromised node cannot reach.
 
-Dynamic secrets, alerting and audit devices have all moved off this list. The database
+Dynamic secrets, alerting, audit devices and the PKI migration path have
+all moved off this list. The database
 engine is tested against a real Postgres; the alert rules are unit-tested
 with promtool and observed firing end to end against a live cluster.
 

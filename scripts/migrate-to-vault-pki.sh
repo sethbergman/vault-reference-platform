@@ -55,6 +55,8 @@
 #   --phase <p>          trust, swap, prune, or all (default: all)
 #   --issue-script <p>   Path to issue-node-cert.sh (default: alongside
 #                        this script)
+#   --health-retries <n> How many 2s attempts a node gets to come back
+#                        healthy after each change (default: 30)
 #   --dry-run            Print the plan and exit
 #
 # Requirements: vault, jq, openssl, and a VAULT_TOKEN that can issue from
@@ -73,6 +75,7 @@ ROLE="vault-node"
 RELOAD_CMD="systemctl reload vault"
 KEY_MODE="0600"
 PHASE="all"
+HEALTH_RETRIES=30
 DRY_RUN=false
 
 log()  { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
@@ -95,6 +98,7 @@ while [[ $# -gt 0 ]]; do
         --key-mode)   KEY_MODE="$2"; shift 2 ;;
         --phase)      PHASE="$2"; shift 2 ;;
         --issue-script) ISSUE="$2"; shift 2 ;;
+        --health-retries) HEALTH_RETRIES="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         -h|--help)    usage ;;
         *) die "Unknown argument: $1" ;;
@@ -231,7 +235,7 @@ fi
 # did not come back is how one bad certificate becomes an outage.
 gate() {
     local node="$1" what="$2" addr="${NODE_ADDR[$1]}"
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 "$HEALTH_RETRIES"); do
         if node_healthy "$addr"; then break; fi
         sleep 2
     done

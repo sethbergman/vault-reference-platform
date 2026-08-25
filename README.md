@@ -230,13 +230,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs eighteen checks on every PR. Five are static:
+GitHub Actions runs nineteen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Six run against fixtures and shims — fast, no credentials, and able to
+Seven run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -257,6 +257,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Audit devices** — that two are enabled by default, that `--force`
   cannot disable the only one, and that an enable which succeeds without
   enabling anything is treated as a failure.
+- **PKI migration driver** — that trust is distributed before anything
+  swaps, that a failed node stops the run, and that the bootstrap CA
+  cannot be dropped while any node still presents one.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -306,6 +309,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - **v0.6** — dynamic database credentials (done)
 - **v0.7** — alerting on absence (done)
 - **v0.8** — audit devices (done)
+- **v0.9** — the full PKI migration path (done)
 - **v1.0** — production-ready reference architecture
 
 **The honest gap:** neither cloud profile has been applied end to end.

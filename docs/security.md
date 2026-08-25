@@ -87,6 +87,45 @@ until then. There is no way around that ordering. The `vault_pki` Ansible
 role is off by default and refuses to run on a node with no existing
 certificate, rather than producing a timer that fails quietly every night.
 
+### Doing the migration
+
+`scripts/migrate-to-vault-pki.sh` sequences the rollout. It is not a loop
+around `issue-node-cert.sh`: get the order wrong and nodes stop trusting
+each other, which presents as a network fault and gets diagnosed as one.
+
+```bash
+./scripts/migrate-to-vault-pki.sh \
+    --nodes vault-0=10.0.1.10:8200,vault-1=10.0.1.11:8200 \
+    --domain vault.internal \
+    --dry-run
+```
+
+Three phases, and the order is the whole point:
+
+| Phase | What | Why it is not optional |
+|---|---|---|
+| `trust` | Every node's bundle gains the PKI CA, keeping the old one | A node presenting a PKI certificate before its peers trust that CA is a node its peers refuse |
+| `swap` | One node at a time moves onto a PKI certificate | Peers already trust the new CA; the node still trusts them |
+| `prune` | The bootstrap CA comes out | Only safe once nothing presents a bootstrap certificate |
+
+Run `--dry-run` first: it prints the plan, including which node is
+active, and changes nothing.
+
+**Standbys first, the active node last.** Not to avoid an election — a
+swap costs no leadership, since Vault reloads on `SIGHUP` without
+restarting. It is about what is still true if the run fails halfway: the
+leader is the node you least want in an unknown state, so it is touched
+last, once the procedure has already worked twice.
+
+**The prune refuses while any node still serves a bootstrap
+certificate**, checked on the wire rather than on disk. A certificate
+written and never reloaded is not migrated, and dropping the bootstrap CA
+at that point makes every peer reject that node.
+
+Each phase gates on the node coming back healthy *and* the cluster still
+having every voter before moving on. A run that fails stops where it is
+and says which nodes were untouched.
+
 A production deployment would more likely make this PKI mount an
 *intermediate* signed by an offline root, so that compromising this Vault
 does not compromise the whole chain. `bootstrap-pki.sh` generates an
