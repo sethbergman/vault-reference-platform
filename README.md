@@ -267,6 +267,20 @@ so a single audit device turns a full disk into a total outage. Entries
 are HMAC'd rather than recorded in clear, which is what makes the logs
 safe to ship centrally.
 
+The collector hash-chains entries as they arrive, because a log that
+merely outlives the node still says whatever the last person with write
+access wanted it to say — and a shorter log is indistinguishable from a
+quieter day. `scripts/verify-audit-chain.sh` recomputes the chain from
+the entries and reports the first sequence number that diverges.
+
+Chaining alone stops a careless attacker, not a thorough one: whoever can
+rewrite the log can recompute the chain over it. So a separate
+`audit-anchor` service records the chain head to its own volume, with the
+audit volume mounted read-only — a head recorded where the attacker
+cannot reach still remembers what the trail used to say. Both volumes sit
+on one Docker host, so this is tamper *evidence*, not tamper proofing,
+and [`docs/audit.md`](docs/audit.md) says which is which.
+
 See [`docs/audit.md`](docs/audit.md).
 
 ## Monitoring and alerting
@@ -291,13 +305,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-one checks on every PR. Five are static:
+GitHub Actions runs twenty-two checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Nine run against fixtures and shims — fast, no credentials, and able to
+Ten run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -318,6 +332,10 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Audit devices** — that two are enabled by default, that `--force`
   cannot disable the only one, and that an enable which succeeds without
   enabling anything is treated as a failure.
+- **Audit chain and anchors** — that an altered, removed or planted
+  entry is caught and located, and that a chain rewritten to be
+  self-consistent over an edited log passes verification *without*
+  anchors and fails *with* them, which is the whole reason they exist.
 - **PKI migration driver** — that trust is distributed before anything
   swaps, that a failed node stops the run, and that the bootstrap CA
   cannot be dropped while any node still presents one.

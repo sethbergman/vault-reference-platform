@@ -659,6 +659,15 @@ jobs:
       - name: Exercise scripts/bootstrap-audit.sh
         run: ./tests/audit/run-tests.sh
 
+  audit-chain-test:
+    name: Audit chain and anchor tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Exercise the collector's chaining and its verifier
+        run: ./tests/audit-chain/run-tests.sh
+
   pki-migration-test:
     name: PKI migration driver tests
     runs-on: ubuntu-latest
