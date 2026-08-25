@@ -1,5 +1,7 @@
 # Vault Reference Platform
 
+![Vault Reference Platform banner](docs/images/banner.jpg)
+
 A reference implementation for deploying and operating a highly available
 [HashiCorp Vault](https://www.vaultproject.io/) cluster using Infrastructure
 as Code and standard platform-engineering practices.
@@ -299,27 +301,24 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-- **v0.1** — local Docker Compose deployment, base Terraform + docs (done)
-- **v0.2** — HA cluster (done), auto-unseal (done), monitoring (done)
-- **v0.3** — automated tests (done), CI security scanning (done)
-- **v0.4** — AWS and Azure profiles (done), TLS everywhere (done),
-  Terraform → Ansible handoff (done)
-- **v0.5** — scheduled snapshots (done), certificate renewal from Vault
-  PKI (done), integration tests against a real cluster (done)
-- **v0.6** — dynamic database credentials (done)
-- **v0.7** — alerting on absence (done)
-- **v0.8** — audit devices (done)
-- **v0.9** — the full PKI migration path (done)
-- **v1.0** — production-ready reference architecture
+Everything through v0.9 has shipped — see
+[Releases](https://github.com/sethbergman/vault-reference-platform/releases)
+for the log. "Shipped" here means there is a test that fails if the
+feature breaks, not that the code exists.
 
-**The honest gap:** neither cloud profile has been applied end to end.
-Both are covered by `terraform test` against mocked providers, which
-catches more than it sounds like — a Key Vault name over Azure's
-24-character limit, a Raft `auto_join` configuration go-discover rejects
-outright — but a plan that succeeds is not a deployment that works. Treat
-those two profiles as reviewed and tested, not as proven.
+What stands between here and v1.0, in order:
 
-The largest thing still missing is a **real cloud apply** — see below.
+1. **A real cloud apply.** Neither `terraform/aws` nor `terraform/azure`
+   has been stood up end to end. Both pass `terraform test` against
+   mocked providers — which catches a Key Vault name over Azure's
+   24-character limit, and a Raft `auto_join` configuration go-discover
+   rejects outright — but a plan that succeeds is not a deployment that
+   works. Treat both profiles as reviewed and tested, not as proven.
+2. **Audit log shipping.** Two audit devices are enabled and tested, but
+   both write to the same filesystem — which proves entries reach both
+   and proves nothing about surviving a full disk. A second device on an
+   independent failure domain is what a real deployment needs, and this
+   repository does not provide it.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.
