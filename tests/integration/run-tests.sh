@@ -1175,37 +1175,15 @@ else
         "the credential stopped working when Vault did"
 fi
 
-info "  restarting vault-0..."
-compose start vault-0 >/dev/null 2>&1 || true
-
-# A node that was stopped mid-run has to re-read its config, auto-unseal
-# through Transit and rejoin Raft. Ninety seconds was not enough on a
-# loaded runner; three minutes is, and a restart that genuinely fails
-# still fails — it just gets a fair chance first.
-for _ in $(seq 1 90); do
-    [[ "$(alive_code 8200)" =~ ^(200|429)$ ]] && break
-    sleep 2
-done
-
-CODE="$(alive_code 8200)"
-if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
-    ok "vault-0 came back (${CODE})"
-else
-    # This failed once with nothing but a status code, which is the same
-    # diagnostic-free failure this suite criticises elsewhere. If the node
-    # does not come back, its own logs are the only thing that says why.
-    bad "vault-0 came back" "health returned ${CODE}; container state and logs follow"
-    compose ps vault-0 2>&1 | sed 's/^/        /' || true
-    compose logs --tail=30 vault-0 2>&1 | sed 's/^/        /' || true
-fi
-
-VOTERS_END="$(vault operator raft list-peers -format=json 2>/dev/null \
-    | jq '[.data.config.servers[]? | select(.voter == true)] | length' 2>/dev/null || echo 0)"
-if [[ "$VOTERS_END" == "3" ]]; then
-    ok "and the cluster is back to three voters"
-else
-    bad "and the cluster is back to three voters" "got ${VOTERS_END}"
-fi
+# Deliberately not restarted. This section is last, so cleanup() tears
+# the whole cluster down within seconds of it finishing — a restart here
+# recovers a cluster that is about to be destroyed.
+#
+# It was there originally, and it was the only part of this section that
+# ever failed: a node stopped mid-run has to re-read its config,
+# auto-unseal through Transit and rejoin Raft, and on a loaded runner
+# that outlasted the wait. Retrying harder would have been fixing
+# ceremony. The two assertions above are the ones with something to say.
 
 # ---------------------------------------------------------------------------
 info ""
