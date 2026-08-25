@@ -81,6 +81,81 @@ tokens would be a credential store with extra steps.
 `log_raw = true` disables all of this and writes secrets in clear text.
 `bootstrap-audit.sh` will not set it and offers no flag for it.
 
+## Tamper evidence
+
+An audit log answers "who read that secret" only for as long as it still
+says what Vault sent. The collector originally appended bytes, which
+meant anyone able to write to the volume could delete the record of what
+they did — and a shorter log is indistinguishable from a quieter day.
+
+Every entry now also produces a line in a parallel chain file:
+
+```text
+<seq> <sha256(entry)> <sha256(previous_chain_hash + entry_hash)>
+```
+
+Each link covers the one before it, so removing, altering or inserting an
+entry breaks every link from that point on.
+`scripts/verify-audit-chain.sh` recomputes the chain from the entries
+themselves and reports the first sequence number where the two diverge:
+
+```bash
+./scripts/verify-audit-chain.sh            # reads from the running containers
+./scripts/verify-audit-chain.sh --log a --chain b --anchors c
+```
+
+It distinguishes the failures, because they call for different
+responses:
+
+| Verdict | What happened |
+|---|---|
+| chain mismatch at N | an entry at or before N was altered, removed or inserted |
+| log longer than chain | the tail was never chained; a crash does this, so does appending by hand |
+| chain longer than log | entries were deleted from the log, and the chain still remembers them |
+| anchor mismatch | the chain itself was rewritten |
+
+The log is written exactly as before — raw entries, one per line, no
+added fields — so anything already consuming it is unaffected. The
+integrity data lives beside it, not inside it.
+
+### Why the chain alone is not enough
+
+A hash chain catches whoever cannot recompute it. It does nothing against
+whoever can. An attacker with write access to the chain file deletes the
+entries recording what they did, recomputes every hash from that point,
+and the result verifies perfectly: internally consistent and completely
+false.
+
+What breaks that is a copy of the head hash held somewhere the attacker
+is not. The `audit-anchor` service periodically records the chain head to
+its own volume, with the audit volume mounted **read-only**. Neither
+container can write where the other reads. Once the head for sequence N
+is recorded elsewhere, any later rewrite of entries at or before N
+produces a different head, and the two disagree.
+
+This is asserted rather than assumed: `tests/audit-chain` builds a trail,
+anchors it, deletes an entry, recomputes the whole chain, and checks that
+the result **passes** verification without anchors and **fails** with
+them. If the first half ever stops holding, chaining alone became
+sufficient and the reasoning here needs revisiting.
+
+Anchoring is periodic, not per-entry. Entries written since the last
+anchor are covered by the chain but not yet by an anchor, so
+`ANCHOR_INTERVAL` is the window in which a thorough attacker can still
+rewrite history undetected. Shorter is safer and noisier.
+
+### What this still is not
+
+A separate volume on one host is a real separation, and it is not the
+same thing as a separate host. Anything with access to the Docker daemon
+can reach both volumes, so the local profile demonstrates the mechanism
+rather than providing the guarantee.
+
+A production anchor belongs somewhere the Vault host cannot write at all:
+object-lock storage with a retention policy, a different cloud account,
+or an external timestamping service. The anchor format is three fields of
+text precisely so that shipping it somewhere else is not a redesign.
+
 ## Rotation
 
 Vault holds the log file open, so rotation is: move the file, then send
@@ -169,6 +244,13 @@ reason to run two devices rather than one.
 volume. That is enough to outlive the Vault node — which is the property
 that matters and the one the tests prove — and it is *not* off-host:
 anything with access to the Docker daemon can still reach it.
+
+The hash chain and anchors narrow this without closing it. An edit to the
+trail is now detectable, and the anchors make it detectable even against
+someone who recomputes the chain — but both volumes live on the same
+Docker host, so a sufficiently privileged compromise reaches the anchors
+too. Tamper *evidence* is a weaker and more achievable property than
+tamper *proofing*, and only the first is claimed here.
 
 A real deployment points the socket device at a collector somewhere else
 entirely. The device configuration does not change; only the address

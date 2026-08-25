@@ -51,17 +51,17 @@ services:
   # HashiCorp recommend pairing a socket device with a non-socket one,
   # because a socket device alone can block Vault when its endpoint goes
   # away. That pairing is exactly what bootstrap-audit.sh sets up.
+  # Built rather than the stock alpine/socat image, because appending
+  # bytes is not enough: whoever can write to the volume could remove the
+  # record of what they did, and a shorter log is indistinguishable from
+  # a quieter day. Each entry now also produces a link in a hash chain,
+  # so an edit is visible. See docker/audit-collector/collect.sh.
+  #
+  # The log itself is written exactly as before -- raw entries, one per
+  # line -- so anything already consuming it is unaffected. The integrity
+  # data lives beside it, not inside it.
   audit-collector:
-    image: alpine/socat:1.8.0.1
-    command:
-      - "-u"
-      - "TCP-LISTEN:9090,fork,reuseaddr"
-      # /collector exists because the named volume below mounts it.
-      # socat's `creat` makes the file, not its parent, so a path under a
-      # directory that does not exist fails silently per connection: the
-      # TCP listener still accepts, Vault enables the device happily, and
-      # nothing is ever written.
-      - "OPEN:/collector/audit-socket.log,creat,append"
+    build: ../audit-collector
     volumes:
       # A named volume, not the container filesystem. This is the whole
       # point of shipping the log anywhere: an audit trail that lives
@@ -77,6 +77,37 @@ services:
     # network as audit-collector:9090, and the tests read the file with
     # `compose exec`, so publishing it buys nothing — and 9090 on the
     # host is Prometheus, which is how this was found.
+
+  # Records the chain head somewhere the collector cannot reach.
+  #
+  # A hash chain catches whoever cannot recompute it. It does nothing
+  # against whoever can: an attacker with write access to the chain file
+  # deletes the entries recording what they did, recomputes every hash
+  # from that point, and the result verifies perfectly. Internally
+  # consistent and completely false.
+  #
+  # What breaks that is a copy of the head held where the attacker is
+  # not. Hence a separate service: the audit volume is mounted READ-ONLY
+  # here, and the anchors go on a volume the collector has no mount for
+  # at all. Neither container can write where the other reads.
+  #
+  # This is a real separation on one host, and it is not the same thing
+  # as a separate host. docs/audit.md says so plainly and describes what
+  # a production anchor should be instead.
+  audit-anchor:
+    build: ../audit-collector
+    entrypoint: ["/usr/local/bin/anchor.sh"]
+    environment:
+      # Shorter is safer and noisier: entries written since the last
+      # anchor are covered by the chain but not yet by an anchor, so this
+      # interval is the window in which a thorough attacker can still
+      # rewrite history undetected.
+      ANCHOR_INTERVAL: "15"
+    volumes:
+      - audit-logs:/collector:ro
+      - audit-anchors:/anchors
+    depends_on:
+      - audit-collector
 
   # Vault Agent — the only thing here that shows how an application
   # actually consumes a secret (see docs/vault-agent.md). Started by
@@ -238,3 +269,8 @@ volumes:
   # Audit logs, kept deliberately separate from every container's
   # lifecycle. See the audit-collector service above.
   audit-logs:
+
+  # Anchors: chain heads, on their own volume so that write access to the
+  # audit trail is not also write access to the record of what the trail
+  # used to say. The collector has no mount for this at all.
+  audit-anchors:
