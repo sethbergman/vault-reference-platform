@@ -10,12 +10,24 @@ jobs:
     name: Terraform fmt/validate/test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with:
           # terraform_wrapper wraps the binary in a script that mangles
           # exit codes and output, which breaks `terraform test`.
           terraform_wrapper: false
+          # Pinned for the same reason the integration job pins the Vault
+          # CLI: a floating version makes failures hard to attribute, and
+          # `fmt -check` in particular can start failing on formatting
+          # rules a new release introduced rather than on anything here.
+          #
+          # It also stops an upstream outage from reddening main. The
+          # action's default is `latest`, which resolves the version over
+          # the network on every run; that lookup returned a 504 on
+          # 2026-08-25 and failed the job before any Terraform ran.
+          #
+          # terraform/{aws,azure} declare required_version >= 1.7.
+          terraform_version: "1.15.9"
       - name: terraform fmt
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (aws)
@@ -52,8 +64,8 @@ jobs:
     name: Ansible lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install ansible-lint
@@ -72,7 +84,7 @@ jobs:
     name: Shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
@@ -111,8 +123,8 @@ jobs:
     name: Markdown lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DavidAnson/markdownlint-cli2-action@v17
+      - uses: actions/checkout@v7
+      - uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           globs: "**/*.md"
 
@@ -120,7 +132,7 @@ jobs:
     name: Deploy + smoke test (Docker Compose)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Bring up the local HA Vault cluster (Transit auto-unseal + monitoring)
         run: |
@@ -191,7 +203,7 @@ jobs:
     name: AppRole bootstrap + secret_id rotation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install vault CLI
         run: |
@@ -280,7 +292,7 @@ jobs:
       # also exactly why bound claims matter.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install vault CLI
         run: |
@@ -383,7 +395,7 @@ jobs:
     name: Human OIDC login (Dex)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install vault CLI
         run: |
@@ -525,7 +537,7 @@ jobs:
     name: DR restore drill
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run the disaster recovery drill
         run: ./scripts/dr-drill.sh
@@ -540,7 +552,7 @@ jobs:
     name: Rolling upgrade tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/vault-upgrade.sh
         run: ./tests/upgrade/run-tests.sh
@@ -549,9 +561,9 @@ jobs:
     name: Terraform to Ansible handoff tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -567,7 +579,7 @@ jobs:
     name: Scheduled snapshot tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/snapshot.sh
         run: ./tests/snapshot/run-tests.sh
@@ -576,7 +588,7 @@ jobs:
     name: Vault PKI node certificate tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/bootstrap-pki.sh and scripts/issue-node-cert.sh
         run: ./tests/pki/run-tests.sh
@@ -585,7 +597,7 @@ jobs:
     name: Integration (real cluster)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The scripts run as a host process against the cluster's published
       # ports, the way they would on a real node — so the runner needs the
@@ -613,7 +625,7 @@ jobs:
     name: Dynamic database credentials tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/bootstrap-database-secrets.sh
         run: ./tests/database/run-tests.sh
@@ -622,7 +634,7 @@ jobs:
     name: Alerting rule tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # promtool ships with Prometheus. Pinned to the same version the
       # compose profile runs, so a rule that passes here is one that
@@ -642,7 +654,7 @@ jobs:
     name: Audit device tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/bootstrap-audit.sh
         run: ./tests/audit/run-tests.sh
@@ -651,7 +663,7 @@ jobs:
     name: PKI migration driver tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/migrate-to-vault-pki.sh
         run: ./tests/pki-migration/run-tests.sh
@@ -660,7 +672,7 @@ jobs:
     name: Vault Agent bootstrap tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Exercise scripts/bootstrap-agent.sh
         run: ./tests/agent/run-tests.sh
@@ -669,7 +681,7 @@ jobs:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # These cover the decisions the scripts make — whether a missing
       # key pair fails or warns, whether teardown empties the bucket
@@ -685,14 +697,14 @@ jobs:
     name: Security scanning
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # gitleaks needs history to scan past commits, not just the tip.
           # A secret committed and then removed is still a leaked secret.
           fetch-depth: 0
 
       - name: Scan for committed secrets
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
