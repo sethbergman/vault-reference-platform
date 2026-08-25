@@ -1,2 +1,16 @@
+# Long lines are wrapped at 80 everywhere except tables, which cannot be
+# wrapped without becoming unreadable.
 MD013:
   tables: false
+
+# MD060 (table-column-style) arrived in markdownlint v0.41, which
+# markdownlint-cli2-action v24 bundles. It wants a table's delimiter row
+# to be padded the same way its content rows are: `| --- | --- |` rather
+# than `|---|---|`.
+#
+# Every table in this repository uses the compact delimiter, consistently,
+# and has since the first commit. Adopting the rule would mean 130 purely
+# cosmetic edits across 17 files, which would bury the real history of
+# those documents for no reader's benefit. Declining it costs nothing:
+# the rule is about the source, and both forms render identically.
+MD060: false
