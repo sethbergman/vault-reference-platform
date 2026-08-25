@@ -12,7 +12,7 @@
 # single-purpose rather than a long-lived token with broad policy — but it
 # does not remove it. See docs/vault-agent.md.
 
-pid_file = "/vault/agent/pidfile"
+pid_file = "/vault/agent/run/pidfile"
 
 vault {
   address = "https://vault-0:8200"
@@ -41,7 +41,7 @@ auto_auth {
 
   sink "file" {
     config = {
-      path = "/vault/agent/token"
+      path = "/vault/agent/run/token"
       # The token sink is a credential. 0640 rather than the permissive
       # default so it is not readable by every account on the host.
       mode = 0640

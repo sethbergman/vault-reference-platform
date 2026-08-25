@@ -11,9 +11,17 @@ makes no Vault API call. It reads a file.
 ./scripts/bootstrap-dev-cluster.sh --with-database --with-agent
 ./scripts/bootstrap-database-secrets.sh --password bootstrap-only-rotated-immediately
 ./scripts/bootstrap-agent.sh
-docker compose -f docker/dev/docker-compose.yml up -d vault-agent
 
-docker compose -f docker/dev/docker-compose.yml exec vault-agent cat /rendered/db.env
+cd docker/dev
+docker compose up -d --build vault-agent
+
+# Piped in, not bind-mounted or copied — see below.
+docker compose exec -T vault-agent \
+    sh -c 'cat > /vault/agent/creds/role_id' < agent/role_id
+docker compose exec -T vault-agent \
+    sh -c 'cat > /vault/agent/creds/secret_id' < agent/secret_id
+
+docker compose exec vault-agent cat /rendered/db.env
 ```
 
 ```text
@@ -23,6 +31,28 @@ DB_PASSWORD=A1a-...
 
 That account did not exist before Agent asked for it, and Agent will
 replace the file when the lease renews.
+
+Agent is started before its credentials exist. It retries authentication,
+so that is harmless, and it is the realistic order: the workload is
+scheduled, then something provisions its credential.
+
+### Why the credentials are piped in
+
+Agent **deletes** the `secret_id` after reading it. That only works if the
+file is writable by the user Agent runs as, which rules out both obvious
+alternatives in a container:
+
+| Approach | What happens |
+|---|---|
+| Bind-mount a host directory | Arrives owned by the host user; Agent cannot delete the file |
+| `docker compose cp` | Writes as root; same problem |
+| `exec ... 'cat > file'` | Writes as the image's user; Agent can delete it |
+
+This is a container-uid artifact, not a property of Agent. On a real host
+the provisioning system writes the file as the user Agent runs as and
+none of this arises. It is spelled out because the failure is silent:
+Agent authenticates fine, the credential simply stays on disk afterwards,
+and the protection you thought you had is not there.
 
 ## Why this is worth the moving part
 

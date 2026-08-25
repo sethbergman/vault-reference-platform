@@ -1065,7 +1065,18 @@ else
     bad "both credentials were written"
 fi
 
-compose up -d vault-agent >/dev/null 2>&1 || true
+# Agent is started BEFORE its credentials exist. It retries auth, so this
+# is harmless — and it is the realistic order: the container is scheduled,
+# then something provisions its credential.
+compose up -d --build vault-agent >/dev/null 2>&1 || true
+sleep 3
+
+# Piped in with `exec ... cat >`, which writes as the image's user, so
+# Agent can delete the secret_id afterwards. `compose cp` writes as root
+# and would leave a file Agent cannot remove — the same trap the DR drill
+# hit in #10.
+compose exec -T vault-agent sh -c 'cat > /vault/agent/creds/role_id'     < "${AGENT_CREDS}/role_id" 2>/dev/null || true
+compose exec -T vault-agent sh -c 'cat > /vault/agent/creds/secret_id'     < "${AGENT_CREDS}/secret_id" 2>/dev/null || true
 
 # Agent authenticates, then renders. Give it a window rather than a fixed
 # sleep, so a slow start is not read as a failure.
@@ -1108,11 +1119,15 @@ fi
 # Agent removes the secret_id once it has read it, so the credential does
 # not linger on disk. This is Agent's default and it surprises people, so
 # it is asserted rather than assumed.
-if [[ ! -f "${AGENT_CREDS}/secret_id" ]]; then
+# Checked inside the container, which is where Agent reads from. The
+# copy left on the host is the provisioning system's to clean up; Agent
+# only ever sees the one it was given.
+LEFTOVER="$(compose exec -T vault-agent sh -c 'ls /vault/agent/creds/secret_id 2>/dev/null || true' 2>/dev/null | tr -d '[:space:]' || true)"
+if [[ -z "$LEFTOVER" ]]; then
     ok "the secret_id was removed after Agent read it"
 else
     bad "the secret_id was removed after Agent read it" \
-        "still on disk — remove_secret_id_file_after_reading did not take effect"
+        "still present — remove_secret_id_file_after_reading did not take effect"
 fi
 
 # Agent's default perms are 0644. For a file holding a live database

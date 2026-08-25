@@ -76,14 +76,21 @@ services:
   # and renders a dynamic Postgres credential into /rendered/db.env. An
   # application reads that file and never learns Vault exists.
   vault-agent:
-    image: hashicorp/vault:1.17.2
+    build: ../vault-agent
     command: ["vault", "agent", "-config=/vault/agent/agent.hcl"]
     volumes:
       - ../vault-agent/agent.hcl:/vault/agent/agent.hcl:ro
       - ./tls:/vault/tls:ro
-      # role_id and secret_id land here from the host. Gitignored: the
-      # secret_id is a credential, and Agent removes it after reading.
-      - ./agent:/vault/agent/creds
+      # Credentials are deliberately NOT bind-mounted. A host directory
+      # arrives owned by the host user, and Agent — running as the
+      # container's vault user — then cannot delete the secret_id after
+      # reading it, which silently defeats the whole point of
+      # remove_secret_id_file_after_reading.
+      #
+      # They are piped in with `exec ... 'cat > file'` instead, which
+      # writes as the image's user. `compose cp` would not: it writes as
+      # root, which is the same problem wearing a different hat. See
+      # docs/vault-agent.md.
     environment:
       # No VAULT_TOKEN on purpose. If this container had one, the whole
       # demonstration would be circular.
