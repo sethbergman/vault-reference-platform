@@ -36,7 +36,7 @@ Agent is started before its credentials exist. It retries authentication,
 so that is harmless, and it is the realistic order: the workload is
 scheduled, then something provisions its credential.
 
-### Why the credentials are piped in
+## Why the credentials are piped in
 
 Agent **deletes** the `secret_id` after reading it. That only works if the
 file is writable by the user Agent runs as, which rules out both obvious
