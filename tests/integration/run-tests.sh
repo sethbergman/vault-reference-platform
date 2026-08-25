@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit --with-agent)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -1035,6 +1035,141 @@ if [[ "${PUSHED:-0}" -gt 0 ]]; then
     ok "and Prometheus can now see the snapshot metric"
 else
     bad "and Prometheus can now see the snapshot metric"         "the push did not land, so the absence alert would never clear"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== An application gets a secret without holding a token ==="
+# ---------------------------------------------------------------------------
+# Everything else here configures Vault. This is the only part that shows
+# something consuming it, and the interesting property is negative: the
+# consumer never authenticates, never holds a token, and makes no Vault
+# API call. It reads a file.
+
+AGENT_CREDS="${COMPOSE_DIR}/agent"
+rm -rf "$AGENT_CREDS"
+
+if "${REPO_ROOT}/scripts/bootstrap-agent.sh" --creds-dir "$AGENT_CREDS"         >"${WORK}/agent-bootstrap.log" 2>&1; then
+    ok "bootstrap-agent.sh provisioned the AppRole"
+else
+    bad "bootstrap-agent.sh provisioned the AppRole" "log follows"
+    sed 's/^/        /' "${WORK}/agent-bootstrap.log"
+fi
+
+# role_id is an identifier and secret_id is a credential. They should not
+# have the same permissions, and the credential should not be readable by
+# anyone who happens to be on the host.
+if [[ -s "${AGENT_CREDS}/role_id" && -s "${AGENT_CREDS}/secret_id" ]]; then
+    ok "both credentials were written"
+else
+    bad "both credentials were written"
+fi
+
+compose up -d vault-agent >/dev/null 2>&1 || true
+
+# Agent authenticates, then renders. Give it a window rather than a fixed
+# sleep, so a slow start is not read as a failure.
+RENDERED=""
+for _ in $(seq 1 40); do
+    RENDERED="$(compose exec -T vault-agent cat /rendered/db.env 2>/dev/null | grep -v 'level=' || true)"
+    [[ "$RENDERED" == *"DB_USERNAME"* ]] && break
+    sleep 2
+done
+
+if [[ "$RENDERED" == *"DB_USERNAME="* && "$RENDERED" == *"DB_PASSWORD="* ]]; then
+    ok "Agent rendered a credential into the template"
+else
+    bad "Agent rendered a credential into the template" "agent logs follow"
+    compose logs --tail=20 vault-agent 2>&1 | sed 's/^/        /' || true
+fi
+
+# The payoff: the rendered credential is real. A file containing
+# plausible-looking values proves nothing until something authenticates
+# with them.
+AGENT_USER="$(sed -n 's/^DB_USERNAME=//p' <<< "$RENDERED" | tr -d '' | head -1)"
+AGENT_PASS="$(sed -n 's/^DB_PASSWORD=//p' <<< "$RENDERED" | tr -d '' | head -1)"
+
+if [[ -n "$AGENT_USER" && "$(psql_as "$AGENT_USER" "$AGENT_PASS" "SELECT 1;")" == "1" ]]; then
+    ok "and the rendered credential actually connects to Postgres"
+else
+    bad "and the rendered credential actually connects to Postgres" \
+        "rendered user ${AGENT_USER} could not connect"
+fi
+
+# The whole point. If the agent container held a token, the demonstration
+# would be circular.
+AGENT_ENV="$(compose exec -T vault-agent env 2>/dev/null | grep -c '^VAULT_TOKEN=' || true)"
+if [[ "${AGENT_ENV:-0}" == "0" ]]; then
+    ok "the agent container holds no VAULT_TOKEN"
+else
+    bad "the agent container holds no VAULT_TOKEN" "found one in its environment"
+fi
+
+# Agent removes the secret_id once it has read it, so the credential does
+# not linger on disk. This is Agent's default and it surprises people, so
+# it is asserted rather than assumed.
+if [[ ! -f "${AGENT_CREDS}/secret_id" ]]; then
+    ok "the secret_id was removed after Agent read it"
+else
+    bad "the secret_id was removed after Agent read it" \
+        "still on disk — remove_secret_id_file_after_reading did not take effect"
+fi
+
+# Agent's default perms are 0644. For a file holding a live database
+# password that means every account on the host can read it.
+RENDER_MODE="$(compose exec -T vault-agent stat -c '%a' /rendered/db.env 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+if [[ "$RENDER_MODE" == "600" ]]; then
+    ok "the rendered secret is mode 0600, not the 0644 Agent default"
+else
+    bad "the rendered secret is mode 0600, not the 0644 Agent default" "got ${RENDER_MODE}"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== A Vault outage is not immediately an application outage ==="
+# ---------------------------------------------------------------------------
+# The reason to put Agent in front of an application at all. With the
+# secret already on disk, losing Vault stops new credentials being issued
+# — it does not stop the application working.
+info "  stopping vault-0, the node Agent talks to..."
+compose stop vault-0 >/dev/null 2>&1 || true
+sleep 5
+
+STILL_THERE="$(compose exec -T vault-agent cat /rendered/db.env 2>/dev/null | grep -v 'level=' || true)"
+if [[ "$STILL_THERE" == *"DB_USERNAME="* ]]; then
+    ok "the rendered secret survives Vault becoming unreachable"
+else
+    bad "the rendered secret survives Vault becoming unreachable" \
+        "the file went away with Vault, which defeats the purpose"
+fi
+
+if [[ "$(psql_as "$AGENT_USER" "$AGENT_PASS" "SELECT 1;")" == "1" ]]; then
+    ok "and the application can still reach its database"
+else
+    bad "and the application can still reach its database" \
+        "the credential stopped working when Vault did"
+fi
+
+info "  restarting vault-0..."
+compose start vault-0 >/dev/null 2>&1 || true
+for _ in $(seq 1 40); do
+    [[ "$(alive_code 8200)" =~ ^(200|429)$ ]] && break
+    sleep 2
+done
+
+CODE="$(alive_code 8200)"
+if [[ "$CODE" == "200" || "$CODE" == "429" ]]; then
+    ok "vault-0 came back (${CODE})"
+else
+    bad "vault-0 came back" "health returned ${CODE}"
+fi
+
+VOTERS_END="$(vault operator raft list-peers -format=json 2>/dev/null \
+    | jq '[.data.config.servers[]? | select(.voter == true)] | length' 2>/dev/null || echo 0)"
+if [[ "$VOTERS_END" == "3" ]]; then
+    ok "and the cluster is back to three voters"
+else
+    bad "and the cluster is back to three voters" "got ${VOTERS_END}"
 fi
 
 # ---------------------------------------------------------------------------

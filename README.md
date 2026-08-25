@@ -129,6 +129,25 @@ See [`docs/ci-authentication.md`](docs/ci-authentication.md) for letting
 GitHub Actions authenticate via OIDC — short-lived tokens minted per job,
 no stored credential to leak or rotate.
 
+## How an application gets a secret
+
+Everything above configures Vault. `docker/vault-agent/` shows something
+consuming it — and the notable part is negative: the application does not
+authenticate, holds no token, and makes no Vault API call. It reads a
+file that Vault Agent keeps current.
+
+The consequence worth having is availability. The secret is already on
+disk, so losing Vault stops new credentials being issued rather than
+stopping the application. The integration suite proves it by stopping the
+Vault node Agent talks to and checking the application can still reach
+its database.
+
+Agent does not solve secret zero — something still has to place an
+AppRole credential on the host — but `--wrap-ttl` makes that handoff
+single-use rather than a password in a file.
+
+See [`docs/vault-agent.md`](docs/vault-agent.md).
+
 ## Dynamic secrets
 
 Everything above stores secrets somebody created. `scripts/bootstrap-database-secrets.sh`
@@ -232,13 +251,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs nineteen checks on every PR. Five are static:
+GitHub Actions runs twenty checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Seven run against fixtures and shims — fast, no credentials, and able to
+Eight run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -262,6 +281,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **PKI migration driver** — that trust is distributed before anything
   swaps, that a failed node stops the run, and that the bootstrap CA
   cannot be dropped while any node still presents one.
+- **Vault Agent bootstrap** — that a credential and an identifier are
+  not written with the same permissions, and that `--wrap-ttl` changes
+  what lands on disk rather than only what is logged.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
