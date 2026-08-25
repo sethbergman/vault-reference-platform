@@ -29,7 +29,8 @@ that part down.
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
   bucket. `terraform/azure` builds the same shape with a VM scale set,
   Key Vault auto-unseal, and a blob container. Neither has been applied
-  end to end — see [`docs/deployment.md`](docs/deployment.md).
+  end to end — see [`docs/cloud-apply.md`](docs/cloud-apply.md) for what
+  that leaves unproven, and how to prove it.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -84,7 +85,8 @@ vault-reference-platform/
 │   ├── monitoring/    # Prometheus + Grafana config
 │   ├── tooling/       # CLI/dev tooling image
 │   └── dev/           # docker-compose for local dev
-├── scripts/           # bootstrap, auth, rotation, snapshots, PKI, DR
+├── scripts/           # bootstrap, auth, rotation, snapshots, PKI, DR,
+│                      # cloud pre-flight and teardown
 ├── tests/             # test suites (see CI/CD below)
 ├── examples/          # example least-privilege policies
 ├── docs/              # runbooks and guides
@@ -216,6 +218,44 @@ clouds replace instances and a static inventory goes stale silently.
 
 See [`docs/deployment.md`](docs/deployment.md).
 
+## Before a cloud apply
+
+Neither cloud profile has ever been applied, so the first person to try
+is spending real money to find out what is wrong.
+
+```bash
+./scripts/preflight-cloud.sh --cloud aws
+```
+
+It checks what can be checked for free — tooling, credentials, the
+account you are about to spend in, the inputs that fail *late* — then
+estimates cost and names what a teardown will not remove. It applies
+nothing.
+
+Two things it catches that cost money to discover otherwise: the AWS
+profile ships `ssh_key_name` empty, so the default apply succeeds and
+produces instances nobody can log into; and `az_count` drives one NAT
+gateway per zone, which is roughly 60% of the bill — more than the Vault
+nodes.
+
+Tearing down needs its own script, because `terraform destroy` fails
+partway on both profiles:
+
+```bash
+./scripts/teardown-cloud.sh --cloud aws
+```
+
+The AWS snapshot bucket is versioned with no `force_destroy`, so destroy
+fails with `BucketNotEmpty` once a single snapshot exists — and deleting
+the objects is not enough, because the delete markers are objects too.
+The script empties both, then reports what survives on purpose: a KMS key
+in its 7-day window, or an Azure Key Vault that purge protection keeps
+soft-deleted for 90 days and that nobody can purge sooner.
+
+[`docs/cloud-apply.md`](docs/cloud-apply.md) has the cost table and a
+verification checklist — the ordered list of claims this repository makes
+that only a real apply can settle.
+
 ## Audit logging
 
 `scripts/bootstrap-audit.sh` enables audit devices — the only thing in
@@ -251,13 +291,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty checks on every PR. Five are static:
+GitHub Actions runs twenty-one checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Eight run against fixtures and shims — fast, no credentials, and able to
+Nine run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -284,6 +324,10 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Vault Agent bootstrap** — that a credential and an identifier are
   not written with the same permissions, and that `--wrap-ttl` changes
   what lands on disk rather than only what is logged.
+- **Cloud pre-flight and teardown** — that the pre-flight never runs
+  `terraform apply`, that a missing key pair fails rather than warns, and
+  that teardown empties the versioned bucket *before* calling destroy and
+  keeps paging until the listing is empty.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -336,11 +380,15 @@ What stands between here and v1.0, in order:
    24-character limit, and a Raft `auto_join` configuration go-discover
    rejects outright — but a plan that succeeds is not a deployment that
    works. Treat both profiles as reviewed and tested, not as proven.
-2. **Audit log shipping.** Two audit devices are enabled and tested, but
-   both write to the same filesystem — which proves entries reach both
-   and proves nothing about surviving a full disk. A second device on an
-   independent failure domain is what a real deployment needs, and this
-   repository does not provide it.
+   [`docs/cloud-apply.md`](docs/cloud-apply.md) lists exactly which
+   claims that apply would settle, so the session produces evidence
+   rather than a vague impression that it worked.
+2. **Off-host audit shipping.** The audit trail now outlives the node —
+   the collector writes to a volume with an independent lifecycle, and
+   the integration suite proves it by destroying the Vault container
+   outright and reading the trail back. But the collector still runs on
+   the same host, so a compromised host can still reach the evidence.
+   Shipping it somewhere else is the remaining half.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Stand-in for the terraform CLI.
+#
+# Records every invocation. Nothing here reaches a cloud, which is the
+# point: the two scripts under test are the ones that decide whether
+# terraform is invoked at all, and with which subcommand.
+set -uo pipefail
+
+printf 'terraform %s\n' "$*" >> "${FAKE_LOG}"
+
+# -chdir=<path> comes first; drop it so $1 is the subcommand.
+if [[ "${1:-}" == -chdir=* ]]; then
+    shift
+fi
+
+case "${1:-}" in
+    version)
+        printf 'Terraform v1.9.5\n'
+        exit 0
+        ;;
+    providers)
+        exit "${FAKE_TF_PROVIDERS_RC:-0}"
+        ;;
+    state)
+        # state list
+        [[ "${FAKE_TF_STATE_RC:-0}" == "0" ]] || exit "${FAKE_TF_STATE_RC}"
+        printf '%s' "${FAKE_TF_STATE_LIST:-}"
+        [[ -n "${FAKE_TF_STATE_LIST:-}" ]] && printf '\n'
+        exit 0
+        ;;
+    output)
+        # output -raw <name>
+        printf '%s' "${FAKE_TF_OUTPUT:-}"
+        exit "${FAKE_TF_OUTPUT_RC:-0}"
+        ;;
+    plan)
+        printf 'Plan: 42 to add, 0 to change, 0 to destroy.\n'
+        exit "${FAKE_TF_PLAN_RC:-0}"
+        ;;
+    destroy)
+        printf 'Destroy complete! Resources: 42 destroyed.\n'
+        exit "${FAKE_TF_DESTROY_RC:-0}"
+        ;;
+    apply)
+        # Nothing under test should ever reach this. Loud on purpose:
+        # a pre-flight that applies is worse than no pre-flight.
+        printf 'FAKE TERRAFORM APPLY WAS CALLED\n' >&2
+        exit 0
+        ;;
+esac
+
+exit 0

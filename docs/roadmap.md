@@ -86,6 +86,21 @@ in production. The blockers are, in order:
 
 1. **A real cloud apply.** Until one of the two profiles has been stood
    up and torn down for real, the claim is unproven.
+
+   The preparation for it has shipped:
+   [`scripts/preflight-cloud.sh`](../scripts/preflight-cloud.sh) checks
+   what can be checked without spending anything,
+   [`scripts/teardown-cloud.sh`](../scripts/teardown-cloud.sh) removes
+   what `terraform destroy` cannot, and
+   [`cloud-apply.md`](cloud-apply.md) lists the claims a real apply would
+   settle — auto-unseal against a real KMS key, Raft `auto_join` against
+   a real cloud API, the load balancer keeping standbys in the pool,
+   snapshots authenticating by instance role, and a replacement node
+   rejoining unattended.
+
+   That preparation is *not* the item. Nothing in it constitutes
+   evidence; it exists so that whoever spends the money gets a full set
+   of answers from one session instead of half of them.
 2. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node; it does not yet leave the
    machine.

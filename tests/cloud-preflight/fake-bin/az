@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stand-in for the az CLI.
+set -uo pipefail
+
+printf 'az %s\n' "$*" >> "${FAKE_LOG}"
+
+ARGS="$*"
+
+if [[ "$ARGS" == *"account show"* ]]; then
+    [[ "${FAKE_AZ_ACCOUNT_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ACCOUNT_RC}"
+    if [[ "$ARGS" == *"user.name"* ]]; then
+        printf '%s\n' "${FAKE_AZ_USER:-preflight@example.com}"
+        exit 0
+    fi
+    printf '{"name": "%s", "id": "%s"}\n' \
+        "${FAKE_AZ_SUB_NAME:-Pay-As-You-Go}" \
+        "${FAKE_AZ_SUB_ID:-00000000-1111-2222-3333-444444444444}"
+    exit 0
+fi
+
+if [[ "$ARGS" == *"role assignment list"* ]]; then
+    [[ "${FAKE_AZ_ROLE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ROLE_RC}"
+    printf '%s\n' "${FAKE_AZ_ROLES:-Contributor}"
+    exit 0
+fi
+
+exit "${FAKE_AZ_GENERIC_RC:-0}"

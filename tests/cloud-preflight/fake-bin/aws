@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Stand-in for the aws CLI.
+#
+# The interesting behaviour is list-object-versions, which pages: the
+# teardown script has to keep asking until the listing comes back empty,
+# and a shim that always returns the same page would let an infinite loop
+# pass as a success.
+set -uo pipefail
+
+printf 'aws %s\n' "$*" >> "${FAKE_LOG}"
+
+ARGS="$*"
+
+# --- sts ------------------------------------------------------------------
+if [[ "$ARGS" == *"get-caller-identity"* ]]; then
+    [[ "${FAKE_AWS_IDENTITY_RC:-0}" == "0" ]] || exit "${FAKE_AWS_IDENTITY_RC}"
+    cat <<JSON
+{
+    "UserId": "AIDAEXAMPLE",
+    "Account": "${FAKE_AWS_ACCOUNT:-123456789012}",
+    "Arn": "arn:aws:iam::${FAKE_AWS_ACCOUNT:-123456789012}:user/preflight"
+}
+JSON
+    exit 0
+fi
+
+# --- ec2 ------------------------------------------------------------------
+if [[ "$ARGS" == *"describe-key-pairs"* ]]; then
+    exit "${FAKE_AWS_KEYPAIR_RC:-0}"
+fi
+
+if [[ "$ARGS" == *"describe-addresses"* ]]; then
+    [[ "${FAKE_AWS_EIP_RC:-0}" == "0" ]] || exit "${FAKE_AWS_EIP_RC}"
+    printf '%s\n' "${FAKE_AWS_EIP_USED:-0}"
+    exit 0
+fi
+
+# --- s3api ----------------------------------------------------------------
+if [[ "$ARGS" == *"list-object-versions"* ]]; then
+    [[ "${FAKE_AWS_LIST_RC:-0}" == "0" ]] || exit "${FAKE_AWS_LIST_RC}"
+
+    # Which list is being asked for is visible in the --query.
+    WHAT="Versions"
+    [[ "$ARGS" == *"DeleteMarkers"* ]] && WHAT="DeleteMarkers"
+
+    COUNTER="${FAKE_STATE_DIR}/list_${WHAT}"
+    N=0
+    [[ -f "$COUNTER" ]] && N="$(cat "$COUNTER")"
+    N=$((N + 1))
+    printf '%s' "$N" > "$COUNTER"
+
+    VAR="FAKE_AWS_${WHAT}_PAGES"
+    PAGES="${!VAR:-0}"
+
+    if [[ "$N" -le "$PAGES" ]]; then
+        cat <<JSON
+{
+    "Objects": [
+        {"Key": "snapshots/vault-${WHAT}-${N}-a.snap", "VersionId": "v${N}a"},
+        {"Key": "snapshots/vault-${WHAT}-${N}-b.snap", "VersionId": "v${N}b"}
+    ]
+}
+JSON
+    else
+        # What the real CLI renders for an empty result.
+        printf '{\n    "Objects": null\n}\n'
+    fi
+    exit 0
+fi
+
+if [[ "$ARGS" == *"delete-objects"* ]]; then
+    exit "${FAKE_AWS_DELETE_RC:-0}"
+fi
+
+exit "${FAKE_AWS_GENERIC_RC:-0}"

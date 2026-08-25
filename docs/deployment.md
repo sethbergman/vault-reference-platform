@@ -28,6 +28,20 @@ something that needs no cloud account. `vault-unseal` itself is still
 unsealed the manual, Shamir way — something has to be the root of trust.
 See [`docs/auto-unseal.md`](auto-unseal.md) for the full picture.
 
+## Before either cloud profile
+
+**Neither has ever been applied.** Run the pre-flight first — it checks
+credentials, the inputs that fail late, quota and cost, and applies
+nothing:
+
+```bash
+./scripts/preflight-cloud.sh --cloud aws
+```
+
+Then read [`cloud-apply.md`](cloud-apply.md), which lists what to verify
+while the cluster is up and how to tear it down afterwards.
+`terraform destroy` alone does not fully work on either profile.
+
 ## AWS
 
 ```bash
