@@ -77,7 +77,8 @@ services:
   # application reads that file and never learns Vault exists.
   vault-agent:
     build: ../vault-agent
-    command: ["vault", "agent", "-config=/vault/agent/agent.hcl"]
+    # ENTRYPOINT is ["vault"], so this is its arguments.
+    command: ["agent", "-config=/vault/agent/agent.hcl"]
     volumes:
       - ../vault-agent/agent.hcl:/vault/agent/agent.hcl:ro
       - ./tls:/vault/tls:ro

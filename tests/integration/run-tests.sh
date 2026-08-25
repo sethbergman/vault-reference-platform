@@ -109,15 +109,25 @@ node_port() {
 # set no node ever reports 429 and the standby search finds nothing.
 #
 #   200 active   429 standby   472/473 DR/perf standby   503 sealed
+# `|| echo "000"` is wrong here, and was: on a connection failure curl
+# still prints its %{http_code} — "000" — and then the fallback prints
+# "000" as well, so the caller sees "000000". It matches nothing, every
+# retry loop runs to exhaustion, and the diagnostic reads as nonsense.
+# Fall back only when curl produced nothing at all.
+http_code_of() {
+    local code
+    code="$(curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || true
+    [[ -n "$code" ]] || code="000"
+    printf '%s' "$code"
+}
+
 health_code() {
-    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:$1/v1/sys/health" 2>/dev/null || echo "000"
+    http_code_of "https://127.0.0.1:$1/v1/sys/health"
 }
 
 # alive_code <port> — is the node serving at all, whatever its role.
 alive_code() {
-    curl --cacert "$VAULT_CACERT" -sS -o /dev/null -w '%{http_code}' \
-        "https://127.0.0.1:$1/v1/sys/health?standbyok=true" 2>/dev/null || echo "000"
+    http_code_of "https://127.0.0.1:$1/v1/sys/health?standbyok=true"
 }
 
 # ---------------------------------------------------------------------------
@@ -1134,9 +1144,9 @@ fi
 # password that means every account on the host can read it.
 RENDER_MODE="$(compose exec -T vault-agent stat -c '%a' /rendered/db.env 2>/dev/null | tr -d '[:space:]' || echo unknown)"
 if [[ "$RENDER_MODE" == "600" ]]; then
-    ok "the rendered secret is mode 0600, not the 0644 Agent default"
+    ok "the rendered secret is mode 0600 (Agent defaults to 0644)"
 else
-    bad "the rendered secret is mode 0600, not the 0644 Agent default" "got ${RENDER_MODE}"
+    bad "the rendered secret is mode 0600 (Agent defaults to 0644)" "got ${RENDER_MODE} — 'unknown' means the file was never rendered, not that the mode is wrong"
 fi
 
 # ---------------------------------------------------------------------------
