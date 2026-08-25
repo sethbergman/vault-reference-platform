@@ -153,6 +153,30 @@ run_verify "$D"
 assert_rc   "a clean trail verifies" 0
 assert_says "and says the chain is intact" "chain intact"
 
+# The chain was added beside the log, not inside it. Everything already
+# reading audit-socket.log -- the integration suite, an operator with
+# grep, a shipper -- must see exactly the bytes Vault sent, or chaining
+# became a breaking change to the thing it was meant to protect.
+EXPECTED_LOG="$(for ((i = 1; i <= 5; i++)); do
+    printf '{"seq":%d,"type":"request","path":"secret/data/%d"}\n' "$i" "$i"
+done)"
+if [[ "$(cat "${D}/audit-socket.log")" == "$EXPECTED_LOG" ]]; then
+    ok "the entries are byte-identical to what was sent"
+else
+    bad "the entries are byte-identical to what was sent" \
+        "the chain must live beside the log, never inside it"
+fi
+
+# The lock is a directory, so failing to remove it does not error --
+# it just makes every later entry wait out the five-second timeout and
+# then append unserialised.
+if [[ ! -e "${D}/.chain.lock" ]]; then
+    ok "the lock is released rather than left behind"
+else
+    bad "the lock is released rather than left behind" \
+        "a stale lock costs five seconds per entry and then gives up on ordering"
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n=== Nothing collected is not the same as something wrong ===\n'
 # ---------------------------------------------------------------------------
@@ -170,6 +194,13 @@ printf '%s\n' '{"a":1}' '{"b":2}' > "${UD}/audit-socket.log"
 run_verify "$UD"
 assert_rc   "entries with no chain fail"      1
 assert_says "and name the reason"             "no chain at all"
+
+# A path that does not exist is not an empty trail. Reporting it as one
+# would mean a typo in --log, or a volume that failed to mount, reads
+# back as a clean bill of health -- the one answer this tool must never
+# give when it has checked nothing.
+run_verify "${WORK}/no-such-trail-dir"
+assert_rc "a missing log is an error, not an empty trail" 2
 
 # ---------------------------------------------------------------------------
 printf '\n=== An altered entry is caught, and located ===\n'
@@ -192,6 +223,45 @@ sed -i '2d' "${D}/audit-socket.log"
 run_verify "$D"
 assert_rc   "a removed entry fails verification" 1
 assert_says "and the chain has an orphaned link" "no entry behind them"
+
+# ---------------------------------------------------------------------------
+printf '\n=== An inserted entry is caught ===\n'
+# ---------------------------------------------------------------------------
+# The mirror of removal, and the more interesting direction: forging a
+# request that never happened, rather than hiding one that did. The
+# inserted line hashes fine on its own -- what gives it away is that
+# every link after it now covers a history that does not match.
+D="$(trail inserted 5)"
+sed -i '3i {"seq":999,"type":"request","path":"secret/data/never-happened"}' \
+    "${D}/audit-socket.log"
+run_verify "$D"
+assert_rc   "an inserted entry fails verification" 1
+assert_says "and the divergence is located"        "diverges at entry 3"
+
+# ---------------------------------------------------------------------------
+printf '
+=== A half-repaired forgery is caught by the link, not the hash ===
+'
+# ---------------------------------------------------------------------------
+# verify-audit-chain.sh has two distinct comparisons per entry: the entry
+# still hashes to what was recorded, and the link still covers the right
+# history. Every case above trips the first one, because inserting or
+# removing a line shifts every later position and the hashes stop lining
+# up immediately.
+#
+# This is the case that needs the second. The attacker edits an entry and
+# also repairs its recorded entry hash -- so that comparison passes -- but
+# does not recompute the links that follow. Without this test the link
+# comparison could be deleted outright and the suite would stay green,
+# which is exactly what a mutation run showed.
+D="$(trail halfrepaired 4)"
+sed -i '2s/.*/{"seq":2,"type":"request","path":"secret\/data\/rewritten"}/'     "${D}/audit-socket.log"
+NEW_EH="$(sed -n 2p "${D}/audit-socket.log" | sha256sum | cut -d' ' -f1)"
+OLD_LINK="$(cut -d' ' -f3 <<< "$(sed -n 2p "${D}/audit-chain.log")")"
+sed -i "2s/.*/2 ${NEW_EH} ${OLD_LINK}/" "${D}/audit-chain.log"
+run_verify "$D"
+assert_rc   "a repaired entry hash does not save the forgery" 1
+assert_says "and the broken link is what reports it"          "its link is wrong"
 
 # ---------------------------------------------------------------------------
 printf '\n=== Entries appended by hand are caught ===\n'
