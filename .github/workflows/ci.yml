@@ -647,6 +647,15 @@ jobs:
       - name: Exercise scripts/bootstrap-audit.sh
         run: ./tests/audit/run-tests.sh
 
+  pki-migration-test:
+    name: PKI migration driver tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise scripts/migrate-to-vault-pki.sh
+        run: ./tests/pki-migration/run-tests.sh
+
   security-scan:
     name: Security scanning
     runs-on: ubuntu-latest

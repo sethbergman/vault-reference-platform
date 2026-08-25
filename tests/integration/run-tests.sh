@@ -414,6 +414,125 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== The full migration, across every node ==="
+# ---------------------------------------------------------------------------
+# The single-node swap above is the risky step. This is the whole
+# rollout: trust everywhere, swap each node, then drop the bootstrap CA —
+# the last of which had only ever been exercised against a shim.
+
+cat > "${WORK}/migrate-reload.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${COMPOSE_DIR}"
+docker compose kill -s HUP "\$1" >/dev/null 2>&1 || true
+sleep 3
+EOF
+chmod +x "${WORK}/migrate-reload.sh"
+
+BOOTSTRAP_CA_SUBJECT="$(openssl x509 -in "${TLS_DIR}/ca.crt" -noout -subject 2>/dev/null | sed 's/^subject= *//' || true)"
+
+if "${REPO_ROOT}/scripts/migrate-to-vault-pki.sh" \
+        --nodes "vault-0=127.0.0.1:8200,vault-1=127.0.0.1:8210,vault-2=127.0.0.1:8220" \
+        --tls-dir "$TLS_DIR" \
+        --domain vault.internal \
+        --key-mode 0644 \
+        --reload-cmd "${WORK}/migrate-reload.sh {node}" \
+        >"${WORK}/migrate.log" 2>&1; then
+    ok "the migration completed across all three nodes"
+else
+    bad "the migration completed across all three nodes" "log follows"
+    tail -25 "${WORK}/migrate.log" | sed 's/^/        /'
+fi
+
+# Every node must now serve a certificate from the PKI mount. Checked on
+# the wire rather than on disk: a certificate written and never reloaded
+# is not migrated, and that distinction is the whole reason the driver
+# checks the same way.
+MIGRATED=0
+for port in 8200 8210 8220; do
+    ISSUER="$(echo | openssl s_client -connect "127.0.0.1:${port}" 2>/dev/null \
+        | openssl x509 -noout -issuer 2>/dev/null || true)"
+    [[ "$ISSUER" == *"vault.internal Root CA"* ]] && MIGRATED=$((MIGRATED + 1))
+done
+if [[ "$MIGRATED" == "3" ]]; then
+    ok "all three nodes serve PKI certificates"
+else
+    bad "all three nodes serve PKI certificates" "only ${MIGRATED}/3 did"
+fi
+
+# And the bootstrap CA is gone from the trust bundle — the step that
+# partitions a cluster if it runs too early.
+if [[ -n "$BOOTSTRAP_CA_SUBJECT" ]]; then
+    # Read the bundle one PEM block at a time. A bundle holds several
+    # certificates and `openssl x509 -in bundle` only ever reports the
+    # first, so asking it directly would say the bootstrap CA was gone
+    # the moment the PKI CA was prepended — regardless of the truth.
+    BUNDLE_SUBJECTS=""
+    BLOCK=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        BLOCK+="${line}"$'\n'
+        if [[ "$line" == *"END CERTIFICATE"* ]]; then
+            BUNDLE_SUBJECTS+="$(openssl x509 -noout -subject 2>/dev/null <<< "$BLOCK" || true)"$'\n'
+            BLOCK=""
+        fi
+    done < "${TLS_DIR}/ca.crt"
+    if [[ "$BUNDLE_SUBJECTS" != *"$BOOTSTRAP_CA_SUBJECT"* ]]; then
+        ok "the bootstrap CA has been pruned from the trust bundle"
+    else
+        bad "the bootstrap CA has been pruned from the trust bundle" \
+            "still present: ${BOOTSTRAP_CA_SUBJECT}"
+    fi
+else
+    bad "the bootstrap CA has been pruned from the trust bundle" "could not read the original subject"
+fi
+
+# The cluster has to have survived all of it.
+VOTERS_MIG="$(vault operator raft list-peers -format=json 2>/dev/null \
+    | jq '[.data.config.servers[]? | select(.voter == true)] | length' 2>/dev/null || echo 0)"
+if [[ "$VOTERS_MIG" == "3" ]]; then
+    ok "all three peers are still voters after the migration"
+else
+    bad "all three peers are still voters after the migration" "got ${VOTERS_MIG}"
+fi
+
+CANARY_MIG="$(vault kv get -field=value itest/canary 2>/dev/null || echo "")"
+if [[ "$CANARY_MIG" == "before-cert-swap" ]]; then
+    ok "and data written before it is still readable"
+else
+    bad "and data written before it is still readable" "got '${CANARY_MIG}'"
+fi
+
+# Re-running is a no-op: every node is already on PKI, so there is
+# nothing to swap and the prune guard is satisfied.
+if "${REPO_ROOT}/scripts/migrate-to-vault-pki.sh" \
+        --nodes "vault-0=127.0.0.1:8200,vault-1=127.0.0.1:8210,vault-2=127.0.0.1:8220" \
+        --tls-dir "$TLS_DIR" --domain vault.internal --key-mode 0644 \
+        --reload-cmd "${WORK}/migrate-reload.sh {node}" \
+        --phase swap >"${WORK}/migrate2.log" 2>&1 \
+        && grep -q "already serving a PKI certificate" "${WORK}/migrate2.log"; then
+    ok "re-running the swap phase is a no-op"
+else
+    bad "re-running the swap phase is a no-op" "$(tail -5 "${WORK}/migrate2.log")"
+fi
+
+# Vault is not the only thing that reads the trust bundle. Prometheus and
+# the blackbox exporter both bind-mount docker/dev/tls/ca.crt to verify
+# the TLS of the nodes they scrape and probe, and both read it once at
+# startup. The prune above replaced it, so until they are restarted they
+# are validating against a bootstrap CA that no longer signs anything:
+# the blackbox probe fails, probe_ssl_earliest_cert_expiry stops being
+# reported, and certificate expiry goes unmonitored without an error
+# anywhere. The assertion further down caught exactly that.
+#
+# Restarting them here is the documented remedy, and running it before
+# that assertion is what makes the assertion proof that the remedy works.
+info "Restarting monitoring so it reloads the new trust bundle..."
+compose restart prometheus blackbox >/dev/null 2>&1 \
+    || info "  (could not restart monitoring; probe assertions may fail)"
+sleep 10
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== The cluster survived the swap ==="
 # ---------------------------------------------------------------------------
 CODE="$(alive_code 8200)"

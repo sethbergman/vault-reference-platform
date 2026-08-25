@@ -232,13 +232,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs eighteen checks on every PR. Five are static:
+GitHub Actions runs nineteen checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Six run against fixtures and shims — fast, no credentials, and able to
+Seven run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -259,6 +259,9 @@ reach failure modes a live cluster will not reproduce on demand:
 - **Audit devices** — that two are enabled by default, that `--force`
   cannot disable the only one, and that an enable which succeeds without
   enabling anything is treated as a failure.
+- **PKI migration driver** — that trust is distributed before anything
+  swaps, that a failed node stops the run, and that the bootstrap CA
+  cannot be dropped while any node still presents one.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:
@@ -298,7 +301,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-Everything through v0.8 has shipped — see
+Everything through v0.9 has shipped — see
 [Releases](https://github.com/sethbergman/vault-reference-platform/releases)
 for the log. "Shipped" here means there is a test that fails if the
 feature breaks, not that the code exists.
@@ -311,12 +314,7 @@ What stands between here and v1.0, in order:
    24-character limit, and a Raft `auto_join` configuration go-discover
    rejects outright — but a plan that succeeds is not a deployment that
    works. Treat both profiles as reviewed and tested, not as proven.
-2. **The full PKI migration.** `tests/integration` swaps one node's
-   certificate and verifies the cluster survives — the risky step. The
-   full rollout across every node, and the final `--replace-ca` that
-   drops the bootstrap CA from the trust bundle, are still covered only
-   by shims. *(in progress)*
-3. **Audit log shipping.** Two audit devices are enabled and tested, but
+2. **Audit log shipping.** Two audit devices are enabled and tested, but
    both write to the same filesystem — which proves entries reach both
    and proves nothing about surviving a full disk. A second device on an
    independent failure domain is what a real deployment needs, and this
