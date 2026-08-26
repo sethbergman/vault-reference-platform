@@ -273,7 +273,11 @@ served_cert() {
 BEFORE_SERIAL="$(served_cert 8200 | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2 || true)"
 BEFORE_ISSUER="$(served_cert 8200 | openssl x509 -noout -issuer 2>/dev/null || true)"
 BEFORE_STARTED="$(docker inspect -f '{{.State.StartedAt}}' "$(compose ps -q vault-0)" 2>/dev/null || echo unknown)"
-BEFORE_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || echo 0)"
+# `|| true`, not `|| echo 0`: grep -c prints 0 *and* exits 1 when it
+# matches nothing, so the echo appends a second zero. The variable then
+# holds two lines rather than one, which errors the arithmetic
+# comparison below instead of reporting an empty bundle.
+BEFORE_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || true)"
 
 if [[ -n "$BEFORE_SERIAL" ]]; then
     ok "vault-0 is serving a certificate we can read"
@@ -362,7 +366,7 @@ else
     sed 's/^/        /' "${WORK}/issue.log"
 fi
 
-AFTER_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || echo 0)"
+AFTER_BUNDLE_N="$(grep -c 'BEGIN CERTIFICATE' "${TLS_DIR}/ca.crt" 2>/dev/null || true)"
 if [[ "$AFTER_BUNDLE_N" -gt "$BEFORE_BUNDLE_N" ]]; then
     ok "the PKI CA was added to the trust bundle, not swapped in"
 else

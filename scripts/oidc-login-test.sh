@@ -68,7 +68,15 @@ usage() {
 }
 
 cleanup() {
-    [[ -n "$COOKIE_JAR" && -f "$COOKIE_JAR" ]] && rm -f "$COOKIE_JAR"
+    # `if` rather than a trailing `&&`. A cleanup function whose last
+    # command is a false test returns 1, and bash applies that to the
+    # script's exit status from an EXIT trap -- so a run that did
+    # everything right reports failure, and an explicit `exit 0` does not
+    # save it. Live only once an early success path exists, which is
+    # exactly the sort of thing added later without suspecting this.
+    if [[ -n "$COOKIE_JAR" && -f "$COOKIE_JAR" ]]; then
+        rm -f "$COOKIE_JAR"
+    fi
 }
 trap cleanup EXIT
 
