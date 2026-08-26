@@ -23,9 +23,11 @@
 # Two assertions are worth calling out because they encode bugs that were
 # actually written:
 #
-#   - the Azure cost lines are arithmetic, not string concatenation. The
-#     first draft printed "$32/month" by gluing az_count onto a literal
-#     2, which is right for three zones and nonsense for any other count.
+#   - the Azure cost lines price one NAT gateway. They used to multiply
+#     by az_count -- a variable only the AWS profile defines -- so on
+#     Azure it resolved to nothing, fell back to a literal 3, and quoted
+#     three gateways at $96 while labelling them the largest line. That
+#     sent the reader's cost-cutting at the one line they cannot cut.
 #   - the pre-flight never invokes `terraform apply`. A pre-flight that
 #     spends money is worse than no pre-flight, and it is one typo away.
 #
@@ -123,6 +125,34 @@ variable "node_count" {
 variable "ssh_key_name" {
   type    = string
   default = "${key}"
+}
+EOF
+}
+
+# The Azure profile's variables are a different set -- no az_count at all,
+# which is the whole point of the cost assertions below.
+mk_azure_tfdir() {
+    local dir="$1" nodes="$2" size="$3"
+    mkdir -p "$dir"
+    cat > "${dir}/variables.tf" <<EOF
+variable "availability_zones" {
+  type    = list(string)
+  default = ["1", "2", "3"]
+}
+
+variable "node_count" {
+  type    = number
+  default = ${nodes}
+}
+
+variable "vm_size" {
+  type    = string
+  default = "${size}"
+}
+
+variable "os_disk_size_gb" {
+  type    = number
+  default = 64
 }
 EOF
 }
@@ -245,14 +275,74 @@ else
         "$(grep -i 'NAT gateway' <<< "$OUT" || true)"
 fi
 
+# The Azure profile creates one azurerm_nat_gateway for the whole VNet,
+# with no count. This used to multiply a NAT line by az_count -- an AWS
+# variable Azure does not define -- so it resolved to nothing, fell back to
+# a literal 3, and quoted three gateways at $96. The old wrong value is
+# pinned as a negative beside the positive, so a rewording that loses the
+# fix fails loudly rather than passing on a phrase nothing prints.
+reset_scenario
+run_preflight --cloud azure
+# Count and price pinned on the same line. Naming only the count let a
+# mutation that repriced the gateway walk through -- the label still
+# said one, and $96 still did not appear.
+# shellcheck disable=SC2016  # literal dollars; $96 is the old bug's output
+if grep -qE '1 NAT gateway +~[$]33/month' <<< "$OUT" && ! grep -qF '$96/month' <<< "$OUT"; then
+    ok "Azure prices the one NAT gateway the profile actually creates"
+else
+    bad "Azure prices the one NAT gateway the profile actually creates" \
+        "$(grep -i 'NAT gateway' <<< "$OUT" || true)"
+fi
+
+# The marker tells the reader where to cut cost. On Azure the NAT is
+# regional and fixed, so pointing it there sends them after the one line
+# they cannot change. Asserted on the whole line, not on the marker alone.
+# Not anchored with ^: info() colours its output, so every line starts
+# with an escape sequence rather than whitespace. Matching the VM count
+# through to the marker is what makes this about the line rather than
+# about the marker existing somewhere.
+if grep -qE '[0-9]+ VM\(s\).*largest line' <<< "$OUT"; then
+    ok "and marks the VMs as the largest line, not the NAT"
+else
+    bad "and marks the VMs as the largest line, not the NAT" \
+        "$(grep -i 'largest line' <<< "$OUT" || true)"
+fi
+
+# --az-count drives the AWS EIP check, so the flag stays -- but it must say
+# it does nothing here rather than silently pricing something.
 reset_scenario
 run_preflight --cloud azure --az-count 2
-# shellcheck disable=SC2016  # literal dollars again; $22 is the bug's output
-if grep -qF '$64/month' <<< "$OUT" && ! grep -qF '$22/month' <<< "$OUT"; then
-    ok "Azure NAT cost is arithmetic, not az_count glued onto a literal"
+if grep -q 'az-count has no effect' <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "--az-count on Azure warns rather than silently mispricing"
 else
-    bad "Azure NAT cost is arithmetic, not az_count glued onto a literal" \
-        "$(grep -i 'NAT gateway' <<< "$OUT" || true)"
+    bad "--az-count on Azure warns rather than silently mispricing" "exit ${RC}"
+fi
+
+# Arithmetic still guarded, on the line where it now matters. Five nodes at
+# ~$30 is $150 -- a value no assertion above names, so a compute line that
+# stopped scaling with node_count could not pass by coincidence.
+reset_scenario
+AZ_DIR="${WORK}/tf-azure-5"
+mk_azure_tfdir "$AZ_DIR" 5 "Standard_B2s"
+run_preflight --cloud azure --dir "$AZ_DIR"
+# shellcheck disable=SC2016  # literal dollar in an expected cost line
+if grep -qF '$150/month' <<< "$OUT"; then
+    ok "the Azure compute line scales with node_count (5 -> \$150)"
+else
+    bad "the Azure compute line scales with node_count (5 -> \$150)" \
+        "$(grep -i 'VM(s)' <<< "$OUT" || true)"
+fi
+
+# The per-VM figure is a guess about Standard_B2s. Anything else and the
+# estimate is a placeholder, which it should admit rather than assert.
+reset_scenario
+AZ_BIG="${WORK}/tf-azure-big"
+mk_azure_tfdir "$AZ_BIG" 3 "Standard_D8s_v5"
+run_preflight --cloud azure --dir "$AZ_BIG"
+if grep -q 'assumes the default Standard_B2s' <<< "$OUT"; then
+    ok "a non-default vm_size is called a placeholder, not an estimate"
+else
+    bad "a non-default vm_size is called a placeholder, not an estimate"
 fi
 
 reset_scenario
