@@ -175,9 +175,15 @@ first time a node is recycled — and wrong *silently*: the playbook
 succeeds against hosts that no longer exist and never touches the ones
 that do.
 
-The tag they filter on is the same one Raft's `auto_join` uses, so
+On AWS the tag they filter on is the same one Raft's `auto_join` uses, so
 cluster formation and configuration management break together rather than
 one drifting away from the other.
+
+**On Azure they are independent.** go-discover's Azure provider rejects a
+mix of tag and scale-set selectors, so `retry_join` enumerates the scale
+set by resource group and name and never looks at tags. An empty
+inventory there says nothing about whether the cluster formed, and a
+healthy cluster is no evidence the inventory works.
 
 Nodes sit in private subnets with no public address, so reaching them
 needs SSM, a bastion, or a VPN.

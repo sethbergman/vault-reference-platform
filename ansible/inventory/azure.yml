@@ -4,10 +4,14 @@
 # replaces instances, so a static inventory is wrong as soon as one is
 # recycled — and wrong silently.
 #
-# The tag matched here is the same one Vault's retry_join auto_join
-# filters on (see terraform/azure/compute.tf), so cluster formation and
-# configuration management break together if it changes rather than one
-# quietly drifting from the other.
+# Unlike the AWS profile, this tag is NOT what Raft discovery matches on.
+# go-discover's azure provider rejects a mix of tag and scale-set
+# selectors, so retry_join enumerates the scale set by resource group and
+# name (see terraform/azure/templates/cloud-init.sh.tftpl).
+#
+# So the two fail independently here. An empty inventory says nothing
+# about whether the cluster formed, and a healthy cluster is no evidence
+# this inventory works. Two things to check rather than one.
 #
 # Usage:
 #   cd ansible
