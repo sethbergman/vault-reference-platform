@@ -244,13 +244,17 @@ else
     bad "4 EIPs in use plus 3 more exceeds the default limit of 5"
 fi
 
+# Three in use plus the floor of two is exactly the default limit, so it
+# passes. az_count=1 would be a cheaper way to show the check reads the
+# variable, but the profile rejects 1 -- and a fixture modelling a
+# configuration that cannot exist teaches the reader the wrong floor.
 reset_scenario
-export FAKE_AWS_EIP_USED=4
-run_preflight --cloud aws --az-count 1
+export FAKE_AWS_EIP_USED=3
+run_preflight --cloud aws --az-count 2
 if grep -q "headroom looks sufficient" <<< "$OUT"; then
-    ok "4 in use plus 1 more does not"
+    ok "3 in use plus 2 more does not"
 else
-    bad "4 in use plus 1 more does not" "the check must use az_count, not a constant"
+    bad "3 in use plus 2 more does not" "the check must use az_count, not a constant"
 fi
 
 reset_scenario
@@ -345,21 +349,35 @@ else
     bad "a non-default vm_size is called a placeholder, not an estimate"
 fi
 
+# The saving, with the value pinned rather than just the phrase. Three
+# zones down to two is one gateway, ~$33 -- naming only "removes" would
+# pass on any number, including the wrong one this used to print.
 reset_scenario
 run_preflight --cloud aws --az-count 3
-if grep -q 'az-count 1 removes' <<< "$OUT"; then
-    ok "it names the saving from dropping to one zone"
+# shellcheck disable=SC2016  # literal dollar in an expected cost line
+if grep -qF 'az-count 2 removes $33/month' <<< "$OUT"; then
+    ok "it names the saving from dropping to the floor"
 else
-    bad "it names the saving from dropping to one zone" \
-        "az_count is the dominant line item and the only easy lever"
+    bad "it names the saving from dropping to the floor" \
+        "$(grep -i 'az-count' <<< "$OUT" || true)"
+fi
+
+# The floor is 2, not 1: terraform/aws/variables.tf validates az_count
+# between 2 and 4, so an apply at 1 is rejected before it creates
+# anything. This script recommended it for several releases.
+if ! grep -q 'az-count 1' <<< "$OUT"; then
+    ok "and never suggests an az_count the profile rejects"
+else
+    bad "and never suggests an az_count the profile rejects" \
+        "az_count=1 fails validation; the apply never starts"
 fi
 
 reset_scenario
-run_preflight --cloud aws --az-count 1
-if ! grep -q 'az-count 1 removes' <<< "$OUT"; then
-    ok "and does not suggest it when already at one zone"
+run_preflight --cloud aws --az-count 2
+if ! grep -q 'removes' <<< "$OUT"; then
+    ok "and does not suggest it when already at the floor"
 else
-    bad "and does not suggest it when already at one zone"
+    bad "and does not suggest it when already at the floor"
 fi
 
 printf '\n=== Pre-flight: what teardown will not remove ===\n'

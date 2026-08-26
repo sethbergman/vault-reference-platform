@@ -200,7 +200,7 @@ if [[ "$CLOUD" == "aws" ]] && command -v aws >/dev/null 2>&1; then
         info "        Elastic IPs in use: ${EIP_USED}; this apply needs ${AZ_COUNT} more"
         if [[ "$((EIP_USED + AZ_COUNT))" -gt 5 ]]; then
             warn "that may exceed the default limit of 5" \
-                "raise the limit, release unused EIPs, or apply with --az-count 1"
+                "raise the limit, release unused EIPs, or apply with --az-count 2"
         else
             ok "Elastic IP headroom looks sufficient"
         fi
@@ -235,10 +235,13 @@ if [[ "$CLOUD" == "aws" ]]; then
     info "        roughly \$${TOTAL}/month — about \$0.$(printf '%02d' $((CENTS_HR % 100)))/hour if under a dollar,"
     info "        i.e. a few dollars for an afternoon of testing"
     info ""
-    if [[ "$AZ_COUNT" -gt 1 ]]; then
-        info "        --az-count 1 removes \$$(( (AZ_COUNT - 1) * 33 ))/month of that."
-        info "        It also removes the AZ independence the default is for, so"
-        info "        it is a fine choice for a few hours and a bad one to keep."
+    # Two, not one. terraform/aws/variables.tf validates az_count between
+    # 2 and 4, so suggesting 1 recommended an apply that fails before it
+    # creates anything -- which this script said for several releases.
+    if [[ "$AZ_COUNT" -gt 2 ]]; then
+        info "        --az-count 2 removes \$$(( (AZ_COUNT - 2) * 33 ))/month of that."
+        info "        Two is the floor the profile allows: a cluster that cannot"
+        info "        survive losing a zone is not what this is describing."
     fi
 else
     # One NAT gateway, not one per zone. terraform/azure/network.tf declares
