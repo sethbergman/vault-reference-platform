@@ -1,0 +1,374 @@
+# CLAUDE.md
+
+Guidance for AI assistants working in this repository.
+
+## What this is
+
+A reference implementation of a self-managed, highly available HashiCorp
+Vault deployment: Terraform provisions, Ansible configures and hardens,
+Docker Compose stands up an equivalent cluster locally, and shell scripts
+carry out the day-2 operations (bootstrap, rotation, snapshots, PKI, DR,
+upgrades). There is no application code — the deliverable is
+infrastructure, operational procedure, and the tests that keep both
+honest.
+
+Two consequences shape almost every decision here:
+
+- **A quiet failure is the enemy.** Most of what this repository guards
+  against is a green timer with no usable backup, a successful reload
+  command with a stale certificate, three nodes that came up healthy as
+  three separate single-node clusters. Comments throughout name the
+  specific failure a piece of code exists to prevent; keep that habit.
+- **"Shipped" means there is a test that fails if it breaks.** Code
+  existing is not the bar. See `docs/roadmap.md`.
+
+## Repository map
+
+```text
+terraform/
+  aws/        VPC, ASG, NLB, KMS auto-unseal, versioned snapshot bucket
+  azure/      VNet, VMSS, LB, Key Vault auto-unseal, blob container
+  local/      Placeholder so fmt/validate has a target for every profile
+  modules/    Provider-agnostic shape (cluster_name, node_count, tags)
+ansible/
+  playbooks/site.yml        vault, vault_hardening, vault_snapshots,
+                            vault_pki, vault_audit — in that order
+  roles/                    One role per concern; see "Ansible" below
+  inventory/                local, aws.yml, azure.yml (dynamic, by tag)
+  group_vars/*.example      Templates; the real files are generated
+docker/
+  vault/          Vault server image; entrypoint substitutes the
+                  Transit token into vault.hcl at start
+  vault-unseal/   Single Shamir-unsealed Vault providing Transit
+                  auto-unseal for the dev cluster — the root of trust
+  dev/            docker-compose.yml — every local/CI service
+  dex/            OIDC identity provider for human-login tests
+  vault-agent/    Agent rendering a secret to a file for an app
+  audit-collector/  Socket audit sink; hash-chains entries (collect.sh)
+                    and records chain heads (anchor.sh)
+  alert-sink/     Records which Alertmanager receiver actually fired
+  monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
+  mysql/          init SQL creating the account Vault connects as
+scripts/          All operational scripts (see "Scripts" below)
+tests/            14 suites; each is a self-contained run-tests.sh
+examples/policies/  Least-privilege HCL policies used by scripts and CI
+docs/             Runbooks and design notes — the operational half
+diagrams/         architecture.md
+```
+
+## Common commands
+
+```bash
+make deploy    # 3-node Raft cluster + monitoring, via Docker Compose
+make status    # compose ps + sys/health
+make destroy   # docker compose down -v
+make lint      # terraform fmt/validate, ansible-lint, shellcheck
+make test      # the DR restore drill only (not the full suite)
+```
+
+`make test` is deliberately narrow. To run a test suite, call it
+directly:
+
+```bash
+./tests/snapshot/run-tests.sh          # ~2s, shims, no cluster
+./tests/integration/run-tests.sh       # minutes, real 3-node cluster
+./tests/integration/run-tests.sh --keep-running
+```
+
+Bringing the cluster up with optional services:
+
+```bash
+./scripts/bootstrap-dev-cluster.sh --with-monitoring   # what make deploy runs
+./scripts/bootstrap-dev-cluster.sh --nodes vault-0     # single node, CI
+./scripts/bootstrap-dev-cluster.sh --with-oidc         # + Dex
+./scripts/bootstrap-dev-cluster.sh --with-database     # + Postgres
+./scripts/bootstrap-dev-cluster.sh --with-mysql        # + MySQL
+./scripts/bootstrap-dev-cluster.sh --with-audit        # + audit collector
+./scripts/bootstrap-dev-cluster.sh --with-agent        # + Vault Agent
+```
+
+This script is the single source of truth for standing the cluster up —
+`make deploy` and every CI job call it, so neither can drift from what
+the other exercises. A bare `docker compose up` will **not** produce a
+working cluster: nothing mints the Transit token, initializes, or joins
+peers.
+
+Log output goes to stderr; the root token is the only thing on stdout,
+so `ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh)` works. Preserve
+that split when editing.
+
+## The four profiles
+
+| Profile | Provisioning | Seal | Proven by |
+|---|---|---|---|
+| local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
+| AWS | `terraform/aws` | AWS KMS | `terraform test` with mocked providers only |
+| Azure | `terraform/azure` | Azure Key Vault | `terraform test` with mocked providers only |
+| bare/other | Ansible alone | Shamir (role default) | not exercised |
+
+**Neither cloud profile has ever been applied end to end.** Do not
+describe them as working or proven. `docs/cloud-apply.md` lists exactly
+what a first real apply would settle, per provider, and
+`scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
+`terraform destroy` fails partway on both. These two applies are v1.0
+blockers 1 and 2 in the README.
+
+## How the pieces connect
+
+**Local bootstrap order** — `vault-unseal` comes up first, is
+Shamir-initialized and unsealed once, enables Transit, and mints an
+orphan periodic token scoped to one key. That token is exported as
+`VAULT_TRANSIT_TOKEN`, compose interpolates it into each node's
+environment, and `docker/vault/docker-entrypoint.sh` substitutes it into
+`vault.hcl`'s `seal "transit"` stanza before Vault starts. The first
+node is then initialized and unseals itself; the rest join via
+`retry_join` and are promoted to voters by autopilot.
+
+**Terraform → Ansible handoff** — `scripts/terraform-to-ansible.sh`
+generates `group_vars` from `terraform output -json`, so the KMS key id,
+subscription id and scale set name cannot drift from what Terraform
+built. `tests/ansible/` renders the *real* `vault.hcl.j2` with those
+generated vars under `StrictUndefined`, against saved real `terraform
+output -json` fixtures — so renaming an output on either side of the
+seam fails there rather than producing a cluster that never forms.
+
+**Node discovery** — `ansible/inventory/aws.yml` matches the same tag
+that Raft's `auto_join` filters on (`terraform/aws/compute.tf`). One
+tag, two consumers, deliberately: change it and both break together
+instead of one drifting silently. Azure discovers peers through the
+scale set instead, which is one of three mechanisms with no AWS
+counterpart.
+
+**TLS** — terminated at the Vault process, never at the load balancer,
+which is why health checks must accept Vault's status codes (200 active,
+429 standby, 472/473 DR/perf standby) rather than doing a TCP check.
+Local TLS material is generated by `scripts/generate-dev-certs.sh` into
+`docker/dev/tls/` (gitignored). Nothing may reach for `--insecure` or
+`-tls-skip-verify`: verification that verifies nothing makes a TLS
+rollout look finished when it isn't.
+
+**PKI ordering** — Vault's own PKI cannot issue the certificates the
+cluster needs in order to start. The bootstrap CA stays load-bearing
+until every node has been re-issued; the `vault_pki` role does renewal
+only, is off by default, and refuses to run on a node with no existing
+certificate. `scripts/migrate-to-vault-pki.sh` sequences the switchover.
+
+## Scripts
+
+All of `scripts/*.sh` follow one shape. Match it when adding a script:
+
+- `#!/usr/bin/env bash` and `set -euo pipefail`.
+- A header comment block giving usage, examples, what it does step by
+  step, requirements — and, where it matters, a "deliberate behaviours"
+  section naming the failure each choice prevents.
+- `usage()` prints the header back by `grep '^#' "$0" | sed ...`, so the
+  header *is* the help text. Keep them in sync by keeping them the same
+  thing.
+- `log()` / `die()` helpers; `log` writes to stderr wherever the script
+  has a real stdout value (a token, a secret_id) to emit.
+- Long-form `--flag value` argument parsing in a `while`/`case` loop,
+  then explicit required-argument checks and a `command -v` check for
+  each external tool.
+- Idempotent where the operation is configuration; separate scripts for
+  anything that mints a credential (`bootstrap-approle.sh` configures,
+  `rotate-secret-id.sh` issues).
+
+Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
+`bootstrap-{approle,jwt-github,oidc,audit,pki,agent,database-secrets}.sh`
+(one auth or secrets path each), `rotate-secret-id.sh`, `snapshot.sh`,
+`dr-drill.sh`, `vault-upgrade.sh`, `issue-node-cert.sh`,
+`migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
+`preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`.
+
+## Testing
+
+Two tiers, and the distinction is load-bearing.
+
+**Shim suites** (`tests/*/fake-bin/`) put stand-ins for `vault`, `aws`,
+`curl`, `ssh`, `openssl` ahead of the real tools on `PATH`, log every
+invocation, and answer from `FAKE_*` scenario variables. They run in
+seconds, need no credentials, and can reach failure modes a live cluster
+will not reproduce on demand. They prove a script *issues* the commands
+you expected — nothing more.
+
+**The integration suite** (`tests/integration/`) stands up the real
+three-node cluster and runs the operational scripts against it as host
+processes. It exists because shims agree with bugs: its first run found
+that snapshots had never been taken on any node, because the leadership
+check read a field that does not exist in `vault status -format=json`
+and the shim emitted that field too. When adding a shim, model the real
+tool's output, not the output the script wants.
+
+Harness conventions, shared by most `run-tests.sh` and worth keeping
+when adding one:
+
+- `SCRIPT_DIR` / `REPO_ROOT` resolved from `BASH_SOURCE`; `WORK=$(mktemp
+  -d)` with a `trap 'rm -rf "$WORK"' EXIT`.
+- `PASS`/`FAIL` counters, `ok()`/`bad()` printing green/red, and an exit
+  status driven by `FAIL`.
+- In the shim suites, a `reset_scenario()` re-exporting every `FAKE_*`
+  default between cases, so one test cannot silently satisfy the next.
+  `FAKE_*` must be **exported** — the shims are grandchildren of the
+  test shell, so a `VAR=x run_thing` prefix does not reach them.
+- Named assertions, reused across suites: `assert_rc`, `assert_says`,
+  `assert_log_has`, `assert_log_lacks`.
+
+Two rules from `CONTRIBUTING.md`, both learned from assertions here that
+passed while the thing they described was broken:
+
+1. **Prefer pinning the value to naming what to exclude.**
+   `assert_log_lacks "..." "aws s3 cp"` looks like it forbids uploading,
+   but `aws s3api put-object` sails through. Widen to the shortest
+   prefix covering every spelling (`aws s3`), or assert the positive form
+   and pin the whole value. Where an exclusion must name output text,
+   pair it with a positive assertion on the same string.
+2. **Mutate with something the assertion does not name.** Breaking the
+   code in exactly the way the test greps for proves nothing. Reject
+   `CREATE, ALTER, DROP`, then verify by granting only `CREATE` — the
+   neighbouring change a future contributor actually makes.
+
+`terraform test` runs against mocked providers, so the same trap
+applies there: **assert on config values and locals, never on a mocked
+data source's output.** `terraform/aws/tests/README.md` has the mutation
+table showing which deliberate break each test catches; extend it when
+adding assertions.
+
+Per-suite requirements:
+
+| Suite | Needs |
+|---|---|
+| agent, database, snapshot | bash, jq |
+| audit | bash, jq, python3 |
+| audit-chain | bash, sha256sum |
+| cloud-preflight | bash |
+| lint | bash, python3 |
+| pki | bash, jq, openssl |
+| pki-migration | bash, jq, python3, openssl |
+| ansible | bash, jq, python3 with jinja2 + pyyaml |
+| alert-routing | bash, python3 + PyYAML; Docker for the amtool cases |
+| alerting | promtool (Prometheus distribution), python3 |
+| upgrade | bash, curl, unzip, jq, sha256sum, python3 |
+| integration | docker compose, vault CLI, jq, openssl, curl |
+
+## CI
+
+`.github/workflows/ci.yml` runs 24 jobs on every PR and on pushes to
+`main`. Six are static (`terraform` fmt/validate/test, `ansible-lint`
+plus `--syntax-check`, `shellcheck`, `lint-invariants`, `markdownlint`,
+`security-scan` with gitleaks and Trivy); the rest each run one suite
+from `tests/`, or bring up the compose cluster and exercise it live
+(smoke test, AppRole rotation, GitHub OIDC, human OIDC via Dex, DR
+drill, integration).
+
+Adding a suite under `tests/` does **not** wire it into CI — add the job
+too. Shellcheck, by contrast, discovers test scripts via `git ls-files`
+rather than an enumerated list, so new harnesses are linted
+automatically.
+
+Versions are pinned on purpose (Terraform 1.15.9, Vault CLI 1.17.2,
+Prometheus/promtool 2.54.1, Alertmanager 0.27.0, and the compose image
+tags): a floating version makes failures hard to attribute and lets an
+upstream outage redden `main`. Keep the CLI version in a job matching
+the image version the compose profile runs.
+
+CI enforces several invariants worth knowing before you push:
+
+- **Every shell script must be executable** (`100755`), including
+  `tests/*/fake-bin/*` shims, which deliberately have no `.sh` suffix
+  because they must be named `vault`, `aws`, `curl` to be found on
+  `PATH`. Fix with `git update-index --chmod=+x <path>`.
+- **No trap handler may end in a bare conditional**
+  (`tests/lint/check_trap_exit.py`). `cleanup() { [[ -n "$D" ]] && rm
+  -rf "$D"; }` returns 1 when the test is false, and bash applies that
+  to the script's exit status from an `EXIT` trap — a successful run
+  reports failure, and an explicit `exit 0` does not save it.
+- **Trivy findings at HIGH or above fail the build.** Accepted findings
+  go in `.trivyignore.yaml` *with the reason* — an unjustified
+  suppression is indistinguishable from never having run the scanner.
+- **gitleaks scans full history** (`fetch-depth: 0`). A secret committed
+  and later removed is still leaked.
+- **Every alert rule needs a severity route of its own** and every
+  freshness alert needs a paired `absent()` alert; the alerting and
+  alert-routing suites fail if a new one arrives without its partner. A
+  threshold alert on a metric nobody reports never fires.
+
+## Conventions
+
+**Shell** — bash with `set -euo pipefail`, shellcheck-clean under
+`-s bash`. See "Scripts" above for the script shape.
+
+**Terraform** — `terraform fmt -recursive` before committing; CI runs
+`fmt -check`. `required_version >= 1.7`, providers pinned with `~>`.
+`.terraform.lock.hcl` is committed deliberately (see `.gitignore`);
+regenerate with `terraform providers lock`, never by hand. New cloud
+providers go under `terraform/<provider>/` and consume
+`terraform/modules/vault-cluster` rather than duplicating its variables;
+the shared module defines shape only and creates no cloud resources.
+Provider-specific concerns are split by file (`network.tf`, `compute.tf`,
+`security.tf`, `storage.tf`, `iam.tf`, `lb.tf`), not piled into
+`main.tf`.
+
+**Ansible** — must pass `ansible-lint` cleanly; `# noqa` only with a
+comment explaining why. Roles are off by default when enabling them
+changes a cluster's availability or trust characteristics
+(`vault_audit_enabled`, `vault_pki_enabled`, `vault_snapshots_enabled`
+all default to `false`, and the defaults files explain why at length).
+Role defaults are documented in prose in `defaults/main.yml` — that file
+is the reference, so extend it rather than adding a separate note. New
+inventory for a provider goes under `ansible/inventory/<provider>`.
+
+**Markdown** — `markdownlint-cli2` runs over `**/*.md`, including this
+file. Wrap prose at 80 columns; tables are exempt (`MD013: tables:
+false`) and use the compact delimiter (`|---|---|`, `MD060` disabled
+deliberately — see `.markdownlint.yaml`). Fenced blocks need a language.
+
+**Docs** — every feature has a `docs/*.md` that states the tradeoff, not
+just the procedure, and says plainly what is *not* proven. That is the
+house voice; match it. Prefer amending the existing doc for a topic over
+adding a new one.
+
+**Commits** — one logical change per commit, with a message explaining
+the *why*; the diff already shows the what. Subject lines here are
+imperative and specific ("Stop two cleanup handlers from turning success
+into failure", "Quote MySQL identifiers, and name the second place the
+engines differ"). Do not use a `type:` prefix. Branch names do use one
+(`fix/`, `docs/`, `test/`).
+
+## Project state and gaps
+
+`docs/roadmap.md` is the authority on what is done and what "not"
+means; the README's Roadmap section lists the three things standing
+between here and v1.0:
+
+1. A real AWS apply.
+2. A real Azure apply — a separate item, because Azure's peer discovery,
+   health probe and instance reconciliation have no AWS counterpart.
+3. Off-host audit shipping. The trail is now hash-chained and anchored
+   where the collector cannot write, but both volumes still sit on one
+   Docker daemon — tamper *evidence*, not tamper proofing.
+
+When touching any of these, keep the documentation's precision about
+what is proven versus what is merely configured. Overstating it is the
+one change that would make this repository less useful than saying
+nothing.
+
+## Doc index
+
+| File | Covers |
+|---|---|
+| `docs/deployment.md` | Local and cloud deployment, Terraform + Ansible |
+| `docs/security.md` | Threat model, TLS, policy structure, PKI ordering |
+| `docs/auto-unseal.md` | Transit, AWS KMS, Azure Key Vault |
+| `docs/human-authentication.md` | OIDC login, IdP groups → Vault policies |
+| `docs/ci-authentication.md` | GitHub Actions OIDC, bound claims |
+| `docs/secret-rotation.md` | AppRole roles and `secret_id` rotation |
+| `docs/dynamic-secrets.md` | Database engine, PostgreSQL and MySQL |
+| `docs/vault-agent.md` | An application consuming a secret without a token |
+| `docs/audit.md` | Audit devices, hash chain, anchors, what they prove |
+| `docs/monitoring.md` | Prometheus, alerting on absence, Grafana |
+| `docs/disaster-recovery.md` | Snapshots, retention, restore drill |
+| `docs/rolling-upgrades.md` | Zero-downtime version upgrades |
+| `docs/operations.md` | Day-2 runbooks |
+| `docs/troubleshooting.md` | Symptom → cause → first step |
+| `docs/cloud-apply.md` | What only a real apply can settle, per provider |
+| `docs/roadmap.md` | Shipped, gaps, exclusions, what "done" means |
