@@ -1,4 +1,4 @@
-.PHONY: deploy status destroy lint test docs
+.PHONY: deploy status destroy lint test docs docs-check
 
 deploy: ## Bring up the local 3-node Vault cluster + Prometheus/Grafana
 	./scripts/bootstrap-dev-cluster.sh --with-monitoring
@@ -17,9 +17,13 @@ lint: ## Run all lint/format/validate checks
 	terraform -chdir=terraform/azure validate
 	ansible-lint ansible/ || true
 	shellcheck scripts/*.sh
+	./scripts/generate-docs-index.sh --check
 
 test: ## Run the disaster recovery restore drill
 	./scripts/dr-drill.sh
 
-docs: ## List doc set (placeholder for future doc generation)
-	@ls docs/
+docs: ## Regenerate docs/README.md from the doc set
+	@./scripts/generate-docs-index.sh
+
+docs-check: ## Fail if docs/README.md is stale (what CI runs)
+	@./scripts/generate-docs-index.sh --check

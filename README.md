@@ -89,7 +89,7 @@ vault-reference-platform/
 │                      # cloud pre-flight and teardown
 ├── tests/             # test suites (see CI/CD below)
 ├── examples/          # example least-privilege policies
-├── docs/              # runbooks and guides
+├── docs/              # runbooks and guides (index: docs/README.md)
 ├── diagrams/
 ├── .github/workflows/
 ├── Makefile
@@ -307,10 +307,12 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-four checks on every PR. Six are static:
+GitHub Actions runs twenty-five checks on every PR. Seven are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, a shell-invariants check for patterns shellcheck has no
-opinion about, and security scanning (gitleaks for committed secrets,
+opinion about, a docs-index check that fails when
+[`docs/README.md`](docs/README.md) stops matching the documents it
+indexes, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 

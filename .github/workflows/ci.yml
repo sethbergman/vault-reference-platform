@@ -140,6 +140,25 @@ jobs:
         with:
           globs: "**/*.md"
 
+  docs-index:
+    name: Docs index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # docs/README.md is generated from the H1 and H2 headings of every
+      # file in docs/. A hand-edit to it, a renamed section, or a new
+      # document nobody indexed all surface here as a diff, which is the
+      # only thing keeping an index true to what it indexes.
+      - name: Docs index is current
+        run: ./scripts/generate-docs-index.sh --check
+
+      # Staleness is not the only way the index can be wrong: a generator
+      # that misreads a heading produces a wrong description this job
+      # would then defend, since both halves of the diff come from it.
+      - name: Generator reads the documents correctly
+        run: ./tests/docs-index/run-tests.sh
+
   smoke-test:
     name: Deploy + smoke test (Docker Compose)
     runs-on: ubuntu-latest
