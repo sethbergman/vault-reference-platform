@@ -71,7 +71,13 @@ usage() {
 }
 
 cleanup() {
-    [[ -n "$WORKDIR" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
+    # See oidc-login-test.sh: a trailing `&&` that evaluates false makes
+    # this return 1, which bash applies to the script's exit status from
+    # an EXIT trap. WORKDIR is empty until it is created, so any future
+    # "nothing to upgrade, exit 0" path would report failure instead.
+    if [[ -n "$WORKDIR" && -d "$WORKDIR" ]]; then
+        rm -rf "$WORKDIR"
+    fi
 }
 trap cleanup EXIT
 

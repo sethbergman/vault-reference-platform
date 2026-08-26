@@ -119,6 +119,18 @@ jobs:
           fi
         shell: bash
 
+  lint-invariants:
+    name: Shell invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Properties shellcheck has no opinion about, each added because the
+      # pattern it rejects shipped here and was found by reading rather
+      # than by any test.
+      - name: Check shell invariants
+        run: ./tests/lint/run-tests.sh
+
   markdownlint:
     name: Markdown lint
     runs-on: ubuntu-latest

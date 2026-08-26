@@ -307,9 +307,10 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-three checks on every PR. Five are static:
+GitHub Actions runs twenty-four checks on every PR. Six are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
-`markdownlint`, and security scanning (gitleaks for committed secrets,
+`markdownlint`, a shell-invariants check for patterns shellcheck has no
+opinion about, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
