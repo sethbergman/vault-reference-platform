@@ -1026,6 +1026,37 @@ else
     bad "and it reaches Alertmanager" "Prometheus fired it but Alertmanager never received it"
 fi
 
+# Reaching Alertmanager is not the same as reaching a receiver, and the
+# difference is the whole routing tree: which receiver, grouped how,
+# suppressed by what. None of that is visible from /api/v2/alerts, so
+# this reads the receiving end instead.
+#
+# VaultSnapshotMetricMissing is severity=critical, so the tree says it
+# goes to the pager path. A misrouted alert would still show as
+# "delivered" above and never reach anyone.
+ROUTED=0
+for _ in $(seq 1 30); do
+    ROUTED="$(compose exec -T alert-sink cat /sink/deliveries.log 2>/dev/null         | grep -c "^/page .*VaultSnapshotMetricMissing" || true)"
+    [[ "${ROUTED:-0}" -gt 0 ]] && break
+    sleep 2
+done
+
+if [[ "${ROUTED:-0}" -gt 0 ]]; then
+    ok "and the routing tree delivers it to the pager receiver"
+else
+    bad "and the routing tree delivers it to the pager receiver"         "sink holds: $(compose exec -T alert-sink cat /sink/deliveries.log 2>/dev/null | cut -c1-120 | tail -3)"
+fi
+
+# It must not also arrive as a ticket. A route that matches twice pages
+# and files, and the duplicate is the kind of noise that trains people to
+# ignore the pager.
+TICKETED="$(compose exec -T alert-sink cat /sink/deliveries.log 2>/dev/null     | grep -c "^/ticket .*VaultSnapshotMetricMissing" || true)"
+if [[ "${TICKETED:-0}" -eq 0 ]]; then
+    ok "and does not also file it as a ticket"
+else
+    bad "and does not also file it as a ticket" "delivered to the ticket path ${TICKETED} time(s)"
+fi
+
 # Now record a snapshot and watch the alert clear. An alert that fires and
 # never resolves is one people learn to ignore.
 if "${REPO_ROOT}/scripts/snapshot.sh" --cloud none --output-dir "${WORK}/alerting-snap"         --metrics-push http://127.0.0.1:9091 >"${WORK}/push.log" 2>&1; then

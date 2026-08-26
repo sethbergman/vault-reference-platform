@@ -57,10 +57,18 @@ rather than merely present.
 
 ### Alert routing
 
-Alertmanager is wired up and the tests confirm alerts reach its API, but
-no receiver is configured. Where alerts should go — PagerDuty, Slack, an
-on-call rotation — is site-specific, and a fake receiver would prove
-nothing a reader could reuse.
+The routing tree has shipped: severity-based receivers, grouping that
+collapses an incident into one notification, and inhibit rules so an
+outage pages for the cause rather than nine times for its consequences.
+`tests/alert-routing` covers it, and the integration suite reads the
+receiving end to confirm a critical alert reached the pager receiver and
+not the ticket one.
+
+What is still deliberately absent is any vendor integration. Where alerts
+ultimately go is site-specific, and a config full of fake PagerDuty keys
+would prove nothing a reader could reuse — so the receivers post to a
+sink that records the delivery. Swapping that for a real receiver is the
+one-line change the tree was shaped to make easy.
 
 Related: the cloud profiles have no monitoring stack at all. The rule
 file is ordinary PromQL against standard Vault metrics and would port

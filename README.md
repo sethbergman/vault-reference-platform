@@ -305,13 +305,13 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-two checks on every PR. Five are static:
+GitHub Actions runs twenty-three checks on every PR. Five are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, and security scanning (gitleaks for committed secrets,
 Trivy for Terraform and Dockerfile misconfigurations — see
 [`docs/security.md`](docs/security.md)).
 
-Ten run against fixtures and shims — fast, no credentials, and able to
+Eleven run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
@@ -336,6 +336,10 @@ reach failure modes a live cluster will not reproduce on demand:
   entry is caught and located, and that a chain rewritten to be
   self-consistent over an edited log passes verification *without*
   anchors and fails *with* them, which is the whole reason they exist.
+- **Alert routing** — that every alert in the rule file has a severity
+  with a route of its own, since one with a typo falls through to the
+  catch-all and is silently never paged; and that `amtool` agrees about
+  where each label set goes.
 - **PKI migration driver** — that trust is distributed before anything
   swaps, that a failed node stops the run, and that the bootstrap CA
   cannot be dropped while any node still presents one.

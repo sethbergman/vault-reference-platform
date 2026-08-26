@@ -106,16 +106,60 @@ old one. That happened here — see [`docs/security.md`](security.md).
 
 ## Routing
 
-`docker/monitoring/alertmanager.yml` receives everything into a receiver
-that does nothing with it. Where alerts should actually go — PagerDuty,
-Slack, an on-call rotation — is site-specific and cannot be demonstrated
-usefully in a reference repository.
+Where alerts ultimately go — PagerDuty, Slack, an on-call rotation — is
+site-specific, and a config full of fake integration keys would prove
+nothing a reader could reuse. So there are no vendor receivers here.
 
-Alertmanager is here anyway because the tests assert an alert travelled
-the whole path from rule evaluation to its API. A rule that fires and
-reaches nobody is the same class of problem as a backup nobody takes.
+What *is* reusable is everything above the vendor, and that is what
+`docker/monitoring/alertmanager.yml` sets out:
 
-Add a real receiver under `receivers:` for anything beyond local use.
+| | Critical | Warning |
+|---|---|---|
+| Receiver | `page` | `ticket` |
+| `group_wait` | `0s` | `30s` |
+| `repeat_interval` | `15m` | `12h` |
+
+**`group_wait: 0s` on critical is the point of the split.** At the
+default a page waits to see whether a second alert joins its group.
+That is a fine trade for a ticket and a bad one for a cluster that has
+lost quorum. Equally, a critical that notifies once and then goes quiet
+is indistinguishable from one nobody sent, so it repeats every 15
+minutes until someone acts; a warning repeats twice a day and does not
+wake anyone.
+
+Grouping is by `alertname` and `cluster`, deliberately **not** by
+`instance`. Three nodes sealing at once is one incident, and grouping per
+instance would page three times for it.
+
+### Inhibition
+
+Two rules, both encoding the same judgement — when one fact explains
+another, only the explaining fact is worth waking someone for:
+
+- `VaultAllTargetsMissing` suppresses `VaultNodeDown`. If Prometheus has
+  no Vault targets at all, every node is trivially "not responding".
+- `VaultQuorumLost` suppresses `VaultNoActiveNode`. Having no active node
+  is what losing quorum looks like from outside; quorum is the one that
+  says what to do about it.
+
+Getting inhibition wrong is costly in both directions: too little and an
+outage pages nine times, too much and the alert that mattered is the one
+suppressed.
+
+### Pointing it at a real pager
+
+Replace the `webhook_configs` under `page` and `ticket` with your
+vendor's receiver. The routing tree, the grouping and the inhibit rules
+stay as they are — they are the part that transfers.
+
+### The sink
+
+Each receiver posts to `alert-sink`, which records the delivery and does
+nothing else. It is **not** a stand-in for a pager. It exists so a test
+can ask a question Alertmanager's own API cannot answer: not "did this
+alert arrive", but "which receiver did it reach". Without something on
+the receiving end, an alert routed to the wrong place looks exactly like
+one routed correctly.
 
 ## What is tested
 
@@ -134,12 +178,34 @@ loads is indistinguishable from no rules at all.
 asserts every metric the rules name is actually being reported (a rule on
 a misspelled metric parses, loads, and can never fire), then waits for
 `VaultSnapshotMetricMissing` to fire, confirms Alertmanager received it,
-and pushes a snapshot success to watch the metric appear.
+**reads the sink to confirm it was delivered to the `page` receiver and
+not also to `ticket`**, and pushes a snapshot success to watch the metric
+appear.
+
+`tests/alert-routing/run-tests.sh` covers the tree itself. The check
+worth knowing about is that every alert in the rule file carries a
+severity that has a route of its own: an alert with a misspelled
+severity matches no route, falls through to the catch-all, and is never
+paged for — and nothing else in this repository would notice. The suite
+asserts that failure mode directly by asking `amtool` where
+`severity=crticial` goes.
+
+Which route matches a label set is put to `amtool` out of the pinned
+Alertmanager image rather than modelled in the test, because a test that
+reimplements the thing it is testing agrees with itself and nothing else.
 
 ## What is not covered
 
-No alert routing is exercised beyond Alertmanager's own API, for the
-reason above.
+No vendor integration is exercised. The routing tree, grouping and
+inhibition are tested; whether your PagerDuty key is correct is not
+something this repository can tell you.
+
+Inhibition is checked structurally — that each rule names alerts which
+actually exist, so a typo cannot leave an inert rule that reads in review
+as though the noise problem were handled. That both alerts firing at once
+really does suppress the second is not exercised, because arranging two
+specific alerts to overlap on a live cluster is a fixture problem rather
+than a monitoring one.
 
 The cloud profiles have no monitoring stack. `terraform/aws` and
 `terraform/azure` build a Vault cluster; Prometheus, Alertmanager and the

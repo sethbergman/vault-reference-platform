@@ -1,30 +1,97 @@
 # Alertmanager configuration for the local profile.
 #
-# Routing is deliberately minimal. Where alerts should go — PagerDuty,
-# Slack, an on-call rotation — is site-specific and cannot be
-# demonstrated meaningfully here, so this receives everything into a
-# webhook sink that does nothing with it.
+# WHAT IS DEMONSTRATED HERE AND WHAT IS NOT
 #
-# What that still buys, and the reason Alertmanager is here at all: the
-# tests can assert an alert travelled the whole path from rule
-# evaluation to Alertmanager's API, rather than only that Prometheus
-# evaluated an expression. A rule that fires and reaches nobody is the
-# same class of problem as a backup nobody takes.
+# Where alerts ultimately go — PagerDuty, Slack, an on-call rotation — is
+# site-specific, and a config full of fake integration keys would prove
+# nothing a reader could reuse. So there are no vendor receivers here.
+#
+# What *is* reusable is the part above the vendor: which alerts page
+# immediately, which ones can wait for a ticket, how they are grouped so
+# one incident is one notification, and which alerts are suppressed
+# because they are consequences of another. That tree is the same
+# whatever sits at the end of it, and it is what these receivers and the
+# tests in tests/alert-routing exercise.
+#
+# Each receiver posts to a sink that records the delivery. That is not a
+# stand-in for a pager: it is how a test can assert an alert reached the
+# receiver the routing tree says it should, rather than asserting it
+# reached Alertmanager and hoping about the rest.
 
 global:
   resolve_timeout: 1m
 
 route:
   receiver: default
-  group_by: [alertname]
+
+  # Group by alertname and cluster, not by instance. Three nodes sealing
+  # at once is one incident, and grouping by instance would page three
+  # times for it.
+  group_by: [alertname, cluster]
+
   # Short intervals so a CI run sees the alert rather than waiting out a
-  # production-shaped delay. See docs/monitoring.md for real values.
+  # production-shaped delay. docs/monitoring.md gives realistic values;
+  # these are chosen to make the tests finish.
   group_wait: 5s
   group_interval: 10s
   repeat_interval: 1h
 
+  routes:
+    # Critical goes straight out. group_wait is zero because the point of
+    # a page is latency: waiting five seconds to see whether a second
+    # alert joins the group is a fine trade for a ticket and a bad one
+    # for a cluster that has lost quorum.
+    - matchers:
+        - severity="critical"
+      receiver: page
+      group_wait: 0s
+      # Keep paging. An unacknowledged critical that goes quiet after one
+      # notification is indistinguishable from one nobody sent.
+      repeat_interval: 15m
+
+    # Warnings are work, not emergencies. They batch, and they do not
+    # repeat through the night.
+    - matchers:
+        - severity="warning"
+      receiver: ticket
+      group_wait: 30s
+      repeat_interval: 12h
+
 receivers:
   - name: default
-    # No receiver configured. Alerts are still visible via
-    # /api/v2/alerts, which is what the integration tests query.
-    webhook_configs: []
+    webhook_configs:
+      - url: http://alert-sink:9097/default
+        send_resolved: true
+
+  - name: page
+    webhook_configs:
+      - url: http://alert-sink:9097/page
+        send_resolved: true
+
+  - name: ticket
+    webhook_configs:
+      - url: http://alert-sink:9097/ticket
+        send_resolved: true
+
+# ---------------------------------------------------------------------------
+# Inhibition: page for the cause, not for each consequence
+# ---------------------------------------------------------------------------
+# Both rules encode the same judgement — when one fact explains another,
+# only the explaining fact is worth waking someone for. Getting this
+# wrong in either direction is costly: too little and an outage pages
+# nine times, too much and the alert that mattered is the one suppressed.
+inhibit_rules:
+  # If Prometheus has no Vault targets at all, every node is trivially
+  # "not responding". VaultAllTargetsMissing is the real fact; the
+  # per-node alerts are restatements of it.
+  - source_matchers:
+      - alertname="VaultAllTargetsMissing"
+    target_matchers:
+      - alertname="VaultNodeDown"
+
+  # No active node is what losing quorum looks like from the outside.
+  # When both fire, quorum is the one that says what to do about it.
+  - source_matchers:
+      - alertname="VaultQuorumLost"
+    target_matchers:
+      - alertname="VaultNoActiveNode"

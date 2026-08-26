@@ -229,6 +229,28 @@ services:
       - "9093:9093"
     volumes:
       - ../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    depends_on:
+      # Not a correctness requirement -- Alertmanager retries a webhook
+      # whose endpoint is not up yet. It removes a burst of delivery
+      # failures from the logs at startup, which otherwise look like the
+      # routing being broken when it is only early.
+      - alert-sink
+
+  # Where the receivers actually deliver. Alertmanager's own API can say
+  # an alert arrived; only something on the receiving end can say which
+  # receiver it was routed to, and that is the part of the config worth
+  # testing. See docker/alert-sink/sink.py.
+  #
+  # Each receiver posts to its own path, so the path identifies the
+  # receiver. Deliberately not a stand-in for a pager.
+  alert-sink:
+    build:
+      context: ../alert-sink
+    # No host port. Alertmanager reaches it on the compose network and
+    # the tests read the file with `compose exec`, so publishing it would
+    # only add another port to collide with.
+    expose:
+      - "9097"
 
   # Where batch jobs record that they succeeded. A snapshot timer that
   # stops running stops pushing, and the absence is what gets alerted on

@@ -630,6 +630,23 @@ jobs:
       - name: Exercise scripts/bootstrap-database-secrets.sh
         run: ./tests/database/run-tests.sh
 
+  alert-routing-test:
+    name: Alert routing tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      # The amtool cases run `amtool` out of the pinned Alertmanager
+      # image, so which route matches a label set is answered by
+      # Alertmanager rather than by a reimplementation of its matching
+      # rules in the test. Runners already have Docker; the suite skips
+      # those cases anywhere it is missing.
+      - name: Exercise the Alertmanager routing tree
+        run: ./tests/alert-routing/run-tests.sh
+
   alerting-test:
     name: Alerting rule tests
     runs-on: ubuntu-latest
