@@ -852,10 +852,31 @@ if [[ -n "$LEASE_M" ]]; then
     vault lease revoke "$LEASE_M" >/dev/null 2>&1 || true
     REVOKED="$(mysql_as "$USER_M" "$PASS_M" "SELECT 1;")"
     if [[ "$REVOKED" != "1" ]]; then
-        ok "revoking the lease drops the MySQL user"
+        ok "the revoked MySQL credential can no longer connect"
     else
-        bad "revoking the lease drops the MySQL user" \
+        bad "the revoked MySQL credential can no longer connect" \
             "the credential still works after revocation"
+    fi
+
+    # Gone from mysql.user, not merely unable to log in — the same
+    # distinction the Postgres section draws with pg_roles.
+    #
+    # It needs asking separately because MySQL returns an identical
+    # "access denied" whether the password is wrong or the account does
+    # not exist. Revoking the grants without dropping the user would look
+    # exactly like the check above passing.
+    #
+    # Asked as root, which can read mysql.user and whose password this
+    # bootstrap never rotates — vaultadmin's is gone by now, and the
+    # issued credential is scoped to appdata precisely so it cannot read
+    # mysql.user.
+    LEFT_M="$(mysql_as root "$BOOTSTRAP_PW" \
+        "SELECT COUNT(*) FROM mysql.user WHERE user = '${USER_M}';")"
+    if [[ "$LEFT_M" == "0" ]]; then
+        ok "and the account is dropped from mysql.user entirely"
+    else
+        bad "and the account is dropped from mysql.user entirely" \
+            "mysql.user still holds ${LEFT_M} row(s) for ${USER_M}"
     fi
 else
     bad "revoking the lease drops the MySQL user" "no lease_id was returned"
