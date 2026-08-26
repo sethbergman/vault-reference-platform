@@ -22,6 +22,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.10 | Vault Agent: an application consuming a secret without a token |
 | v0.11 | Audit logs that outlive the node they describe |
 | v0.12 | Tamper-evident audit: a hash chain, and anchors the collector cannot reach |
+| v0.13 | Alert routing by severity; MySQL as a second database engine |
 
 ## The honest gap
 
@@ -143,3 +144,29 @@ feature set is enough to demonstrate the architecture.
 An entry is marked done when there is a test that fails if the feature
 breaks — not when the code exists. That distinction is why the table
 above and the gap section can be read at face value.
+
+It only holds if the tests are as strong as they look, and v0.13 found
+three places where they were not.
+
+An assertion of the form "the log must not contain X" is only as good as
+the spelling its author thought to forbid. `"aws s3 cp"` reads like it
+forbids uploading, but an upload via `aws s3api put-object` passed it —
+demonstrated by making a standby upload and watching the guard stay
+green. Three such assertions were widened to the shortest prefix covering
+every way of doing the same thing, and a fourth, which named output text
+rather than a command, was paired with a positive assertion so reworded
+output breaks that instead of quietly passing.
+
+The mutation testing meant to catch this had the same weakness. An
+assertion rejecting `CREATE, ALTER, DROP`, "verified" by a mutation
+granting exactly `CREATE, ALTER, DROP`, proves only that `grep` works;
+granting `CREATE` alone walked through it. A useful mutation is one the
+assertion does not name.
+
+Both habits are in [CONTRIBUTING.md](../CONTRIBUTING.md), and
+`tests/lint` now enforces in CI the invariants that shellcheck has no
+opinion about — starting with trap handlers that return the result of a
+bare test, which made two scripts exit 1 after succeeding.
+
+None of this changes what the table above claims. It changes how much the
+word "tested" in it is worth, which seemed worth writing down.
