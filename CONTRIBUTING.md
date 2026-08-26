@@ -6,6 +6,10 @@ Issues and PRs are welcome.
 
 - Run `make lint` before opening a PR — it runs the same checks as CI.
 - Terraform changes: run `terraform fmt -recursive` first.
+- Adding, renaming or re-sectioning a document under `docs/`: run
+  `make docs`. `docs/README.md` is generated from the H1 and H2 headings
+  of that directory, and CI fails when it is stale rather than letting
+  the index quietly describe documents as something they no longer are.
 - New Ansible tasks should pass `ansible-lint` cleanly; use `# noqa` sparingly
   and only with a comment explaining why.
 
