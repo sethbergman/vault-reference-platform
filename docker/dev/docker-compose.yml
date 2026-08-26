@@ -39,6 +39,33 @@ services:
       timeout: 3s
       retries: 30
 
+  # A second engine behind the same Vault interface. The point is not
+  # MySQL specifically -- it is that the database engine is one interface
+  # over many databases, and that the differences which do leak through
+  # are worth knowing before choosing one.
+  #
+  # The difference that matters here: MySQL cannot express an account
+  # expiry, so credentials issued against it live until Vault revokes
+  # them, where the Postgres roles carry VALID UNTIL and the database
+  # enforces the deadline itself. See docs/dynamic-secrets.md.
+  mysql:
+    image: mysql:8.4
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: bootstrap-only-rotated-immediately
+      MYSQL_DATABASE: appdata
+    volumes:
+      # Creates the vaultadmin account Vault connects as. Deliberately not
+      # root: the bootstrap rotates the password of whatever account it
+      # uses, and root's password is what the healthcheck below needs.
+      - ../mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
   # Receives the socket audit device's stream (see docs/audit.md).
   #
   # The point of it is failure isolation, not the collector itself. Two

@@ -270,7 +270,7 @@ reset_scenario
 export FAKE_CONFIG_RC=2
 run_bootstrap
 assert_rc        "a failed connection config aborts" 1
-assert_says      "and points at the likely cause"    "is Postgres reachable"
+assert_says      "and points at the likely cause"    "is postgres reachable"
 assert_log_lacks "and creates no roles"              "database/roles/"
 
 reset_scenario
@@ -298,6 +298,85 @@ reset_scenario
 run_bootstrap --sslmode verify-full
 assert_log_has "sslmode is overridable" "sslmode=verify-full"
 
+
+# ---------------------------------------------------------------------------
+printf '\n=== MySQL is the same interface over a different database ===\n'
+# ---------------------------------------------------------------------------
+# The engine argument changes three things and nothing else: the plugin,
+# the connection string, and the SQL. Mount, roles, policies and root
+# rotation are shared, so these assert the three that differ and trust
+# the sections above for the rest.
+reset_scenario
+run_bootstrap --engine mysql
+assert_rc        "the mysql path configures cleanly" 0
+assert_log_has   "selects the mysql plugin"          "plugin_name=mysql-database-plugin"
+assert_log_lacks "and not the postgres one"          "plugin_name=postgresql-database-plugin"
+
+# The MySQL driver takes a DSN, not a libpq URL. Getting this wrong fails
+# at connection time with a parse error that names neither.
+assert_log_has   "builds a mysql DSN"       "@tcp(mysql:3306)/appdata"
+assert_log_lacks "not a postgresql:// URL"  "postgresql://"
+
+assert_log_has "creates a MySQL user rather than a role" "CREATE USER '{{name}}'@'%'"
+assert_log_has "and drops it on revocation"              "DROP USER IF EXISTS '{{name}}'@'%'"
+
+# Scoped to the one database. GRANT ... ON *.* would hand every issued
+# credential the run of the server.
+assert_log_has   "grants only on the target database" "ON appdata.*"
+assert_log_lacks "never grants server-wide"           "ON *.*"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The difference between the engines is not hidden ===\n'
+# ---------------------------------------------------------------------------
+# This is the assertion worth reading. The Postgres roles carry VALID
+# UNTIL, so the database enforces the expiry itself and a credential dies
+# on schedule even if Vault is unreachable at lease end.
+#
+# MySQL cannot express that. CREATE USER takes no deadline, so a MySQL
+# credential lives until Vault revokes it and no longer has a
+# database-side backstop.
+#
+# The failure this guards against is someone "fixing" the asymmetry by
+# pasting VALID UNTIL into the MySQL statements, where it is a syntax
+# error, or quietly assuming the two paths are equivalent. They are not,
+# and the docs say which is which.
+assert_log_lacks "the mysql path claims no expiry MySQL cannot enforce" "VALID UNTIL"
+
+reset_scenario
+run_bootstrap
+assert_log_has "while the postgres path still has its backstop" "VALID UNTIL '{{expiration}}'"
+
+# ---------------------------------------------------------------------------
+printf '\n=== Engine-specific defaults ===\n'
+# ---------------------------------------------------------------------------
+# Vault needs CREATE USER and GRANT OPTION to issue credentials, which an
+# ordinary per-database account lacks. The obvious shortcut is to connect
+# as root -- but this script rotates the password of whatever account it
+# uses, and root's password is what the container healthcheck needs, so
+# rotating it would leave the container unhealthy while MySQL was fine.
+# docker/mysql/init/ creates a vaultadmin account for the purpose.
+reset_scenario
+run_bootstrap --engine mysql
+assert_log_has   "mysql connects as vaultadmin, not root" "username=vaultadmin"
+assert_log_lacks "so rotation cannot break the healthcheck" "username=root"
+
+reset_scenario
+run_bootstrap --engine mysql --username appuser
+assert_log_has "an explicit username is still respected" "username=appuser"
+
+# sslmode is libpq vocabulary; the MySQL driver wants tls.
+reset_scenario
+run_bootstrap --engine mysql
+assert_log_has "sslmode disable becomes tls=false" "tls=false"
+
+reset_scenario
+run_bootstrap --engine mysql --sslmode verify-full
+assert_log_has "and anything else turns TLS on" "tls=true"
+
+reset_scenario
+run_bootstrap --engine sqlite
+assert_rc   "an unsupported engine is rejected" 1
+assert_says "and says which are supported"      "must be postgres or mysql"
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
