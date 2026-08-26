@@ -27,17 +27,21 @@ Three parts:
 
 ## Which profile this is written for
 
-The commands below are **AWS**. Six of the nine checklist items differ on
-Azure — 1, 2, 4, 5, 6 and 9 — and item 4 differs in the assertion rather
-than the command, because the Azure probe has no status-code matcher to
-check.
+The commands are **AWS** unless an item carries an **On Azure** block.
+Six of the nine do — 1, 2, 4, 5, 6 and 9 — and the absence of one means
+the item is genuinely identical, not that the Azure case was skipped.
 
-A runnable Azure path is not written yet. Both applies are separate v1.0
-blockers ([roadmap](roadmap.md)), so this document covering one of them
-properly and the other by implication is a gap, not a decision.
+Item 4 is the one where Azure differs in the *assertion* rather than the
+command, because its probe has no status-code matcher to check.
 
-If you are only going to do one, do AWS first: it is the profile with the
-broken default, so the pre-flight earns its keep there.
+Both applies are separate v1.0 blockers ([roadmap](roadmap.md)); neither
+settles the other. If you are only going to do one, do AWS first: it is
+the profile with the broken default, so the pre-flight earns its keep
+there.
+
+Every Azure command below is written from `terraform/azure` and its
+outputs. **None has been run against a live subscription** — that is the
+blocker, and it applies to this document as much as to the profile.
 
 ---
 
@@ -84,9 +88,9 @@ matching your own variables.
 | EBS, S3, flow logs | a few dollars |
 | **Total** | **~$160/month, ~$0.22/hour** |
 
-### The one lever that matters
+### The AWS lever: `az_count`
 
-**`az_count` is the dominant cost, and it is not the node count.**
+**It is the dominant cost, and it is not the node count.**
 `terraform/aws/network.tf` creates one NAT gateway per availability zone,
 each with an hourly charge plus data processing. At defaults they are
 roughly 60% of the bill — more than the Vault nodes.
@@ -109,6 +113,32 @@ So the lever saves less than it looks like it should — one NAT gateway,
 about $33/month. Use `az_count=2` for a first apply; if it works, the
 second apply at `az_count=3` is the interesting one.
 
+### Azure, at defaults (`availability_zones = ["1","2","3"]`, `node_count = 3`)
+
+| Line | Approx / month |
+|---|---|
+| 1 NAT gateway | ~$33 |
+| 3 × `Standard_B2s` | ~$90 |
+| 3 × 64 GB Premium OS disk | ~$27 |
+| Standard load balancer | ~$18 |
+| Key Vault, storage, flow logs | a few dollars |
+| **Total** | **~$170/month** |
+
+**The lever is not the zone count.** `terraform/azure/network.tf` creates
+one NAT gateway for the whole VNet rather than one per zone, so zone
+spread is free here and shrinking `availability_zones` saves nothing.
+`--az-count` does nothing on this profile and the pre-flight says so.
+
+The largest line is compute, and `node_count` cannot go below 3 and stay
+a Raft majority. That leaves size: `vm_size = "Standard_B1ms"` roughly
+halves the compute line and `os_disk_size_gb = 32` halves the disk line,
+at the cost of giving Vault less memory than the thing it is meant to
+demonstrate. For a few hours that trade is fine.
+
+Worth noticing that the two profiles land in the same range and get there
+differently: on AWS the network is the bill, on Azure the compute is.
+Cost-cutting advice does not transfer between them.
+
 ### The real risk is not the apply
 
 At ~$0.22/hour at defaults, an afternoon of testing is a few dollars.
@@ -120,6 +150,8 @@ indefinitely.** Set a calendar reminder before you start, not after.
 
 ## The apply sequence
 
+### AWS
+
 ```bash
 ./scripts/preflight-cloud.sh --cloud aws --az-count 2
 terraform -chdir=terraform/aws apply \
@@ -127,6 +159,20 @@ terraform -chdir=terraform/aws apply \
 ./scripts/terraform-to-ansible.sh --cloud aws   # outputs -> group_vars
 cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
 ```
+
+### Azure
+
+```bash
+./scripts/preflight-cloud.sh --cloud azure
+terraform -chdir=terraform/azure apply \
+    -var "ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
+./scripts/terraform-to-ansible.sh --cloud azure  # outputs -> group_vars
+cd ansible && ansible-playbook -i inventory/azure.yml playbooks/site.yml
+```
+
+`ssh_public_key` has no default and Azure will not create a Linux scale
+set without either a key or a password, so this profile cannot produce
+the unreachable cluster its AWS counterpart can.
 
 Terraform brings up infrastructure and cloud-init starts Vault.
 Ansible configures what a running cluster needs: snapshots, audit
@@ -172,6 +218,21 @@ sudo journalctl -u vault --no-pager | head -50
 **Failure looks like:** cloud-init reports `error`, or Vault is not
 installed at all. Everything below depends on this.
 
+**On Azure** the admin user is `azureuser` (`admin_username`), and
+cloud-init writes its transcript somewhere else:
+
+```bash
+ssh azureuser@<node>
+sudo cloud-init status --long
+sudo tail -50 /var/log/cloud-init-output.log
+sudo systemctl status vault
+```
+
+Getting to the node is its own problem. The AWS profile leaves nodes
+reachable through SSM Session Manager with no inbound port 22; the Azure
+profile has no equivalent, so decide on a bastion or Azure Bastion before
+you need one, not after the cluster is up and unreachable.
+
 ### 2. Auto-unseal, with no human involved
 
 *Claimed by:* `docs/auto-unseal.md`, the `seal` stanza in the templates
@@ -188,6 +249,21 @@ been reconciled against a real API.
 
 **Failure looks like:** Vault running but sealed, with an
 `AccessDenied` from KMS in the journal.
+
+**On Azure** the expected value is `Seal Type = azurekeyvault`, and the
+three things that must agree are different ones: the user-assigned
+managed identity, the Key Vault **access policy**, and the `seal` stanza.
+There is no instance profile involved.
+
+```bash
+vault status        # expect: Sealed = false, Seal Type = azurekeyvault
+az keyvault key show --vault-name <kv> --name <key> -o table
+```
+
+**Failure looks like** a 403 from Key Vault in the journal. Ordering is
+the thing nobody has watched: `terraform/azure/compute.tf` creates the
+access policy before the scale set precisely so the first boot can
+unseal, and that dependency has been reasoned about and never observed.
 
 ### 3. Raft `auto_join` finds the other nodes
 
@@ -208,9 +284,21 @@ vault operator raft list-peers
 
 **Failure looks like:** one node listing only itself — each node formed
 its own single-node cluster and each thinks it is the leader. Check the
-journal for the discovery query and what it matched. On AWS this is EC2
-instance tags; **on Azure, tag mode matches the network interface's
-tags, not the VM's.**
+journal for the discovery query and what it matched. On AWS that query is
+over EC2 instance tags.
+
+**On Azure it is not a tag query at all.** `retry_join` matches on
+resource group plus scale set name, because go-discover rejects a mix of
+the two selector styles — which is the bug above, and why the
+configuration looks the way it does. Two things follow that do not apply
+to AWS:
+
+- **It requires Uniform orchestration.** A Flexible scale set returns
+  nothing and reports no error, so the symptom is three single-node
+  clusters and a clean log.
+- **Zero instances is not an error to go-discover.** An empty result and
+  a result it never asked for look identical from the journal, so read
+  the query itself rather than only its outcome.
 
 ### 4. The load balancer keeps standbys in the pool
 
@@ -233,6 +321,40 @@ the leader went away.
 curl -s -o /dev/null -w '%{http_code}\n' \
     https://<node>:8200/v1/sys/health
 ```
+
+Note what this does *not* prove. `terraform/aws/lb.tf` probes
+`/v1/sys/health?standbyok=true`, so a healthy standby answers 200 and the
+`200,429` matcher never fires. The matcher is a second line of defence
+against a path that stops sending `standbyok`; the bare `curl` above is
+the only place you will see a 429 at all.
+
+**On Azure this check is a different assertion, not a different command.**
+Azure health probes accept 200-299 and nothing else — there is no matcher
+to get wrong. Standbys stay in the pool *only* because `standbyok=true`
+makes Vault answer 200, so what needs proving is that response:
+
+```bash
+# 200 on a standby, because of standbyok — not 429
+curl -s -o /dev/null -w '%{http_code}\n' \
+    'https://<node>:8200/v1/sys/health?standbyok=true'
+```
+
+If that ever returned 429, Azure would eject every standby and the leader
+would serve everything, with nothing in the load balancer saying why.
+
+Reading it back from the load balancer is the awkward part: Azure has no
+`describe-target-health` equivalent. The closest is the `DipAvailability`
+probe metric:
+
+```bash
+az monitor metrics list --resource <lb-resource-id> \
+    --metric DipAvailability --interval PT1M -o table
+```
+
+That aggregates rather than listing per-instance state, so treat the
+per-node `curl` as the real check and the metric as corroboration. **I
+have not run this command against a live subscription** — verify it
+before relying on the invocation.
 
 ### 5. The Ansible handoff — two separate things
 
@@ -269,6 +391,23 @@ If `ping` fails but the inventory lists hosts, it is emitting private IPs
 reachable only from inside the VPC. That is not a bug; run Ansible from a
 bastion or a node.
 
+**On Azure**, same two halves, different commands:
+
+```bash
+./scripts/terraform-to-ansible.sh --cloud azure
+cat ansible/group_vars/vault_nodes.yml   # same path for both clouds
+cd ansible
+ansible-inventory -i inventory/azure.yml --list
+ansible -i inventory/azure.yml vault_nodes -m ping
+```
+
+**And here 5a and 5b are genuinely independent, which they are not on
+AWS.** The inventory filters `tags.VaultCluster`; Raft discovery
+enumerates the scale set and never looks at tags. So an empty inventory
+says nothing about whether the cluster formed, and a cluster that formed
+is no evidence the inventory works. Check both, and do not read either
+result as covering the other.
+
 ### 6. Snapshots authenticate with the instance role and reach the bucket
 
 *Claimed by:* `ansible/roles/vault_snapshots`, `docs/disaster-recovery.md`
@@ -287,6 +426,22 @@ exited 0 on every node while taking no snapshot at all.
 
 Note that the timer runs on **every** node and only the leader takes a
 snapshot; standbys logging that they skipped is correct behaviour.
+
+**On Azure** the destination is a blob container, and the identity is a
+user-assigned managed identity rather than an instance role:
+
+```bash
+sudo systemctl start vault-snapshot.service
+sudo journalctl -u vault-snapshot --no-pager | tail -20
+az storage blob list --account-name <acct> -c <container> \
+    --auth-mode login -o table
+```
+
+`--auth-mode login` is not optional here. `terraform/azure/storage.tf`
+sets `shared_access_key_enabled = false`, so there is no account key to
+fall back on — if the role assignment is wrong, the upload fails and no
+amount of fetching keys will work around it. That is the point of the
+setting, and it makes this check sharper than its AWS counterpart.
 
 ### 7. Restoring a snapshot actually works
 
@@ -366,12 +521,36 @@ Note that at `az_count=2` the replacement may land in either zone, so
 what this tests is node loss. Zone loss is a different exercise and not
 one you can stage from the CLI.
 
+**On Azure the mechanism is reconciliation, not replacement**, and the
+timing is different enough to change what "expect" means:
+
+```bash
+az vmss list-instances -g <rg> -n <vmss> -o table
+az vmss delete-instances -g <rg> -n <vmss> --instance-ids <id>
+```
+
+The scale set restores `instances = node_count` because that is the
+declared state — there is no launch template being invoked. Two
+consequences worth knowing before you start a stopwatch:
+
+- `automatic_instance_repair` carries a 30-minute grace period, so a
+  replacement that has not appeared in two minutes is not yet a failure.
+  The AWS expectation of "a couple of minutes" does not transfer.
+- `zone_balance = true` means Azure may **refuse** to place the
+  replacement rather than place it in the wrong zone. A scale set stuck
+  below `node_count` with a placement error is a different outcome from
+  a node that came back sealed, and only one of them is about Vault.
+
+The claim being settled is the same: a replacement node auto-unseals and
+rejoins Raft with nobody watching.
+
 ---
 
 ## Tearing down
 
 ```bash
 ./scripts/teardown-cloud.sh --cloud aws
+./scripts/teardown-cloud.sh --cloud azure
 ```
 
 **Do not just run `terraform destroy`.** It fails, and it fails *after*
