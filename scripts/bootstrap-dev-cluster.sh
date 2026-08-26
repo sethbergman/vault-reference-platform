@@ -5,7 +5,8 @@
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
 #                              [--with-monitoring] [--with-oidc]
-#                              [--with-database] [--with-audit] [--with-agent]
+#                              [--with-database] [--with-mysql]
+#                              [--with-audit] [--with-agent]
 #
 # Example:
 #   ./bootstrap-dev-cluster.sh                        # full 3-node cluster
@@ -13,6 +14,7 @@
 #   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
 #   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
 #   ./bootstrap-dev-cluster.sh --with-database         # + Postgres for dynamic creds
+#   ./bootstrap-dev-cluster.sh --with-mysql            # + MySQL, the second engine
 #   ./bootstrap-dev-cluster.sh --with-audit            # + collector for socket audit
 #   ./bootstrap-dev-cluster.sh --with-agent            # + Vault Agent for app secrets
 #
@@ -58,6 +60,7 @@ NODES="vault-0,vault-1,vault-2"
 WITH_MONITORING=false
 WITH_OIDC=false
 WITH_DATABASE=false
+WITH_MYSQL=false
 WITH_AUDIT=false
 WITH_AGENT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,6 +117,7 @@ while [[ $# -gt 0 ]]; do
         --with-monitoring) WITH_MONITORING=true; shift ;;
         --with-oidc) WITH_OIDC=true; shift ;;
         --with-database) WITH_DATABASE=true; shift ;;
+        --with-mysql) WITH_MYSQL=true; shift ;;
         --with-audit) WITH_AUDIT=true; shift ;;
         --with-agent) WITH_AGENT=true; shift ;;
         -h|--help) usage ;;
@@ -157,6 +161,15 @@ if [[ "$WITH_DATABASE" == true ]]; then
     log "Starting Postgres (target for the database secrets engine)..."
     compose up -d --wait postgres >&2         || die "Postgres did not become healthy"
     log "Postgres is accepting queries."
+fi
+
+# The same wait-for-healthy reasoning applies, and more so: MySQL runs its
+# initialisation on first start and refuses connections for several
+# seconds after the port opens.
+if [[ "$WITH_MYSQL" == true ]]; then
+    log "Starting MySQL (second target for the database secrets engine)..."
+    compose up -d --wait mysql >&2         || die "MySQL did not become healthy"
+    log "MySQL is accepting queries."
 fi
 
 # ---------------------------------------------------------------------------

@@ -68,10 +68,17 @@ directly, but nothing here deploys it outside the local profile.
 
 ### More database engines
 
-The database engine is wired up for PostgreSQL only. Vault supports
-MySQL, MSSQL, MongoDB and others through the same interface, and the
-shape established here would carry over, but nothing else has been
-exercised.
+PostgreSQL and MySQL are both wired up and tested. Vault supports MSSQL,
+MongoDB and others through the same interface and the shape carries over,
+but nothing else has been exercised.
+
+Adding the second one was worth more than the breadth suggests, because
+it surfaced where the engines are *not* equivalent: MySQL has no
+`VALID UNTIL`, so a credential issued against it lives until Vault
+revokes it, where a Postgres credential dies on schedule even if Vault is
+unavailable at lease end. That difference is asserted by the tests and
+stated in [dynamic-secrets.md](dynamic-secrets.md) rather than smoothed
+over.
 
 Related and larger: the cloud profiles do not provision a database at
 all. `terraform/aws` and `terraform/azure` build a Vault cluster, not an

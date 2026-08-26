@@ -6,13 +6,18 @@
 #   ./bootstrap-database-secrets.sh [options]
 #
 # Options:
+#   --engine <engine>    postgres or mysql (default: postgres)
 #   --mount <path>       Mount path (default: database)
 #   --name <name>        Connection name (default: appdata)
-#   --host <host:port>   Postgres address (default: postgres:5432)
+#   --host <host:port>   Database address
+#                        (default: postgres:5432, or mysql:3306)
 #   --database <db>      Database name (default: appdata)
 #   --username <user>    Bootstrap superuser (default: vaultadmin)
-#   --password <pw>      Bootstrap password (default: $POSTGRES_PASSWORD)
-#   --sslmode <mode>     libpq sslmode (default: disable — see below)
+#   --password <pw>      Bootstrap password
+#                        (default: $POSTGRES_PASSWORD or $MYSQL_PASSWORD)
+#   --sslmode <mode>     Transport security (default: disable — see below).
+#                        For mysql, anything other than `disable` sets
+#                        tls=true on the connection.
 #   --default-ttl <d>    Lease TTL for issued credentials (default: 1h)
 #   --max-ttl <d>        Maximum lease TTL (default: 24h)
 #   --no-rotate-root     Skip rotating the bootstrap password
@@ -40,6 +45,29 @@
 # superuser. Pass --no-rotate-root to skip it, and read
 # docs/disaster-recovery.md first if you are considering that.
 #
+# POSTGRES AND MYSQL ARE NOT EQUIVALENT HERE
+#
+# The Postgres roles issue credentials with VALID UNTIL '{{expiration}}',
+# so the database itself enforces the expiry. If Vault is unreachable
+# when the lease ends and never runs the revocation, the credential still
+# stops working on schedule.
+#
+# MySQL has no equivalent. CREATE USER takes no expiry, and MySQL's
+# PASSWORD EXPIRE is password ageing rather than an account deadline, so
+# it cannot express "this login is dead at 14:05". A MySQL credential is
+# therefore live until Vault revokes it, and only until then.
+#
+# That is a real reduction in safety rather than a detail: the MySQL path
+# depends on Vault being available at lease expiry, where the Postgres
+# path has a database-side backstop. The tests assert the difference
+# instead of papering over it, and docs/dynamic-secrets.md states it
+# where someone choosing an engine will read it.
+#
+# MySQL also caps usernames at 32 characters (16 before 5.7, which is
+# what mysql-legacy-database-plugin exists for). Vault's default username
+# template truncates to fit; exceeding the cap fails at issuance rather
+# than at configuration, which is why it is worth knowing about.
+#
 # TLS TO THE DATABASE
 #
 # sslmode defaults to `disable`, which is correct for the local Docker
@@ -54,12 +82,13 @@
 
 set -euo pipefail
 
+ENGINE="postgres"
 MOUNT="database"
 NAME="appdata"
-HOST="postgres:5432"
+HOST=""
 DATABASE="appdata"
 USERNAME="vaultadmin"
-PASSWORD="${POSTGRES_PASSWORD:-}"
+PASSWORD=""
 SSLMODE="disable"
 DEFAULT_TTL="1h"
 MAX_TTL="24h"
@@ -76,6 +105,7 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --engine)         ENGINE="$2"; shift 2 ;;
         --mount)          MOUNT="$2"; shift 2 ;;
         --name)           NAME="$2"; shift 2 ;;
         --host)           HOST="$2"; shift 2 ;;
@@ -92,14 +122,94 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$ENGINE" in
+    postgres|mysql) ;;
+    *) die "--engine must be postgres or mysql, got: ${ENGINE}" ;;
+esac
+
+# Resolved after parsing so --engine may appear before or after the
+# options whose defaults depend on it.
+if [[ "$ENGINE" == "postgres" ]]; then
+    [[ -n "$HOST" ]]     || HOST="postgres:5432"
+    [[ -n "$PASSWORD" ]] || PASSWORD="${POSTGRES_PASSWORD:-}"
+else
+    [[ -n "$HOST" ]]     || HOST="mysql:3306"
+    [[ -n "$PASSWORD" ]] || PASSWORD="${MYSQL_PASSWORD:-}"
+    # Same account name as the Postgres profile, and deliberately not
+    # root. Vault needs CREATE USER and GRANT OPTION, which an ordinary
+    # per-database account lacks -- but this script rotates the password
+    # of whatever account it connects as, and in the dev profile root's
+    # password is what the container healthcheck uses. Rotating it would
+    # leave the container permanently unhealthy while MySQL itself was
+    # fine. docker/mysql/init/ creates vaultadmin instead.
+fi
+
 command -v vault >/dev/null 2>&1 || die "vault not found on PATH"
 command -v jq    >/dev/null 2>&1 || die "jq not found on PATH"
 [[ -n "${VAULT_ADDR:-}" ]]  || die "VAULT_ADDR is not set"
 [[ -n "${VAULT_TOKEN:-}" ]] || die "VAULT_TOKEN is not set"
-[[ -n "$PASSWORD" ]] || die "No bootstrap password: pass --password or set POSTGRES_PASSWORD"
+if [[ -z "$PASSWORD" ]]; then
+    if [[ "$ENGINE" == "postgres" ]]; then
+        die "No bootstrap password: pass --password or set POSTGRES_PASSWORD"
+    else
+        die "No bootstrap password: pass --password or set MYSQL_PASSWORD"
+    fi
+fi
 
 ROLE_READONLY="${NAME}-readonly"
 ROLE_READWRITE="${NAME}-readwrite"
+
+# ---------------------------------------------------------------------------
+# What differs between the two engines
+# ---------------------------------------------------------------------------
+# Everything after this block -- the mount, the roles, the policies, the
+# root rotation -- is identical for both. Only the plugin, the connection
+# string and the SQL change, so they are resolved here once and the rest
+# of the script stays engine-agnostic.
+if [[ "$ENGINE" == "postgres" ]]; then
+    PLUGIN="postgresql-database-plugin"
+    CONNECTION_URL="postgresql://{{username}}:{{password}}@${HOST}/${DATABASE}?sslmode=${SSLMODE}"
+
+    # VALID UNTIL '{{expiration}}' is the database-side backstop: the
+    # credential dies on schedule even if Vault is unreachable at lease
+    # end and never runs the revocation.
+    CREATE_READONLY="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
+        GRANT CONNECT ON DATABASE \"${DATABASE}\" TO \"{{name}}\";
+        GRANT USAGE ON SCHEMA public TO \"{{name}}\";
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";"
+    CREATE_READWRITE="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
+        GRANT CONNECT ON DATABASE \"${DATABASE}\" TO \"{{name}}\";
+        GRANT USAGE, CREATE ON SCHEMA public TO \"{{name}}\";
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"{{name}}\";"
+    REVOKE_STATEMENTS="REASSIGN OWNED BY \"{{name}}\" TO \"${USERNAME}\";
+        DROP OWNED BY \"{{name}}\";
+        DROP ROLE IF EXISTS \"{{name}}\";"
+else
+    PLUGIN="mysql-database-plugin"
+
+    # The MySQL driver takes tls as a DSN parameter rather than an
+    # sslmode. Anything that is not `disable` means verify the server.
+    MYSQL_TLS="true"
+    [[ "$SSLMODE" == "disable" ]] && MYSQL_TLS="false"
+    CONNECTION_URL="{{username}}:{{password}}@tcp(${HOST})/${DATABASE}?tls=${MYSQL_TLS}"
+
+    # No VALID UNTIL: MySQL cannot express an account deadline, so unlike
+    # the Postgres path there is no database-side backstop and the
+    # credential lives until Vault revokes it. See the header.
+    #
+    # '{{name}}'@'%' rather than @'localhost' -- Vault connects over the
+    # container network, and a user scoped to localhost cannot log in
+    # from anywhere Vault actually is.
+    CREATE_READONLY="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';
+        GRANT SELECT ON ${DATABASE}.* TO '{{name}}'@'%';"
+    CREATE_READWRITE="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '{{name}}'@'%';"
+
+    # IF EXISTS because revocation runs more than once on some failure
+    # paths, and a DROP USER that errors leaves the lease stuck rather
+    # than cleaning up.
+    REVOKE_STATEMENTS="DROP USER IF EXISTS '{{name}}'@'%';"
+fi
 
 # ---------------------------------------------------------------------------
 # Mount
@@ -131,31 +241,31 @@ else
     # this connection; set it to "*" and every future role can, including
     # ones added later by someone who did not think about this connection.
     vault write "${MOUNT}/config/${NAME}" \
-        plugin_name="postgresql-database-plugin" \
+        plugin_name="$PLUGIN" \
         allowed_roles="${ROLE_READONLY},${ROLE_READWRITE}" \
-        connection_url="postgresql://{{username}}:{{password}}@${HOST}/${DATABASE}?sslmode=${SSLMODE}" \
+        connection_url="$CONNECTION_URL" \
         username="$USERNAME" \
         password="$PASSWORD" >/dev/null \
-        || die "Could not configure ${MOUNT}/config/${NAME} — is Postgres reachable at ${HOST}?"
+        || die "Could not configure ${MOUNT}/config/${NAME} — is ${ENGINE} reachable at ${HOST}?"
 fi
 
 # ---------------------------------------------------------------------------
 # Roles
 # ---------------------------------------------------------------------------
 # {{name}}, {{password}} and {{expiration}} are substituted by Vault per
-# issuance. VALID UNTIL '{{expiration}}' matters: it makes the database
-# itself enforce the expiry, so a credential dies on schedule even if
-# Vault is unreachable when the lease ends and cannot run the revocation.
+# issuance. The statements themselves were resolved above, because they
+# are the one genuinely engine-specific part of this script.
+#
+# The difference worth remembering: the Postgres statements carry VALID
+# UNTIL '{{expiration}}', so the database enforces the expiry itself and
+# a credential dies on schedule even if Vault is unreachable at lease
+# end. MySQL cannot express that, so there revocation is the only thing
+# that ends a credential.
 log "Creating the ${ROLE_READONLY} role (ttl ${DEFAULT_TTL}, max ${MAX_TTL})..."
 vault write "${MOUNT}/roles/${ROLE_READONLY}" \
     db_name="$NAME" \
-    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
-        GRANT CONNECT ON DATABASE \"${DATABASE}\" TO \"{{name}}\";
-        GRANT USAGE ON SCHEMA public TO \"{{name}}\";
-        GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
-    revocation_statements="REASSIGN OWNED BY \"{{name}}\" TO \"${USERNAME}\";
-        DROP OWNED BY \"{{name}}\";
-        DROP ROLE IF EXISTS \"{{name}}\";" \
+    creation_statements="$CREATE_READONLY" \
+    revocation_statements="$REVOKE_STATEMENTS" \
     default_ttl="$DEFAULT_TTL" \
     max_ttl="$MAX_TTL" >/dev/null \
     || die "Could not create the ${ROLE_READONLY} role"
@@ -163,13 +273,8 @@ vault write "${MOUNT}/roles/${ROLE_READONLY}" \
 log "Creating the ${ROLE_READWRITE} role (ttl ${DEFAULT_TTL}, max ${MAX_TTL})..."
 vault write "${MOUNT}/roles/${ROLE_READWRITE}" \
     db_name="$NAME" \
-    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
-        GRANT CONNECT ON DATABASE \"${DATABASE}\" TO \"{{name}}\";
-        GRANT USAGE, CREATE ON SCHEMA public TO \"{{name}}\";
-        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
-    revocation_statements="REASSIGN OWNED BY \"{{name}}\" TO \"${USERNAME}\";
-        DROP OWNED BY \"{{name}}\";
-        DROP ROLE IF EXISTS \"{{name}}\";" \
+    creation_statements="$CREATE_READWRITE" \
+    revocation_statements="$REVOKE_STATEMENTS" \
     default_ttl="$DEFAULT_TTL" \
     max_ttl="$MAX_TTL" >/dev/null \
     || die "Could not create the ${ROLE_READWRITE} role"

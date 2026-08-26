@@ -153,9 +153,11 @@ See [`docs/vault-agent.md`](docs/vault-agent.md).
 ## Dynamic secrets
 
 Everything above stores secrets somebody created. `scripts/bootstrap-database-secrets.sh`
-configures Vault to *issue* them instead — a Postgres account that does
+configures Vault to *issue* them instead — a database account that does
 not exist until it is requested, belongs to one consumer, and is dropped
-when its lease ends.
+when its lease ends. PostgreSQL and MySQL are both supported behind the
+same interface (`--engine`), and the differences that leak through are
+documented rather than smoothed over.
 
 The bootstrap ends by rotating the password of the account Vault itself
 connects with, without reporting the new value. After that nobody knows

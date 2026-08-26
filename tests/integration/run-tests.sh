@@ -86,7 +86,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-monitoring --with-audit --with-agent)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-mysql --with-monitoring --with-audit --with-agent)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"
@@ -745,6 +745,129 @@ if vault read -format=json database/creds/appdata-readonly >/dev/null 2>&1; then
     ok "but Vault can still issue credentials"
 else
     bad "but Vault can still issue credentials" "rotation broke the connection"
+fi
+
+
+# ---------------------------------------------------------------------------
+info "=== The same interface over MySQL ==="
+# ---------------------------------------------------------------------------
+# Everything above proved the database engine against Postgres. This
+# proves what adding a second engine actually claims: that the same
+# interface issues a working credential against a different database, and
+# that the one place the engines differ is the documented one rather than
+# a surprise found in production.
+#
+# A second connection on the same mount, so this is the same engine
+# instance rather than a parallel installation of it.
+
+mysql_as() {
+    # Same stderr reasoning as psql_as -- "denied" arrives there and is
+    # the answer worth having. The MySQL client also warns on every
+    # invocation that the password is on the command line, which would
+    # otherwise prefix every result and break the comparisons.
+    compose exec -T mysql \
+        mysql -h 127.0.0.1 -u "$1" -p"$2" -D appdata -N -B -e "$3" 2>&1 \
+        | grep -v 'level=' \
+        | grep -vi 'Using a password on the command line' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | grep -v '^$' || true
+}
+
+# Created before the bootstrap runs, because the bootstrap rotates
+# vaultadmin's password and this is the last moment it is known.
+mysql_as vaultadmin "$BOOTSTRAP_PW" \
+    "CREATE TABLE IF NOT EXISTS widgets (id INT);" >/dev/null
+mysql_as vaultadmin "$BOOTSTRAP_PW" \
+    "INSERT INTO widgets VALUES (1);" >/dev/null
+
+if [[ "$(mysql_as vaultadmin "$BOOTSTRAP_PW" "SELECT 1;")" == "1" ]]; then
+    ok "MySQL is reachable with the bootstrap account"
+else
+    bad "MySQL is reachable with the bootstrap account" \
+        "$(mysql_as vaultadmin "$BOOTSTRAP_PW" "SELECT 1;")"
+fi
+
+if "${REPO_ROOT}/scripts/bootstrap-database-secrets.sh" \
+        --engine mysql --name appdata-mysql --password "$BOOTSTRAP_PW" \
+        >"${WORK}/mysql-bootstrap.log" 2>&1; then
+    ok "the mysql engine configures against a real server"
+else
+    bad "the mysql engine configures against a real server" \
+        "$(tail -5 "${WORK}/mysql-bootstrap.log")"
+fi
+
+CREDS_M="$(vault read -format=json database/creds/appdata-mysql-readonly 2>/dev/null || true)"
+USER_M="$(jq -r '.data.username // empty' <<< "${CREDS_M:-}" 2>/dev/null || true)"
+PASS_M="$(jq -r '.data.password // empty' <<< "${CREDS_M:-}" 2>/dev/null || true)"
+
+if [[ -n "$USER_M" && -n "$PASS_M" ]]; then
+    ok "MySQL issues a credential that did not exist a moment ago"
+else
+    bad "MySQL issues a credential that did not exist a moment ago" \
+        "read returned: $(head -c 200 <<< "${CREDS_M:-<empty>}")"
+fi
+
+# MySQL caps usernames at 32 characters and rejects longer ones at
+# issuance, not at configuration. Vault's default template truncates to
+# fit; this asserts the result rather than trusting that.
+if [[ -n "$USER_M" && "${#USER_M}" -le 32 ]]; then
+    ok "and the generated username fits MySQL's 32-character limit (${#USER_M})"
+else
+    bad "and the generated username fits MySQL's 32-character limit" \
+        "got ${#USER_M} characters: ${USER_M}"
+fi
+
+# The credential has to work, not merely be returned.
+if [[ "$(mysql_as "$USER_M" "$PASS_M" "SELECT 1;")" == "1" ]]; then
+    ok "the issued MySQL credential can connect and query"
+else
+    bad "the issued MySQL credential can connect and query" \
+        "$(mysql_as "$USER_M" "$PASS_M" "SELECT 1;")"
+fi
+
+# And the grants have to be real. A readonly role that can write is a
+# readonly role in name only.
+MWRITE="$(mysql_as "$USER_M" "$PASS_M" "INSERT INTO widgets VALUES (2);")"
+if [[ "$MWRITE" == *"denied"* ]]; then
+    ok "the readonly MySQL credential cannot write"
+else
+    bad "the readonly MySQL credential cannot write" "insert returned: ${MWRITE}"
+fi
+
+# Scoped to the one database. A credential that can read mysql.user can
+# read every account on the server.
+MSCOPE="$(mysql_as "$USER_M" "$PASS_M" "SELECT COUNT(*) FROM mysql.user;")"
+if [[ "$MSCOPE" == *"denied"* ]]; then
+    ok "and cannot read outside the database it was issued for"
+else
+    bad "and cannot read outside the database it was issued for" \
+        "query returned: ${MSCOPE}"
+fi
+
+# Revocation has to remove the account, not just the lease. A lease that
+# expires while the database user lives on is the failure mode dynamic
+# secrets exist to prevent.
+LEASE_M="$(jq -r '.lease_id // empty' <<< "${CREDS_M:-}" 2>/dev/null || true)"
+if [[ -n "$LEASE_M" ]]; then
+    vault lease revoke "$LEASE_M" >/dev/null 2>&1 || true
+    REVOKED="$(mysql_as "$USER_M" "$PASS_M" "SELECT 1;")"
+    if [[ "$REVOKED" != "1" ]]; then
+        ok "revoking the lease drops the MySQL user"
+    else
+        bad "revoking the lease drops the MySQL user" \
+            "the credential still works after revocation"
+    fi
+else
+    bad "revoking the lease drops the MySQL user" "no lease_id was returned"
+fi
+
+# Root rotation applies to this engine too: after the bootstrap, the
+# password this test knows for vaultadmin is no longer the real one.
+if [[ "$(mysql_as vaultadmin "$BOOTSTRAP_PW" "SELECT 1;")" != "1" ]]; then
+    ok "and the MySQL bootstrap password no longer works"
+else
+    bad "and the MySQL bootstrap password no longer works" \
+        "vaultadmin still accepts the password from version control"
 fi
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ Credentials default to a 1-hour TTL and a 24-hour maximum.
 
 ## Three details that matter more than they look
 
-### `VALID UNTIL '{{expiration}}'`
+### `VALID UNTIL '{{expiration}}'` (Postgres only)
 
 The creation statement sets an expiry on the database role itself, not
 only in Vault's lease.
@@ -56,6 +56,9 @@ Without it, a credential outlives its lease whenever Vault is unreachable
 at the moment revocation was due — which is precisely when you would
 rather it did not. With it, the database enforces the deadline even if
 Vault never gets to run the revocation statement.
+
+**MySQL cannot do this**, and it is the one place where the two engines
+are not equivalent. See [Choosing an engine](#choosing-an-engine).
 
 ### `REASSIGN OWNED` before `DROP ROLE`
 
@@ -69,6 +72,64 @@ worse than never having managed it, because it now looks managed.
 Omit it and no role can use the connection. Set it to `*` and every role
 added later can, including ones added by someone who never looked at this
 connection. It names the two roles explicitly.
+
+## Choosing an engine
+
+```bash
+./scripts/bootstrap-database-secrets.sh --engine mysql
+```
+
+Two engines, one interface. The mount, the roles, the policies and the
+root rotation are identical; the plugin, the connection string and the
+SQL are all that change.
+
+The point of having a second one is not MySQL specifically. It is that
+"Vault's database engine supports X" is easy to say and hides real
+differences, and this is the one that matters:
+
+| | Postgres | MySQL |
+|---|---|---|
+| Credential expires because | the database enforces it, **and** Vault revokes it | Vault revokes it |
+| Vault down at lease expiry | credential still dies on schedule | **credential stays live** |
+| Username limit | 63 bytes | 32 characters (16 before 5.7) |
+| Transport setting | `sslmode=` | `tls=` |
+
+**MySQL has no `VALID UNTIL`.** `CREATE USER` takes no deadline, and
+MySQL's `PASSWORD EXPIRE` is password ageing rather than an account
+expiry — it cannot express "this login is dead at 14:05". So on the
+MySQL path, revocation by Vault is the *only* thing that ends a
+credential.
+
+That is a genuine reduction in safety rather than a footnote. The
+Postgres path degrades safely when Vault is unavailable; the MySQL path
+depends on Vault being there at the right moment. If that matters for
+your workload, it is an argument for Postgres, or for a shorter TTL and
+monitoring that notices Vault being down — which
+[the alerting rules](monitoring.md) already provide.
+
+The tests assert this difference rather than smoothing it over: one
+checks the MySQL statements do **not** contain `VALID UNTIL` (pasting it
+in is a syntax error there), and its neighbour checks the Postgres ones
+still do.
+
+### Other MySQL specifics
+
+- **Vault connects as a dedicated `vaultadmin` account**, created by
+  `docker/mysql/init/`. Issuing credentials needs `CREATE USER` and
+  `GRANT OPTION`, which an ordinary per-database account lacks — but
+  connecting as `root` would be a trap, because the bootstrap rotates the
+  password of whatever account it uses and `root`'s password is what the
+  container healthcheck needs. That would leave the container
+  permanently unhealthy while MySQL itself was fine.
+- **Users are created as `'{{name}}'@'%'`**, not `@'localhost'`. Vault
+  connects over the container network, and a user scoped to localhost
+  cannot log in from where Vault actually is.
+- **Grants are scoped to the one database** (`ON appdata.*`). `ON *.*`
+  would give every issued credential the run of the server.
+- **Usernames are capped at 32 characters.** Vault's default username
+  template truncates to fit, so this is handled — but exceeding it fails
+  at issuance rather than at configuration, which makes it an unpleasant
+  surprise if you write your own template.
 
 ## Root rotation
 
@@ -119,11 +180,18 @@ a real Postgres and a real Vault:
 The last one is the whole argument in a single assertion, and it is only
 demonstrable against a real database.
 
+The same suite runs the MySQL path against a real MySQL server on the
+same mount — a second connection, not a second engine — and asserts the
+parts that differ: that the generated username fits MySQL's 32-character
+limit, that the readonly credential cannot write and cannot read
+`mysql.user`, that revoking the lease drops the account, and that
+`vaultadmin`'s bootstrap password stops working after rotation.
+
 ## What this does not cover
 
-Only PostgreSQL. Vault's database engine supports MySQL, MSSQL, MongoDB
-and others through the same interface, and the shape here would carry
-over, but nothing else has been exercised.
+PostgreSQL and MySQL. Vault's database engine also supports MSSQL,
+MongoDB and others through the same interface, and the shape here would
+carry over, but nothing else has been exercised.
 
 The cloud profiles do not provision a database. `terraform/aws` and
 `terraform/azure` build a Vault cluster, not an application estate —
