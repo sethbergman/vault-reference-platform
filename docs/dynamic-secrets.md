@@ -93,6 +93,7 @@ differences, and this is the one that matters:
 | Vault down at lease expiry | credential still dies on schedule | **credential stays live** |
 | Username limit | 63 bytes | 32 characters (16 before 5.7) |
 | Transport setting | `sslmode=` | `tls=` |
+| `readwrite` can create tables | yes | **no** — see below |
 
 **MySQL has no `VALID UNTIL`.** `CREATE USER` takes no deadline, and
 MySQL's `PASSWORD EXPIRE` is password ageing rather than an account
@@ -111,6 +112,30 @@ The tests assert this difference rather than smoothing it over: one
 checks the MySQL statements do **not** contain `VALID UNTIL` (pasting it
 in is a syntax error there), and its neighbour checks the Postgres ones
 still do.
+
+### `readwrite` is narrower on MySQL
+
+The Postgres `readwrite` role grants `USAGE, CREATE ON SCHEMA public`, so
+a credential issued from it can create tables — which is what an ORM's
+auto-migration or a schema migration step needs. The MySQL role grants
+`SELECT, INSERT, UPDATE, DELETE` and no DDL, so the same migration fails
+with `CREATE command denied`.
+
+This one is not an oversight and it is not quietly fixable, because the
+two databases scope the privilege differently:
+
+- **Postgres** ties DDL to *ownership*. A credential that creates a table
+  owns it and can alter or drop it, and it can do nothing to tables it
+  did not create.
+- **MySQL** grants privileges *per schema*. `GRANT CREATE, ALTER, DROP ON
+  appdata.*` applies to every table in the database, including ones the
+  credential never touched.
+
+So granting MySQL the same capability would hand every issued readwrite
+credential the ability to drop the whole schema. The narrower grant is
+the default, and a workload that genuinely needs DDL should get a third
+role scoped to that job rather than have `readwrite` widened underneath
+every other consumer.
 
 ### Other MySQL specifics
 

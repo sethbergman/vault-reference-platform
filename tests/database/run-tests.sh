@@ -322,8 +322,38 @@ assert_log_has "and drops it on revocation"              "DROP USER IF EXISTS '{
 
 # Scoped to the one database. GRANT ... ON *.* would hand every issued
 # credential the run of the server.
-assert_log_has   "grants only on the target database" "ON appdata.*"
+# Backtick-quoted, matching the double-quoting the Postgres statements
+# give the same variable. Unquoted, a hyphenated or reserved-word schema
+# is a MySQL parse error at issuance naming neither the flag nor the
+# value -- and the default `appdata` is a bare identifier, so nothing
+# here would have noticed.
+assert_log_has   "grants only on the target database" "ON \`appdata\`.*"
 assert_log_lacks "never grants server-wide"           "ON *.*"
+
+reset_scenario
+run_bootstrap --engine mysql --database my-app
+assert_log_has "a hyphenated database name is quoted, not a parse error" \
+    "ON \`my-app\`.*"
+
+# The other place the engines are not equivalent, and the reason it is not
+# quietly fixed: MySQL grants privileges per schema, so CREATE/ALTER/DROP
+# on the readwrite role would cover every table in the database. Postgres
+# scopes the same capability by ownership, to the tables the credential
+# itself created. They cannot be made equivalent, so MySQL readwrite is
+# DML-only and docs/dynamic-secrets.md says so.
+reset_scenario
+run_bootstrap --engine mysql
+# Pins the whole privilege list rather than naming the DDL keywords to
+# reject. Listing them is circular -- the assertion catches exactly the
+# string you thought to write down, and a grant of just CREATE walks
+# through it. Anchoring on "DELETE ON" instead means any privilege added
+# to the list breaks the match, whichever one it is.
+assert_log_has "mysql readwrite grants DML and nothing more" "GRANT SELECT, INSERT, UPDATE, DELETE ON \`appdata\`.*"
+
+reset_scenario
+run_bootstrap
+assert_log_has "while postgres readwrite creates within its own schema" \
+    "GRANT USAGE, CREATE ON SCHEMA public"
 
 # ---------------------------------------------------------------------------
 printf '\n=== The difference between the engines is not hidden ===\n'
@@ -340,6 +370,11 @@ printf '\n=== The difference between the engines is not hidden ===\n'
 # pasting VALID UNTIL into the MySQL statements, where it is a syntax
 # error, or quietly assuming the two paths are equivalent. They are not,
 # and the docs say which is which.
+# Its own run, not whatever the previous section happened to leave
+# behind. Inheriting that state is how this assertion silently started
+# reading a postgres log and reporting a failure about MySQL.
+reset_scenario
+run_bootstrap --engine mysql
 assert_log_lacks "the mysql path claims no expiry MySQL cannot enforce" "VALID UNTIL"
 
 reset_scenario
@@ -349,15 +384,19 @@ assert_log_has "while the postgres path still has its backstop" "VALID UNTIL '{{
 # ---------------------------------------------------------------------------
 printf '\n=== Engine-specific defaults ===\n'
 # ---------------------------------------------------------------------------
-# Vault needs CREATE USER and GRANT OPTION to issue credentials, which an
-# ordinary per-database account lacks. The obvious shortcut is to connect
-# as root -- but this script rotates the password of whatever account it
-# uses, and root's password is what the container healthcheck needs, so
+# vaultadmin is a shared default rather than something the mysql branch
+# sets, so these two hold for either engine. They are not a claim about
+# engine-specific behaviour -- they are a standing guard against the
+# shortcut of pointing MySQL at root, wherever someone might reintroduce
+# it. Vault needs CREATE USER and GRANT OPTION, which an ordinary
+# per-database account lacks, and root is the obvious way to get them;
+# but this script rotates the password of whatever account it connects
+# as, and root's password is what the container healthcheck uses, so
 # rotating it would leave the container unhealthy while MySQL was fine.
-# docker/mysql/init/ creates a vaultadmin account for the purpose.
+# docker/mysql/init/ creates vaultadmin for the purpose.
 reset_scenario
 run_bootstrap --engine mysql
-assert_log_has   "mysql connects as vaultadmin, not root" "username=vaultadmin"
+assert_log_has   "no engine connects as root" "username=vaultadmin"
 assert_log_lacks "so rotation cannot break the healthcheck" "username=root"
 
 reset_scenario

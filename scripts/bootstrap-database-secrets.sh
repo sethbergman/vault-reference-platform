@@ -200,10 +200,24 @@ else
     # '{{name}}'@'%' rather than @'localhost' -- Vault connects over the
     # container network, and a user scoped to localhost cannot log in
     # from anywhere Vault actually is.
+    # The database name is backtick-quoted, matching the double-quoting
+    # the Postgres statements above give the same variable. Unquoted, a
+    # hyphenated or reserved-word schema (--database my-app) is a MySQL
+    # parse error at issuance that names neither the flag nor the value.
+    # The backticks are escaped because this is a double-quoted bash
+    # string, where a bare one would start command substitution.
+    #
+    # readwrite gets DML only, and deliberately not the DDL its Postgres
+    # counterpart has. See docs/dynamic-secrets.md: MySQL grants
+    # privileges per schema, so CREATE/ALTER/DROP here would apply to
+    # every table in the database, where Postgres scopes them by
+    # ownership to the tables the credential itself created. The two
+    # cannot be made equivalent, so the narrower one is the default and
+    # the difference is documented.
     CREATE_READONLY="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';
-        GRANT SELECT ON ${DATABASE}.* TO '{{name}}'@'%';"
+        GRANT SELECT ON \`${DATABASE}\`.* TO '{{name}}'@'%';"
     CREATE_READWRITE="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';
-        GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '{{name}}'@'%';"
+        GRANT SELECT, INSERT, UPDATE, DELETE ON \`${DATABASE}\`.* TO '{{name}}'@'%';"
 
     # IF EXISTS because revocation runs more than once on some failure
     # paths, and a DROP USER that errors leaves the lease stuck rather
