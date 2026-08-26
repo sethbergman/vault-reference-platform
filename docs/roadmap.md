@@ -99,26 +99,80 @@ verify-full` rather than the dev profile's `disable`.
 ## Toward v1.0
 
 v1.0 means a reference architecture someone could reasonably start from
-in production. The blockers are, in order:
+in production.
 
-1. **A real cloud apply.** Until one of the two profiles has been stood
-   up and torn down for real, the claim is unproven.
+The first two blockers are the two cloud profiles, listed separately
+because they are separate risks rather than one job done twice. Proving
+AWS works says nothing about whether Azure does: the profiles differ in
+mechanism, not only in commands, and the mechanisms are where the risk
+sits.
 
-   The preparation for it has shipped:
-   [`scripts/preflight-cloud.sh`](../scripts/preflight-cloud.sh) checks
-   what can be checked without spending anything,
-   [`scripts/teardown-cloud.sh`](../scripts/teardown-cloud.sh) removes
-   what `terraform destroy` cannot, and
-   [`cloud-apply.md`](cloud-apply.md) lists the claims a real apply would
-   settle — auto-unseal against a real KMS key, Raft `auto_join` against
-   a real cloud API, the load balancer keeping standbys in the pool,
-   snapshots authenticating by instance role, and a replacement node
-   rejoining unattended.
+The preparation they share has shipped.
+[`scripts/preflight-cloud.sh`](../scripts/preflight-cloud.sh) checks what
+can be checked without spending anything,
+[`scripts/teardown-cloud.sh`](../scripts/teardown-cloud.sh) removes what
+`terraform destroy` cannot, and [`cloud-apply.md`](cloud-apply.md) lists
+the claims an apply would settle. That preparation is *not* the item.
+Nothing in it constitutes evidence; it exists so that whoever spends the
+money gets a full set of answers from one session instead of half of
+them.
 
-   That preparation is *not* the item. Nothing in it constitutes
-   evidence; it exists so that whoever spends the money gets a full set
-   of answers from one session instead of half of them.
-2. **Off-host audit collection**, so a compromised host cannot reach the
+The blockers are, in order:
+
+1. **A real AWS apply.** `terraform/aws` has never been stood up and
+   torn down. Four things only this profile can settle:
+
+   - **The KMS triangle.** The instance profile, the key policy and the
+     `seal "awskms"` stanza live in three files that have never been
+     reconciled against a real API. Any one of them wrong leaves Vault
+     running and sealed, which makes this the highest-value single
+     check.
+   - **Auto Scaling group replacement.** Terminate the leader; a new
+     instance should launch from the launch template, run its user-data,
+     auto-unseal and rejoin Raft with nobody watching. This is the check
+     the whole architecture exists to justify.
+   - **`auto_join` in tag mode**, against real EC2 instance tags — the
+     same tag `ansible/inventory/aws.yml` filters on, so here discovery
+     and configuration management break together or not at all.
+   - **The profile whose default apply is broken.** `ssh_key_name` ships
+     empty, so the apply succeeds and produces a cluster nobody can log
+     in to. Azure has no equivalent: it refuses to create a scale set
+     without a key.
+2. **A real Azure apply.** `terraform/azure` has never been applied
+   either, and it is not item 1 with different commands:
+
+   - **Discovery is scale-set mode, not tag mode.** go-discover's Azure
+     provider rejects a mix of `tag_name`/`tag_value` and
+     `resource_group`, so `retry_join` matches on resource group plus
+     scale set name. That is the one discovery path nothing else here
+     uses, and it is where a real bug was already found — by reading the
+     provider source, because every test had been written from the same
+     assumption as the code. It also requires Uniform orchestration; a
+     Flexible scale set discovers nothing and says so nowhere.
+   - **So the inventory and the cluster fail independently.** On AWS one
+     tag drives both. Here the inventory filters `VaultCluster` and
+     discovery never looks at tags, so a working cluster is no longer
+     evidence the inventory works, and an empty inventory is no evidence
+     the cluster is broken. Two things to check rather than one.
+   - **A probe with no status-code matcher.** Azure probes accept
+     200-299 and nothing else, so standbys stay in the pool only because
+     `standbyok=true` makes Vault answer 200. The AWS profile carries a
+     `200,429` matcher as a second line of defence; here there is none.
+   - **Reconciliation, not replacement.** Deleting an instance is
+     answered by the scale set restoring `instances = node_count`, under
+     `zone_balance = true` — Azure may refuse to place the replacement
+     rather than place it badly — and `automatic_instance_repair` has a
+     30-minute grace period, so the timing is not the ASG's either.
+   - **Two authorization models in one profile.** The seal reaches Key
+     Vault through an access policy; snapshots reach blob storage
+     through an RBAC role assignment, against an account with
+     `shared_access_key_enabled = false`. Either can be wrong on its
+     own, and neither has been exercised.
+   - **Repeating it is not free.** Purge protection cannot be turned
+     off, so each apply leaves a soft-deleted Key Vault for 90 days,
+     against AWS's cancellable 7-day KMS window. Worth knowing before
+     the fourth attempt rather than after.
+3. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node and an edit to it is now
    detectable -- entries are hash-chained as they arrive, and the
    `audit-anchor` service holds the chain head on a volume the collector

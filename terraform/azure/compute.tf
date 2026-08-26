@@ -137,9 +137,14 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
   boot_diagnostics {}
 
   tags = merge(module.vault_cluster.cluster_tags, {
-    # The tag retry_join's auto_join matches on. Changing this key or
-    # value without updating the cloud-init template breaks cluster
-    # formation — and does so silently, since instances still come up.
+    # What ansible/inventory/azure.yml filters on. NOT what retry_join
+    # matches: go-discover's azure provider rejects a mix of tag and
+    # scale-set selectors, so the cloud-init template enumerates the
+    # scale set instead and never looks at tags.
+    #
+    # Which means this tag and Raft discovery fail independently here,
+    # unlike the AWS profile where one tag drives both. Changing it
+    # empties the inventory and leaves the cluster fine.
     VaultCluster = var.cluster_name
   })
 

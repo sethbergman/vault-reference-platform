@@ -25,6 +25,22 @@ Three parts:
 
 ---
 
+## Which profile this is written for
+
+The commands below are **AWS**. Six of the nine checklist items differ on
+Azure — 1, 2, 4, 5, 6 and 9 — and item 4 differs in the assertion rather
+than the command, because the Azure probe has no status-code matcher to
+check.
+
+A runnable Azure path is not written yet. Both applies are separate v1.0
+blockers ([roadmap](roadmap.md)), so this document covering one of them
+properly and the other by implication is a gap, not a decision.
+
+If you are only going to do one, do AWS first: it is the profile with the
+broken default, so the pre-flight earns its keep there.
+
+---
+
 ## Before you apply
 
 ```bash
@@ -76,20 +92,27 @@ each with an hourly charge plus data processing. At defaults they are
 roughly 60% of the bill — more than the Vault nodes.
 
 ```bash
-terraform apply -var 'az_count=1'
+terraform apply -var 'az_count=2'
 ```
 
-One zone cuts the estimate to ~$95/month and still exercises Raft
-`auto_join`, auto-unseal, the load balancer, and the Ansible handoff. It
-does **not** exercise zone-redundancy, which is the one thing three zones
-buy you and the one thing hardest to verify anyway.
+Two zones cuts the estimate to ~$128/month and still exercises Raft
+`auto_join`, auto-unseal, the load balancer, and the Ansible handoff.
 
-Use `az_count=1` for a first apply. If it works, the second apply at
-`az_count=3` is the interesting one.
+**Two is the floor, not one.** `terraform/aws/variables.tf` requires
+`az_count` between 2 and 4, so `-var 'az_count=1'` is rejected before
+anything is created — this document recommended it for several releases
+and it never worked. `terraform/azure/variables.tf` enforces the same
+floor on `availability_zones`, for the reason both give: a cluster that
+cannot survive losing a zone is not the architecture described here.
+
+So the lever saves less than it looks like it should — one NAT gateway,
+about $33/month. Use `az_count=2` for a first apply; if it works, the
+second apply at `az_count=3` is the interesting one.
 
 ### The real risk is not the apply
 
-At ~$0.22/hour, an afternoon of testing is a few dollars. **An apply left
+At ~$0.22/hour at defaults, an afternoon of testing is a few dollars.
+**An apply left
 running over a weekend is $35, and an apply forgotten is $160/month
 indefinitely.** Set a calendar reminder before you start, not after.
 
@@ -98,9 +121,9 @@ indefinitely.** Set a calendar reminder before you start, not after.
 ## The apply sequence
 
 ```bash
-./scripts/preflight-cloud.sh --cloud aws --az-count 1
+./scripts/preflight-cloud.sh --cloud aws --az-count 2
 terraform -chdir=terraform/aws apply \
-    -var 'az_count=1' -var 'ssh_key_name=your-key'
+    -var 'az_count=2' -var 'ssh_key_name=your-key'
 ./scripts/terraform-to-ansible.sh --cloud aws   # outputs -> group_vars
 cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
 ```
@@ -339,8 +362,9 @@ comes up sealed, auto-unseal works at apply time and not at recovery
 time, which is the failure mode that matters most and the one least
 likely to be noticed.
 
-Note that at `az_count=1` the ASG replaces into the same zone, so this
-tests node loss and not zone loss.
+Note that at `az_count=2` the replacement may land in either zone, so
+what this tests is node loss. Zone loss is a different exercise and not
+one you can stage from the CLI.
 
 ---
 

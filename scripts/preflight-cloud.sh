@@ -9,8 +9,10 @@
 # Options:
 #   --cloud <aws|azure>  Required.
 #   --dir <path>         Terraform directory (default: terraform/<cloud>)
-#   --az-count <n>       Check cost against this many availability zones
-#                        (default: read from the profile's variable)
+#   --az-count <n>       AWS only. Check cost against this many availability
+#                        zones (default: the profile's az_count). The Azure
+#                        profile has no such variable and one NAT gateway
+#                        regardless of zone spread, so it is ignored there.
 #
 # WHY THIS EXISTS
 #
@@ -37,6 +39,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLOUD=""
 TF_DIR=""
 AZ_COUNT=""
+# Whether --az-count was passed, as opposed to defaulted. After the fact the
+# two are indistinguishable, and only the explicit case is worth warning about.
+AZ_COUNT_GIVEN=false
 
 PASS=0
 WARN=0
@@ -62,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --cloud)    CLOUD="$2"; shift 2 ;;
         --dir)      TF_DIR="$2"; shift 2 ;;
-        --az-count) AZ_COUNT="$2"; shift 2 ;;
+        --az-count) AZ_COUNT="$2"; AZ_COUNT_GIVEN=true; shift 2 ;;
         -h|--help)  usage ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -87,8 +92,16 @@ tfvar() {
     printf '%s' "${v:-$2}"
 }
 
-[[ -n "$AZ_COUNT" ]] || AZ_COUNT="$(tfvar az_count 3)"
+# az_count is an AWS variable. terraform/azure has no such thing -- it has
+# availability_zones, a list -- so reading it there resolved nothing and fell
+# back to the literal 3, which then priced three NAT gateways for a profile
+# that creates one. Resolve it only where it exists.
+if [[ "$CLOUD" == "aws" ]]; then
+    [[ -n "$AZ_COUNT" ]] || AZ_COUNT="$(tfvar az_count 3)"
+fi
 NODE_COUNT="$(tfvar node_count 3)"
+VM_SIZE="$(tfvar vm_size Standard_B2s)"
+OS_DISK_GB="$(tfvar os_disk_size_gb 64)"
 
 # ---------------------------------------------------------------------------
 info ""
@@ -187,7 +200,7 @@ if [[ "$CLOUD" == "aws" ]] && command -v aws >/dev/null 2>&1; then
         info "        Elastic IPs in use: ${EIP_USED}; this apply needs ${AZ_COUNT} more"
         if [[ "$((EIP_USED + AZ_COUNT))" -gt 5 ]]; then
             warn "that may exceed the default limit of 5" \
-                "raise the limit, release unused EIPs, or apply with --az-count 1"
+                "raise the limit, release unused EIPs, or apply with --az-count 2"
         else
             ok "Elastic IP headroom looks sufficient"
         fi
@@ -197,6 +210,11 @@ fi
 # ---------------------------------------------------------------------------
 info ""
 info "=== What this will cost ==="
+# ---------------------------------------------------------------------------
+if [[ "$CLOUD" == "azure" && "$AZ_COUNT_GIVEN" == true ]]; then
+    warn "--az-count has no effect on the Azure profile" \
+        "one NAT gateway serves the whole VNet regardless of zone spread"
+fi
 # ---------------------------------------------------------------------------
 # Rough, on-demand, us-east-1-ish. The point is not precision — it is
 # that the dominant line item is not the thing people expect.
@@ -217,24 +235,47 @@ if [[ "$CLOUD" == "aws" ]]; then
     info "        roughly \$${TOTAL}/month — about \$0.$(printf '%02d' $((CENTS_HR % 100)))/hour if under a dollar,"
     info "        i.e. a few dollars for an afternoon of testing"
     info ""
-    if [[ "$AZ_COUNT" -gt 1 ]]; then
-        info "        --az-count 1 removes \$$(( (AZ_COUNT - 1) * 33 ))/month of that."
-        info "        It also removes the AZ independence the default is for, so"
-        info "        it is a fine choice for a few hours and a bad one to keep."
+    # Two, not one. terraform/aws/variables.tf validates az_count between
+    # 2 and 4, so suggesting 1 recommended an apply that fails before it
+    # creates anything -- which this script said for several releases.
+    if [[ "$AZ_COUNT" -gt 2 ]]; then
+        info "        --az-count 2 removes \$$(( (AZ_COUNT - 2) * 33 ))/month of that."
+        info "        Two is the floor the profile allows: a cluster that cannot"
+        info "        survive losing a zone is not what this is describing."
     fi
 else
-    # Arithmetic, not string concatenation. The first draft of this
-    # printed "$32/month" by gluing az_count onto a literal 2, which is
-    # right for three zones and nonsense for any other number.
-    AZ_NAT_MONTH=$((AZ_COUNT * 32))
+    # One NAT gateway, not one per zone. terraform/azure/network.tf declares
+    # a single azurerm_nat_gateway with no count, for the whole VNet. This
+    # used to multiply by az_count -- a variable the profile does not
+    # define -- and so quoted three of them and called the result the
+    # largest line, which pointed the reader's cost-cutting at the one line
+    # they cannot cut.
+    AZ_NAT_MONTH=33
     AZ_VM_MONTH=$((NODE_COUNT * 30))
-    AZ_TOTAL=$((AZ_NAT_MONTH + AZ_VM_MONTH + 20))
-    info "        ${AZ_COUNT} NAT gateway(s)      ~\$${AZ_NAT_MONTH}/month   <-- usually the largest line"
-    info "        ${NODE_COUNT} VM(s) (B2s-ish)     ~\$${AZ_VM_MONTH}/month"
+    # Premium_LRS at the default 64 GB is a P6 per node, and the previous
+    # estimate omitted disks entirely.
+    AZ_DISK_MONTH=$((NODE_COUNT * 9))
+    AZ_TOTAL=$((AZ_NAT_MONTH + AZ_VM_MONTH + AZ_DISK_MONTH + 20))
+    info "        1 NAT gateway             ~\$${AZ_NAT_MONTH}/month"
+    info "        ${NODE_COUNT} VM(s) (${VM_SIZE})  ~\$${AZ_VM_MONTH}/month   <-- usually the largest line"
+    info "        ${NODE_COUNT} OS disk(s) (${OS_DISK_GB}GB Premium) ~\$${AZ_DISK_MONTH}/month"
     info "        1 standard load balancer  ~\$18/month"
-    info "        Key Vault, storage        a few dollars"
+    info "        Key Vault, storage, flow logs  a few dollars"
     info "        ------------------------------------"
     info "        roughly \$${AZ_TOTAL}/month"
+    info ""
+    # The AWS branch has a lever worth pulling; this one has to say that the
+    # obvious lever does nothing, or a reader will reach for it by analogy.
+    info "        Zone spread is free here: the NAT gateway is regional, so"
+    info "        fewer zones save nothing. node_count cannot go below 3 and"
+    info "        stay a Raft majority, which leaves vm_size and"
+    info "        os_disk_size_gb as the only levers."
+    if [[ "$VM_SIZE" != "Standard_B2s" ]]; then
+        info ""
+        info "        NOTE: the per-VM figure assumes the default Standard_B2s."
+        info "        This profile is set to ${VM_SIZE}, so treat the compute"
+        info "        line as a placeholder rather than an estimate."
+    fi
 fi
 
 info ""

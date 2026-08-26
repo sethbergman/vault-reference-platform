@@ -399,16 +399,21 @@ feature breaks, not that the code exists.
 
 What stands between here and v1.0, in order:
 
-1. **A real cloud apply.** Neither `terraform/aws` nor `terraform/azure`
-   has been stood up end to end. Both pass `terraform test` against
-   mocked providers — which catches a Key Vault name over Azure's
-   24-character limit, and a Raft `auto_join` configuration go-discover
-   rejects outright — but a plan that succeeds is not a deployment that
-   works. Treat both profiles as reviewed and tested, not as proven.
-   [`docs/cloud-apply.md`](docs/cloud-apply.md) lists exactly which
-   claims that apply would settle, so the session produces evidence
-   rather than a vague impression that it worked.
-2. **Off-host audit shipping.** The audit trail now outlives the node,
+1. **A real AWS apply.** `terraform/aws` has never been stood up end to
+   end. It passes `terraform test` against mocked providers — which
+   catches an IAM policy granting delete on the snapshot bucket — but a
+   plan that succeeds is not a deployment that works. What only this
+   apply settles: that the instance profile, the KMS key policy and the
+   `seal` stanza agree; and that a terminated leader is replaced by a
+   node which auto-unseals and rejoins unattended.
+2. **A real Azure apply.** A separate item, not the same job twice.
+   `terraform/azure` discovers peers through a scale set rather than
+   tags, has a health probe with no status-code matcher, and reconciles
+   a lost instance rather than replacing it — three mechanisms with no
+   AWS counterpart, and the first is where mocked tests already missed a
+   real bug. [`docs/cloud-apply.md`](docs/cloud-apply.md) lists what each
+   apply would settle.
+3. **Off-host audit shipping.** The audit trail now outlives the node,
    and an edit to it is now detectable: entries are hash-chained as they
    arrive, and a separate `audit-anchor` service holds the chain head
    where the collector cannot write, which catches even a chain rewritten
