@@ -392,7 +392,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-Everything through v0.12 has shipped — see
+Everything through v0.13 has shipped — see
 [Releases](https://github.com/sethbergman/vault-reference-platform/releases)
 for the log. "Shipped" here means there is a test that fails if the
 feature breaks, not that the code exists.
