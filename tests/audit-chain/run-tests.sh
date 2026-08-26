@@ -312,6 +312,10 @@ printf '%s %s %s\n' "2026-01-01T00:00:00Z" \
     > "${D}/audit-anchors.log"
 run_verify "$D"
 assert_rc   "an intact anchored trail verifies" 0
+# Pins the wording the exclusion below depends on. Without this, a
+# reworded success message would leave that assertion checking for a
+# phrase the verifier no longer prints -- passing whatever happened.
+assert_says "and says so"                       "and anchored"
 assert_says "and the anchor is reported"        "anchor(s) agree"
 
 # Without anchors it must say so rather than implying it checked.

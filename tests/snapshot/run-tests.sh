@@ -88,6 +88,11 @@ assert_log_has() {
     if [[ "$LOG" == *"$2"* ]]; then ok "$1"; else bad "$1" "no call matching: ${2}"; fi
 }
 
+# An exclusion assertion is only as strong as the spelling its author
+# thought to forbid. Where one of these names a specific command, prefer
+# the shortest prefix that covers every way of doing the same thing --
+# `aws s3` rather than `aws s3 cp` -- so a rewrite that reaches for a
+# different subcommand still trips it.
 assert_log_lacks() {
     if [[ "$LOG" != *"$2"* ]]; then ok "$1"; else bad "$1" "unexpected call: ${2}"; fi
 }
@@ -134,7 +139,7 @@ export FAKE_IS_SELF=false
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a standby exits 0, not an error" 0
 assert_log_lacks "a standby takes no snapshot"     "snapshot save"
-assert_log_lacks "a standby uploads nothing"       "aws s3 cp"
+assert_log_lacks "a standby uploads nothing"       "aws s3"
 assert_says      "a standby says why"              "standby"
 
 # Exiting non-zero here would mean systemd reporting a failed unit on two
@@ -195,27 +200,27 @@ reset_scenario
 export FAKE_SNAPSHOT_SIZE=0
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a zero-byte snapshot aborts"      1
-assert_log_lacks "a zero-byte snapshot is not sent" "aws s3 cp"
+assert_log_lacks "a zero-byte snapshot is not sent" "aws s3"
 assert_says      "and says so"                      "zero bytes"
 
 reset_scenario
 export FAKE_SNAPSHOT_SIZE=none
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a missing snapshot file aborts"      1
-assert_log_lacks "a missing snapshot is not sent"      "aws s3 cp"
+assert_log_lacks "a missing snapshot is not sent"      "aws s3"
 
 reset_scenario
 export FAKE_INSPECT_RC=1
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a snapshot failing inspect aborts"   1
-assert_log_lacks "an unverified snapshot is not sent"  "aws s3 cp"
+assert_log_lacks "an unverified snapshot is not sent"  "aws s3"
 assert_says      "and says it failed verification"     "verification"
 
 reset_scenario
 export FAKE_SNAPSHOT_RC=1
 run_snapshot --cloud aws --bucket vault-snaps
 assert_rc        "a failed snapshot command aborts" 1
-assert_log_lacks "nothing is uploaded"              "aws s3 cp"
+assert_log_lacks "nothing is uploaded"              "aws s3"
 
 # Verification must actually run, or the assertions above pass for the
 # wrong reason.
@@ -237,7 +242,7 @@ assert_log_lacks "no s3api delete" "delete-object"
 
 reset_scenario
 run_snapshot --cloud azure --account acct --container snaps
-assert_log_lacks "no blob DELETE" "-X DELETE"
+assert_log_lacks "no blob DELETE" "DELETE"
 
 # ---------------------------------------------------------------------------
 printf '\n=== The local copy is always cleaned up ===\n'
@@ -291,7 +296,7 @@ assert_rc      "AppRole login is used when no token is set" 0
 assert_log_has "it logs in via approle"  "auth/approle/login"
 # A token minted every hour and never revoked is a slowly growing pile of
 # live credentials on a host that already holds the cluster's data.
-assert_log_has "the minted token is revoked afterwards" "token revoke"
+assert_log_has "the minted token is revoked afterwards" "revoke"
 
 reset_scenario
 unset VAULT_TOKEN
@@ -304,7 +309,7 @@ assert_log_lacks "and takes no snapshot"         "snapshot save"
 # revoking it would break the next run and anything else using it.
 reset_scenario
 run_snapshot --cloud aws --bucket vault-snaps
-assert_log_lacks "a supplied VAULT_TOKEN is left alone" "token revoke"
+assert_log_lacks "a supplied VAULT_TOKEN is left alone" "revoke"
 
 # ---------------------------------------------------------------------------
 printf '\n=== AWS upload ===\n'

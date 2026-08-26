@@ -448,7 +448,7 @@ export VAULT_ROLE_ID=role VAULT_SECRET_ID=secret
 run_issue --force
 assert_rc      "AppRole is used when no token is set" 0
 assert_log_has "it logs in"                           "approle/login"
-assert_log_has "and revokes the token it minted"      "token revoke"
+assert_log_has "and revokes the token it minted"      "revoke"
 
 reset_scenario
 unset VAULT_TOKEN
@@ -460,7 +460,7 @@ assert_log_lacks "and issues nothing"      "/issue/"
 # A token the caller supplied belongs to the caller.
 reset_scenario
 run_issue --force
-assert_log_lacks "a supplied VAULT_TOKEN is not revoked" "token revoke"
+assert_log_lacks "a supplied VAULT_TOKEN is not revoked" "revoke"
 
 # ---------------------------------------------------------------------------
 printf '\n=== bootstrap-pki.sh ===\n'
