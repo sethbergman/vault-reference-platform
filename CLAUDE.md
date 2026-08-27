@@ -50,9 +50,10 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            14 suites; each is a self-contained run-tests.sh
+tests/            15 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
-docs/             Runbooks and design notes — the operational half
+docs/             Runbooks and design notes — the operational half;
+                  README.md is generated, see "Docs" below
 diagrams/         architecture.md
 ```
 
@@ -62,8 +63,11 @@ diagrams/         architecture.md
 make deploy    # 3-node Raft cluster + monitoring, via Docker Compose
 make status    # compose ps + sys/health
 make destroy   # docker compose down -v
-make lint      # terraform fmt/validate, ansible-lint, shellcheck
+make lint      # terraform fmt/validate, ansible-lint, shellcheck,
+               # and the docs-index staleness check
 make test      # the DR restore drill only (not the full suite)
+make docs      # regenerate docs/README.md from the doc set
+make docs-check  # fail if it is stale — what CI runs
 ```
 
 `make test` is deliberately narrow. To run a test suite, call it
@@ -178,7 +182,15 @@ Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 (one auth or secrets path each), `rotate-secret-id.sh`, `snapshot.sh`,
 `dr-drill.sh`, `vault-upgrade.sh`, `issue-node-cert.sh`,
 `migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
-`preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`.
+`preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`,
+`oidc-login-test.sh`, `generate-docs-index.sh`.
+
+Two report-style scripts are a deliberate second shape:
+`preflight-cloud.sh` and `verify-audit-chain.sh` have no `log()` at all.
+They report a series of findings rather than narrate one operation, so
+they use the test harnesses' idiom instead — `ok()`/`warn()`/`bad()` over
+`PASS`/`WARN`/`FAIL` counters, with the exit status driven by the
+counts. Match whichever shape fits what the script is for.
 
 ## Testing
 
@@ -230,8 +242,12 @@ passed while the thing they described was broken:
 `terraform test` runs against mocked providers, so the same trap
 applies there: **assert on config values and locals, never on a mocked
 data source's output.** `terraform/aws/tests/README.md` has the mutation
-table showing which deliberate break each test catches; extend it when
-adding assertions.
+table showing which deliberate break each test catches, every row
+confirmed by watching it fail; extend it when adding assertions.
+`terraform/azure/tests/README.md` covers the Azure suite and the three
+mechanisms with no AWS counterpart, but its mutation table is a list of
+intentions rather than evidence — none of the rows has been run. Verify
+one before trusting it, and mark it verified when you do.
 
 Per-suite requirements:
 
@@ -240,6 +256,7 @@ Per-suite requirements:
 | agent, database, snapshot | bash, jq |
 | audit | bash, jq, python3 |
 | audit-chain | bash, sha256sum |
+| docs-index | bash, awk, diff |
 | cloud-preflight | bash |
 | lint | bash, python3 |
 | pki | bash, jq, openssl |
@@ -252,13 +269,13 @@ Per-suite requirements:
 
 ## CI
 
-`.github/workflows/ci.yml` runs 24 jobs on every PR and on pushes to
-`main`. Six are static (`terraform` fmt/validate/test, `ansible-lint`
+`.github/workflows/ci.yml` runs 25 jobs on every PR and on pushes to
+`main`. Seven are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`, `markdownlint`,
-`security-scan` with gitleaks and Trivy); the rest each run one suite
-from `tests/`, or bring up the compose cluster and exercise it live
-(smoke test, AppRole rotation, GitHub OIDC, human OIDC via Dex, DR
-drill, integration).
+`docs-index`, and `security-scan` with gitleaks and Trivy); the rest
+each run one suite from `tests/`, or bring up the compose cluster and
+exercise it live (smoke test, AppRole rotation, GitHub OIDC, human OIDC
+via Dex, DR drill, integration).
 
 Adding a suite under `tests/` does **not** wire it into CI — add the job
 too. Shellcheck, by contrast, discovers test scripts via `git ls-files`
@@ -304,9 +321,11 @@ regenerate with `terraform providers lock`, never by hand. New cloud
 providers go under `terraform/<provider>/` and consume
 `terraform/modules/vault-cluster` rather than duplicating its variables;
 the shared module defines shape only and creates no cloud resources.
-Provider-specific concerns are split by file (`network.tf`, `compute.tf`,
-`security.tf`, `storage.tf`, `iam.tf`, `lb.tf`), not piled into
-`main.tf`.
+Provider-specific concerns are split by file rather than piled into
+`main.tf` — `terraform/aws` is the fullest example (`network.tf`,
+`compute.tf`, `security.tf`, `storage.tf`, `iam.tf`, `lb.tf`). Split by
+what a provider actually has, not by that list: Azure has no `iam.tf`
+or `security.tf` because it expresses neither concern separately.
 
 **Ansible** — must pass `ansible-lint` cleanly; `# noqa` only with a
 comment explaining why. Roles are off by default when enabling them
@@ -326,6 +345,15 @@ deliberately — see `.markdownlint.yaml`). Fenced blocks need a language.
 just the procedure, and says plainly what is *not* proven. That is the
 house voice; match it. Prefer amending the existing doc for a topic over
 adding a new one.
+
+`docs/README.md` is **generated** from each document's own H1 and H2
+headings by `scripts/generate-docs-index.sh`. Do not edit it by hand —
+run `make docs` after adding, renaming or re-sectioning a document, or
+CI's `docs-index` job fails on the diff. The reason it is derived rather
+than written is the reason this file no longer carries an index of its
+own: a hand-maintained index stops covering each new document silently,
+and the omission is invisible to everyone except the reader who needed
+that document.
 
 **Commits** — one logical change per commit, with a message explaining
 the *why*; the diff already shows the what. Subject lines here are
@@ -352,23 +380,16 @@ what is proven versus what is merely configured. Overstating it is the
 one change that would make this repository less useful than saying
 nothing.
 
-## Doc index
+## Where to read next
 
-| File | Covers |
+`docs/README.md` is the index — generated, so it always covers every
+document and lists the sections each one actually contains. Four
+starting points, because they are the ones that change what you write
+rather than only what you know:
+
+| Question | Read |
 |---|---|
-| `docs/deployment.md` | Local and cloud deployment, Terraform + Ansible |
-| `docs/security.md` | Threat model, TLS, policy structure, PKI ordering |
-| `docs/auto-unseal.md` | Transit, AWS KMS, Azure Key Vault |
-| `docs/human-authentication.md` | OIDC login, IdP groups → Vault policies |
-| `docs/ci-authentication.md` | GitHub Actions OIDC, bound claims |
-| `docs/secret-rotation.md` | AppRole roles and `secret_id` rotation |
-| `docs/dynamic-secrets.md` | Database engine, PostgreSQL and MySQL |
-| `docs/vault-agent.md` | An application consuming a secret without a token |
-| `docs/audit.md` | Audit devices, hash chain, anchors, what they prove |
-| `docs/monitoring.md` | Prometheus, alerting on absence, Grafana |
-| `docs/disaster-recovery.md` | Snapshots, retention, restore drill |
-| `docs/rolling-upgrades.md` | Zero-downtime version upgrades |
-| `docs/operations.md` | Day-2 runbooks |
-| `docs/troubleshooting.md` | Symptom → cause → first step |
-| `docs/cloud-apply.md` | What only a real apply can settle, per provider |
-| `docs/roadmap.md` | Shipped, gaps, exclusions, what "done" means |
+| What is proven versus merely configured? | `docs/roadmap.md` |
+| What would a first cloud apply settle? | `docs/cloud-apply.md` |
+| Why is TLS terminated where it is, and PKI ordered as it is? | `docs/security.md` |
+| Something is broken and I need the first step | `docs/troubleshooting.md` |
