@@ -242,8 +242,12 @@ passed while the thing they described was broken:
 `terraform test` runs against mocked providers, so the same trap
 applies there: **assert on config values and locals, never on a mocked
 data source's output.** `terraform/aws/tests/README.md` has the mutation
-table showing which deliberate break each test catches; extend it when
-adding assertions.
+table showing which deliberate break each test catches, every row
+confirmed by watching it fail; extend it when adding assertions.
+`terraform/azure/tests/README.md` covers the Azure suite and the three
+mechanisms with no AWS counterpart, but its mutation table is a list of
+intentions rather than evidence — none of the rows has been run. Verify
+one before trusting it, and mark it verified when you do.
 
 Per-suite requirements:
 
