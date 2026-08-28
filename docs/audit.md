@@ -144,6 +144,12 @@ anchor are covered by the chain but not yet by an anchor, so
 `ANCHOR_INTERVAL` is the window in which a thorough attacker can still
 rewrite history undetected. Shorter is safer and noisier.
 
+Why chaining alone is not tamper evidence, and what the anchors change
+about that, is written up in
+[A hash chain is not tamper evidence][chain].
+
+[chain]: https://sethbergman.github.io/posts/hash-chain-is-not-tamper-evidence/
+
 ### What this still is not
 
 A separate volume on one host is a real separation, and it is not the
