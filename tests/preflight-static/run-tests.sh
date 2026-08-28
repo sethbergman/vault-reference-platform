@@ -119,10 +119,14 @@ fi
 # ---------------------------------------------------------------------------
 printf '\n=== The rendered cloud-init is valid shell ===\n'
 # ---------------------------------------------------------------------------
-# These scripts boot every node and are linted nowhere else: CI's
-# shellcheck step covers scripts/ and the test harnesses, and a .tftpl is
-# neither. A bug here is a node that comes up without Vault — which on AWS
-# the autoscaling group then replaces, and replaces, and replaces.
+# These scripts boot every node and are linted nowhere else. The CI lint
+# step covers scripts/ and the test harnesses; a .tftpl is neither. A bug
+# here is a node that comes up without Vault — which on AWS the
+# autoscaling group then replaces, and replaces, and replaces.
+#
+# (A comment line starting with the word shellcheck is read as a
+# directive rather than as prose, which is how this file first failed the
+# very lint job it was written to extend.)
 #
 # sed rather than a here-doc'd interpreter: nesting one language's quoting
 # inside another's broke this function twice while it was being written,
