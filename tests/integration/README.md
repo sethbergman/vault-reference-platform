@@ -71,9 +71,10 @@ are stated rather than hidden:
 
 ## What is still not covered
 
-The cloud profiles. Neither AWS nor Azure has been applied end to end,
-and nothing here changes that — see the note in
-[`docs/deployment.md`](../../docs/deployment.md).
+The cloud profiles. Neither AWS nor Azure has been applied to a real
+account, and nothing here changes that. `tests/cloud-apply-emulated`
+proves the AWS profile applies, not that anything it describes runs —
+see the note in [`docs/deployment.md`](../../docs/deployment.md).
 
 Also untested: a full migration of *every* node from bootstrap
 certificates to Vault PKI. This suite swaps one node and checks the

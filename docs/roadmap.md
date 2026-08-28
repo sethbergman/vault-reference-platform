@@ -26,7 +26,7 @@ and which parts are a plausible-looking configuration nobody has run.
 
 ## The honest gap
 
-**Neither cloud profile has been applied end to end.**
+**Neither cloud profile has been applied to a real account.**
 
 `terraform/aws` and `terraform/azure` are covered by `terraform test`
 against mocked providers, and that catches more than it might sound like
@@ -34,6 +34,14 @@ against mocked providers, and that catches more than it might sound like
 `auto_join` configuration go-discover rejects outright, an IAM policy
 granting delete on the snapshot bucket. But mocked providers do not
 create anything, and a plan that succeeds is not a deployment that works.
+
+`terraform/aws` is now one step further along: `tests/cloud-apply-emulated`
+applies and destroys it on every PR against an implementation of the AWS
+API, so the configuration is known to apply in one pass with every
+request accepted. That is the shape of the profile confirmed, not its
+behaviour — an emulator boots nothing, so auto-unseal, peer discovery,
+health checks and instance replacement remain untested. `terraform/azure`
+has no equivalent run.
 
 Treat those two profiles as reviewed and tested, not as proven.
 
@@ -117,10 +125,19 @@ Nothing in it constitutes evidence; it exists so that whoever spends the
 money gets a full set of answers from one session instead of half of
 them.
 
+`tests/cloud-apply-emulated` is the one piece of that preparation that
+does constitute evidence, and only for AWS: the profile applies and
+destroys against an implementation of the AWS API, so a session that
+spends real money no longer spends it discovering a reference that does
+not resolve or a value the API refuses. It removes the cheap failures
+from the list below. It removes none of the items themselves — every one
+of them is about what happens after something boots.
+
 The blockers are, in order:
 
 1. **A real AWS apply.** `terraform/aws` has never been stood up and
-   torn down. Four things only this profile can settle:
+   torn down on real hardware. Four things only this profile can settle,
+   none of them reachable by the emulated apply:
 
    - **The KMS triangle.** The instance profile, the key policy and the
      `seal "awskms"` stanza live in three files that have never been

@@ -50,7 +50,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            15 suites; each is a self-contained run-tests.sh
+tests/            17 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -106,16 +106,25 @@ that split when editing.
 | Profile | Provisioning | Seal | Proven by |
 |---|---|---|---|
 | local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
-| AWS | `terraform/aws` | AWS KMS | `terraform test` with mocked providers only |
+| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), plus an emulated apply — never a real account |
 | Azure | `terraform/azure` | Azure Key Vault | `terraform test` with mocked providers only |
 | bare/other | Ansible alone | Shamir (role default) | not exercised |
 
-**Neither cloud profile has ever been applied end to end.** Do not
-describe them as working or proven. `docs/cloud-apply.md` lists exactly
-what a first real apply would settle, per provider, and
+**Neither cloud profile has ever been applied to a real account.** Do
+not describe them as working or proven. `docs/cloud-apply.md` lists
+exactly what a first real apply would settle, per provider, and
 `scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
 `terraform destroy` fails partway on both. These two applies are v1.0
 blockers 1 and 2 in the README.
+
+`tests/cloud-apply-emulated` narrows that gap for AWS only, and only so
+far: it applies and destroys `terraform/aws` against an implementation
+of the AWS API (moto), which settles that the profile applies in one
+pass with every reference resolved and no value refused. An emulator
+implements the API, not the service — nothing boots, no health check
+runs, and KMS answers without performing cryptography — so a green run
+is evidence the profile is *applyable*, never that the cluster works.
+Keep that distinction in any sentence you write about it.
 
 ## How the pieces connect
 
@@ -194,7 +203,7 @@ counts. Match whichever shape fits what the script is for.
 
 ## Testing
 
-Two tiers, and the distinction is load-bearing.
+Three tiers, and the distinctions are load-bearing.
 
 **Shim suites** (`tests/*/fake-bin/`) put stand-ins for `vault`, `aws`,
 `curl`, `ssh`, `openssl` ahead of the real tools on `PATH`, log every
@@ -210,6 +219,14 @@ that snapshots had never been taken on any node, because the leadership
 check read a field that does not exist in `vault status -format=json`
 and the shim emitted that field too. When adding a shim, model the real
 tool's output, not the output the script wants.
+
+**The emulated apply** (`tests/cloud-apply-emulated/`) sits between the
+two for the cloud profiles, where neither tier reaches: there is no
+cluster to stand up without spending money, and a shim would have the
+same blind spot as the mocks. It applies and destroys `terraform/aws`
+through the real AWS provider against an implementation of the AWS API,
+so every request is built, sent and answered. It proves the profile
+applies; it proves nothing about what the profile would run.
 
 Harness conventions, shared by most `run-tests.sh` and worth keeping
 when adding one:
@@ -241,9 +258,15 @@ passed while the thing they described was broken:
 
 `terraform test` runs against mocked providers, so the same trap
 applies there: **assert on config values and locals, never on a mocked
-data source's output.** `terraform/aws/tests/README.md` has the mutation
-table showing which deliberate break each test catches, every row
-confirmed by watching it fail; extend it when adding assertions.
+data source's output.** Two of the three cloud bugs found so far were
+invisible to the mocks for exactly that reason, which is what
+`tests/cloud-apply-emulated` and `tests/preflight-static` exist to
+catch — the first by making every request real, the second by checking
+across the Terraform/cloud-init/Ansible seam that no single tool sees.
+
+`terraform/aws/tests/README.md` has the mutation table showing which
+deliberate break each test catches, every row confirmed by watching it
+fail; extend it when adding assertions.
 `terraform/azure/tests/README.md` covers the Azure suite and the three
 mechanisms with no AWS counterpart, but its mutation table is a list of
 intentions rather than evidence — none of the rows has been run. Verify
@@ -259,6 +282,7 @@ Per-suite requirements:
 | docs-index | bash, awk, diff |
 | cloud-preflight | bash |
 | lint | bash, python3 |
+| preflight-static | bash, python3; shellcheck if present |
 | pki | bash, jq, openssl |
 | pki-migration | bash, jq, python3, openssl |
 | ansible | bash, jq, python3 with jinja2 + pyyaml |
@@ -266,16 +290,18 @@ Per-suite requirements:
 | alerting | promtool (Prometheus distribution), python3 |
 | upgrade | bash, curl, unzip, jq, sha256sum, python3 |
 | integration | docker compose, vault CLI, jq, openssl, curl |
+| cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 25 jobs on every PR and on pushes to
-`main`. Seven are static (`terraform` fmt/validate/test, `ansible-lint`
-plus `--syntax-check`, `shellcheck`, `lint-invariants`, `markdownlint`,
-`docs-index`, and `security-scan` with gitleaks and Trivy); the rest
-each run one suite from `tests/`, or bring up the compose cluster and
-exercise it live (smoke test, AppRole rotation, GitHub OIDC, human OIDC
-via Dex, DR drill, integration).
+`.github/workflows/ci.yml` runs 27 jobs on every PR and on pushes to
+`main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
+plus `--syntax-check`, `shellcheck`, `lint-invariants`,
+`preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
+with gitleaks and Trivy); one (`emulated-apply`) applies the AWS profile
+against an emulated API; the rest each run one suite from `tests/`, or
+bring up the compose cluster and exercise it live (smoke test, AppRole
+rotation, GitHub OIDC, human OIDC via Dex, DR drill, integration).
 
 Adding a suite under `tests/` does **not** wire it into CI — add the job
 too. Shellcheck, by contrast, discovers test scripts via `git ls-files`

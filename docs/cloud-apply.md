@@ -1,6 +1,7 @@
 # The cloud apply
 
-**Neither cloud profile in this repository has ever been applied.**
+**Neither cloud profile in this repository has ever been applied to a
+real account.**
 
 Everything else here is tested — 80 assertions against a real three-node
 cluster, promtool unit tests on the alert rules, `terraform test` against
@@ -8,6 +9,24 @@ mocked providers. But mocked providers confirm that the configuration is
 *well-formed*, not that AWS accepts it. The gap between those two things
 is the last real blocker on the [roadmap](roadmap.md), and it is the
 reason this document exists.
+
+Part of that gap has since been closed for free.
+[`tests/cloud-apply-emulated`](../tests/cloud-apply-emulated/run-tests.sh)
+runs a real `terraform apply` of the AWS profile, through the real AWS
+provider, against an implementation of the AWS API — so the profile is
+applied and destroyed on every PR, and every request is built, sent and
+answered. That settles the questions this document used to open with:
+whether the configuration applies at all in one pass, whether every
+reference resolves in an order Terraform can satisfy, whether the AMI
+filter matches anything, and whether any value is refused outright.
+
+It settles nothing below. An emulator implements the API, not the
+service: nothing boots, no health check runs, no scaling group replaces
+anything, and KMS returns plausible answers without performing
+cryptography. Every item in the [verification
+checklist](#the-verification-checklist) is a question about behaviour at
+runtime, which is exactly what an emulator does not have. Azure has no
+equivalent run at all.
 
 The first person to apply one of these profiles is spending money to find
 out what is wrong. This is about making that session produce the maximum

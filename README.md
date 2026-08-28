@@ -28,9 +28,11 @@ that part down.
   (`make deploy`). `terraform/aws` builds the equivalent on AWS —
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
   bucket. `terraform/azure` builds the same shape with a VM scale set,
-  Key Vault auto-unseal, and a blob container. Neither has been applied
-  end to end — see [`docs/cloud-apply.md`](docs/cloud-apply.md) for what
-  that leaves unproven, and how to prove it.
+  Key Vault auto-unseal, and a blob container. The AWS profile applies
+  and destroys cleanly against an emulated AWS API on every PR; neither
+  profile has been applied against a real account — see
+  [`docs/cloud-apply.md`](docs/cloud-apply.md) for what that leaves
+  unproven, and how to prove it.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -222,8 +224,11 @@ See [`docs/deployment.md`](docs/deployment.md).
 
 ## Before a cloud apply
 
-Neither cloud profile has ever been applied, so the first person to try
-is spending real money to find out what is wrong.
+Neither cloud profile has been applied against a real account, so the
+first person to try is spending real money to find out what is wrong.
+The emulated apply in CI settles that the AWS configuration is one the
+API accepts; it says nothing about whether the cluster it describes
+comes up.
 
 ```bash
 ./scripts/preflight-cloud.sh --cloud aws
@@ -421,11 +426,14 @@ What stands between here and v1.0, in order:
 
 1. **A real AWS apply.** `terraform/aws` has never been stood up end to
    end. It passes `terraform test` against mocked providers — which
-   catches an IAM policy granting delete on the snapshot bucket — but a
-   plan that succeeds is not a deployment that works. What only this
-   apply settles: that the instance profile, the KMS key policy and the
-   `seal` stanza agree; and that a terminated leader is replaced by a
-   node which auto-unseals and rejoins unattended.
+   catches an IAM policy granting delete on the snapshot bucket — and it
+   applies and destroys cleanly against an emulated AWS API, which
+   settles that every request the profile makes is one the API accepts.
+   Neither runs anything: a mock answers from a fixture, an emulator
+   answers for real but boots nothing. What only a real apply settles:
+   that the instance profile, the KMS key policy and the `seal` stanza
+   agree; and that a terminated leader is replaced by a node which
+   auto-unseals and rejoins unattended.
 2. **A real Azure apply.** A separate item, not the same job twice.
    `terraform/azure` discovers peers through a scale set rather than
    tags, has a health probe with no status-code matcher, and reconciles
