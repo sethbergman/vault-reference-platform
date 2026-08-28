@@ -44,13 +44,45 @@ resource "aws_security_group" "vault" {
   })
 }
 
+# Health checks arrive from the load balancer's own ENI, so they match on
+# the security group reference.
 resource "aws_vpc_security_group_ingress_rule" "vault_api_from_lb" {
   security_group_id            = aws_security_group.vault.id
-  description                  = "Vault API from the load balancer only"
+  description                  = "Vault API health checks from the load balancer"
   referenced_security_group_id = aws_security_group.lb.id
   from_port                    = 8200
   to_port                      = 8200
   ip_protocol                  = "tcp"
+}
+
+# Client traffic does not.
+#
+# The target group uses target_type = "instance", where client IP
+# preservation is enabled and cannot be turned off. The load balancer
+# forwards each packet with the ORIGINAL client address as its source, so
+# the rule above never matches real traffic -- only the health checks it
+# also allows. The result is the worst possible arrangement: every target
+# reports healthy and no client can connect.
+#
+# Two ways out, and this is the one that keeps the audit log honest:
+#
+#   - allow the client CIDRs here, as below. Nodes become reachable
+#     directly by anything already inside the VPC in those ranges, which
+#     is mitigated but not erased by their being in private subnets.
+#   - switch to target_type = "ip" with preserve_client_ip = false, which
+#     would let the reference above carry the traffic. Vault would then
+#     record the load balancer's address as remote_address for every
+#     request, which for a cluster whose audit trail is the point is a
+#     worse trade than the one taken here.
+resource "aws_vpc_security_group_ingress_rule" "vault_api_from_clients" {
+  count = length(var.allowed_cidr_blocks)
+
+  security_group_id = aws_security_group.vault.id
+  description       = "Vault API from allowed networks, via the load balancer"
+  cidr_ipv4         = var.allowed_cidr_blocks[count.index]
+  from_port         = 8200
+  to_port           = 8200
+  ip_protocol       = "tcp"
 }
 
 # Raft replication and leader election between nodes. Self-referencing, so

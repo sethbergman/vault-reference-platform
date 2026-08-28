@@ -16,18 +16,39 @@ run "vault_api_is_not_reachable_from_the_whole_internet" {
   # computed. Mocked providers make apply inert.
   command = apply
 
-  # The node security group must never take an ingress CIDR rule at all:
-  # the only ingress paths are references to the load balancer's group or
-  # to itself. A cidr_ipv4 rule appearing here means someone opened the
-  # API to a network range directly.
+  # This block used to assert the node group took no CIDR ingress at all,
+  # on the reasoning that the load balancer's security group was the only
+  # way in. That reasoning was wrong, and the assertion was defending the
+  # bug: with target_type = "instance" the load balancer preserves the
+  # client address, so a security-group reference matches the health
+  # checks and nothing else. Every target reported healthy and no client
+  # could connect.
+  #
+  # The health-check path is still a reference, and still must be.
   assert {
     condition     = aws_vpc_security_group_ingress_rule.vault_api_from_lb.cidr_ipv4 == null
-    error_message = "Vault API ingress must come from the load balancer's security group, not a CIDR."
+    error_message = "The load balancer health-check path must be a security group reference, not a CIDR."
   }
 
   assert {
     condition     = aws_vpc_security_group_ingress_rule.vault_api_from_lb.referenced_security_group_id == aws_security_group.lb.id
-    error_message = "Vault API ingress must reference the load balancer security group."
+    error_message = "Vault API health checks must reference the load balancer security group."
+  }
+
+  # Client traffic arrives with the client's own address, so it needs a
+  # CIDR rule. Without this the cluster is healthy and unreachable.
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.vault_api_from_clients) == length(var.allowed_cidr_blocks)
+    error_message = "Every allowed CIDR needs node ingress; the load balancer's security group does not carry client traffic."
+  }
+
+  # The CIDR rule above is only correct while client IP preservation is
+  # on, which is a property of the target type. Switching to "ip" without
+  # revisiting the security group would leave the API open to those
+  # ranges for no reason.
+  assert {
+    condition     = aws_lb_target_group.vault.target_type == "instance"
+    error_message = "Client ingress on the node group assumes target_type = instance; revisit security.tf if this changes."
   }
 }
 
@@ -168,5 +189,15 @@ run "nodes_cannot_delete_snapshots" {
   assert {
     condition     = contains(local.snapshot_object_actions, "s3:PutObject")
     error_message = "Nodes must still be able to write snapshots."
+  }
+
+  # PutObject alone is not enough to store an object in a bucket with
+  # SSE-KMS default encryption: S3 has the caller mint the data key, so a
+  # node without this is denied by KMS while every S3 permission looks
+  # right. Nothing was granting it, and no snapshot would ever have
+  # landed.
+  assert {
+    condition     = contains(local.snapshot_kms_actions, "kms:GenerateDataKey")
+    error_message = "Snapshot uploads need kms:GenerateDataKey; the bucket enforces SSE-KMS."
   }
 }

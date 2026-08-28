@@ -72,6 +72,13 @@ locals {
     "s3:PutObject",
     "s3:GetObject",
   ]
+
+  # Named for the same reason. S3 asks the caller to mint the data key
+  # when a bucket has SSE-KMS default encryption, so this is what stands
+  # between a correct-looking bucket policy and a snapshot that uploads.
+  snapshot_kms_actions = [
+    "kms:GenerateDataKey",
+  ]
 }
 
 data "aws_iam_policy_document" "vault_snapshots" {
@@ -85,6 +92,22 @@ data "aws_iam_policy_document" "vault_snapshots" {
     effect    = "Allow"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.snapshots.arn]
+  }
+
+  # The bucket sets SSE-KMS default encryption with the auto-unseal key
+  # (storage.tf), and S3 asks the *caller* to mint the data key. Without
+  # this, every PutObject is denied by KMS rather than by S3 -- so the
+  # bucket, the lifecycle rule and the s3:PutObject grant above are all
+  # correct and no snapshot is ever stored.
+  #
+  # Not folded into the auto-unseal policy in main.tf: the seal genuinely
+  # does not need GenerateDataKey, and that policy is described as the
+  # minimum the seal requires. Reads are already covered by the Decrypt
+  # it grants on the same key.
+  statement {
+    effect    = "Allow"
+    actions   = local.snapshot_kms_actions
+    resources = [aws_kms_key.vault_autounseal.arn]
   }
 }
 
