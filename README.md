@@ -307,7 +307,7 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-six checks on every PR. Eight are static:
+GitHub Actions runs twenty-seven checks on every PR. Eight are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, a shell-invariants check for patterns shellcheck has no
 opinion about, a docs-index check that fails when
@@ -357,6 +357,15 @@ reach failure modes a live cluster will not reproduce on demand:
   `terraform apply`, that a missing key pair fails rather than warns, and
   that teardown empties the versioned bucket *before* calling destroy and
   keeps paging until the listing is empty.
+
+One sits between the two. `tests/cloud-apply-emulated` runs a real
+`terraform apply` of the AWS profile, through the real AWS provider,
+against an implementation of the AWS API — so the configuration is
+applied rather than planned, and destroyed again, without an account or a
+bill. An emulator is not AWS: nothing boots and no health check runs, so
+it is evidence the profile is applyable and not that the cluster works.
+It shortens no claim in [`docs/cloud-apply.md`](docs/cloud-apply.md); it
+removes the ones that never belonged there.
 
 The remaining seven bring up the Docker Compose cluster and exercise it
 for real:

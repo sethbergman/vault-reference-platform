@@ -173,6 +173,35 @@ jobs:
       - name: Generator reads the documents correctly
         run: ./tests/docs-index/run-tests.sh
 
+  emulated-apply:
+    name: Cloud apply (emulated AWS API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: "1.15.9"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the AWS API emulator
+        run: pip install 'moto[server]'
+
+      # A real terraform apply, through the real AWS provider, against an
+      # implementation of the AWS API. Settles what mocked providers
+      # structurally cannot -- whether the configuration applies at all,
+      # in one pass, and destroys cleanly afterwards.
+      #
+      # An emulator is not AWS: nothing boots and no health check runs, so
+      # a green run is evidence the configuration is applyable and not
+      # that the cluster works. See docs/cloud-apply.md.
+      - name: Apply the AWS profile against the emulator
+        run: ./tests/cloud-apply-emulated/run-tests.sh
+
   smoke-test:
     name: Deploy + smoke test (Docker Compose)
     runs-on: ubuntu-latest
