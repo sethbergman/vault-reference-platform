@@ -63,7 +63,7 @@ storage "raft" {
   retry_join {
     auto_join               = "provider=aws region=$${AWS_REGION} tag_key=VaultCluster tag_value=$${CLUSTER_NAME}"
     auto_join_scheme        = "https"
-    leader_tls_servername   = "vault.$${CLUSTER_NAME}.internal"
+    leader_tls_servername   = "$${CLUSTER_NAME}.vault.internal"
     leader_ca_cert_file     = "/etc/vault.d/tls/ca.crt"
   }
 }

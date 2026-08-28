@@ -56,7 +56,13 @@ vault_pki_common_name: "{{ inventory_hostname }}.{{ vault_pki_domain }}"
 # This was wrong and invisible: the cloud templates asked for
 # vault.<cluster>.internal, nothing issued it, and the failure is a
 # cluster that never forms while every node reports healthy on its own.
-# tests/preflight-static asserts the two agree.
-vault_pki_cluster_servername: "vault.{{ vault_cluster_name | default('vault-reference') }}.internal"
+#
+# It has to sit INSIDE vault_pki_domain. bootstrap-pki.sh sets the role's
+# allowed_domains to that domain with allow_subdomains, so a name outside
+# it is refused at issue time -- which is how the first attempt at this
+# fix broke certificate issuance altogether. tests/preflight-static
+# asserts both that the templates agree with this name and that this name
+# is one the role can actually issue.
+vault_pki_cluster_servername: "{{ vault_cluster_name | default('vault-reference') }}.{{ vault_pki_domain }}"
 
 vault_pki_alt_names: "{{ inventory_hostname }},localhost,{{ vault_pki_cluster_servername }}"

@@ -135,6 +135,9 @@ printf '\n=== The rendered cloud-init is valid shell ===\n'
 # Terraform interpolations are lower case; shell variables the template
 # escapes as $${VAR} are upper case. The two cannot collide, so the escape
 # is collapsed last, once no ${lower} remains.
+# The single quotes are deliberate: sed must receive ${x} literally,
+# not the empty expansion the shell would give it.
+# shellcheck disable=SC2016
 render() {
     sed -e 's|\${aws_region}|us-east-1|g' \
         -e 's|\${cluster_name}|vault-ref|g' \
@@ -298,12 +301,17 @@ fi
 tpl_shape="$(sed -E 's/[$]+\{?[A-Za-z_]+\}?/CLUSTER/g' <<< "$SERVERNAME_TPL")"
 ALT_NAMES="$(grep -E '^vault_pki_alt_names:' "$PKI_DEFAULTS" | cut -d: -f2- | tr -d '"' | xargs || true)"
 CLUSTER_SN="$(grep -E '^vault_pki_cluster_servername:' "$PKI_DEFAULTS" | cut -d: -f2- | tr -d '"' | xargs || true)"
-role_shape="$(sed -E 's/\{\{[^}]*\}\}/CLUSTER/g' <<< "$CLUSTER_SN")"
+PKI_DOMAIN="$(grep -E '^vault_pki_domain:' "$PKI_DEFAULTS" | cut -d: -f2- | xargs || true)"
 
-if [[ "$tpl_shape" == "vault.CLUSTER.internal" ]]; then
-    ok "the templates verify against vault.<cluster>.internal"
+# Resolve the domain before normalising, or both Jinja expressions
+# collapse to the same token and the comparison stops meaning anything.
+CLUSTER_SN_RESOLVED="${CLUSTER_SN//\{\{ vault_pki_domain \}\}/$PKI_DOMAIN}"
+role_shape="$(sed -E 's/\{\{[^}]*\}\}/CLUSTER/g' <<< "$CLUSTER_SN_RESOLVED")"
+
+if [[ "$tpl_shape" == "CLUSTER.vault.internal" ]]; then
+    ok "the templates verify against <cluster>.vault.internal"
 else
-    bad "the templates verify against vault.<cluster>.internal" "got '${tpl_shape}'"
+    bad "the templates verify against <cluster>.vault.internal" "got '${tpl_shape}'"
 fi
 
 if [[ "$ALT_NAMES" == *vault_pki_cluster_servername* ]]; then
@@ -318,6 +326,25 @@ if [[ -n "$role_shape" && "$role_shape" == "$tpl_shape" ]]; then
 else
     bad "and the two names are the same" \
         "role issues '${role_shape:-<unset>}', templates want '${tpl_shape}'"
+fi
+
+# A name every certificate must carry is worth nothing if the PKI role
+# refuses to issue it. bootstrap-pki.sh sets allowed_domains to the PKI
+# domain with allow_subdomains, so the servername has to sit inside that
+# domain -- and the first attempt at this fix did not, which would have
+# failed every issuance rather than only the joins.
+sn_domain="${role_shape#CLUSTER.}"
+
+if [[ -n "$PKI_DOMAIN" ]]; then
+    ok "the PKI role declares a domain (${PKI_DOMAIN})"
+else
+    bad "the PKI role declares a domain" "vault_pki_domain has no default"
+fi
+
+if [[ "$sn_domain" == "$PKI_DOMAIN" || "$sn_domain" == *".${PKI_DOMAIN}" ]]; then
+    ok "and the cluster servername sits inside it, so the role can issue it"
+else
+    bad "and the cluster servername sits inside it, so the role can issue it"         "'${CLUSTER_SN}' is not under '${PKI_DOMAIN}'; allowed_domains would refuse it"
 fi
 
 # The CA a follower verifies against has to be where the config looks for
