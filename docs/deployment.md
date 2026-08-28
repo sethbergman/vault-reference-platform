@@ -30,7 +30,10 @@ See [`docs/auto-unseal.md`](auto-unseal.md) for the full picture.
 
 ## Before either cloud profile
 
-**Neither has ever been applied.** Run the pre-flight first — it checks
+**Neither has ever been applied to a real account.** The AWS profile is
+applied and destroyed against an emulated AWS API on every PR, which
+settles that it applies at all; nothing in that run boots, so it says
+nothing about the cluster. Run the pre-flight first — it checks
 credentials, the inputs that fail late, quota and cost, and applies
 nothing:
 
@@ -214,7 +217,8 @@ rendered `vault.hcl` for both clouds, and the case where no cloud is
 configured. It needs no credentials and runs in CI.
 
 It does not prove the playbook converges against real hosts. Neither
-cloud profile has been applied end to end — see
+cloud profile has been applied to a real account, and the emulated apply
+covers Terraform only — it never reaches the Ansible layer. See
 [Provider lock files](#provider-lock-files) and the note in the README.
 
 ## Provider lock files

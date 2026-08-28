@@ -110,9 +110,11 @@ That a snapshot restores. `tests/upgrade` and `scripts/dr-drill.sh` cover
 the restore path against a real local cluster; this suite covers the
 capture and upload path against shims.
 
-Neither cloud profile has been applied end to end, so the S3 and blob
-uploads have never run against real storage. The status-code and
-credential handling are asserted; the endpoints' actual behaviour is not.
+Neither cloud profile has been applied to a real account, so the S3 and
+blob uploads have never run against real storage — the emulated apply
+covers the Terraform profile, not the snapshot path that uses it. The
+status-code and credential handling are asserted; the endpoints' actual
+behaviour is not.
 
 ## What the shims got wrong
 

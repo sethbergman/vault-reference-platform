@@ -16,12 +16,12 @@
 #
 # WHY THIS EXISTS
 #
-# Neither cloud profile in this repository has ever been applied. The
-# first person to try will be spending real money to find out what is
-# wrong, and the failures that cost the most are the ones that happen
-# twenty minutes in: a missing SSH key, an EIP quota that stops at two
-# NAT gateways, a subscription without the permissions to create a role
-# assignment.
+# Neither cloud profile in this repository has ever been applied to a
+# real account. The first person to try will be spending real money to
+# find out what is wrong, and the failures that cost the most are the
+# ones that happen twenty minutes in: a missing SSH key, an EIP quota
+# that stops at two NAT gateways, a subscription without the permissions
+# to create a role assignment.
 #
 # This checks what can be checked for free, and states plainly what an
 # apply will cost and what a teardown will not remove.
