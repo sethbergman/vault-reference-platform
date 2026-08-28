@@ -94,6 +94,13 @@ python3 -c "import moto" 2>/dev/null || { red "ERROR: moto is not installed (pip
 info ""
 info "=== Starting the emulated AWS API ==="
 # ---------------------------------------------------------------------------
+# moto stopped pre-seeding AWS managed policies in v5, so attaching
+# AmazonSSMManagedInstanceCore -- which iam.tf does, correctly, to give
+# operators SSM Session Manager instead of an open port 22 -- fails with
+# NoSuchEntity unless they are loaded. That is an emulator gap rather
+# than anything wrong with the profile, and this is the switch for it.
+export MOTO_IAM_LOAD_MANAGED_POLICIES=true
+
 python3 -m moto.server -p 5000 >"${WORK}/moto.log" 2>&1 &
 MOTO_PID=$!
 
