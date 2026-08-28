@@ -49,6 +49,12 @@ The pair is the unit; one without the other is a false sense of coverage,
 and `tests/alerting/run-tests.sh` fails if a new freshness rule is added
 without its pair.
 
+The longer argument, including the promtool case that asserts the
+threshold alert stays quiet when the series disappears, is written up in
+[The alert that could not fire][absence-post].
+
+[absence-post]: https://sethbergman.github.io/posts/alerting-on-absence/
+
 ## The alerts
 
 | Alert | Fires when |
