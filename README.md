@@ -390,6 +390,13 @@ exist in `vault status -format=json`, and the shim emitted that field
 too, so both sides agreed and the suite stayed green. See
 [`tests/integration/README.md`](tests/integration/README.md).
 
+That incident and two others like it are written up in [Three green
+timers and zero backups][post]: a shim that agreed with the bug, one that
+disagreed with the environment, and a mocked provider that never modelled
+the consumer at all.
+
+[post]: https://sethbergman.github.io/posts/three-green-timers/
+
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
