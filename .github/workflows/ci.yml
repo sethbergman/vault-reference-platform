@@ -131,6 +131,20 @@ jobs:
       - name: Check shell invariants
         run: ./tests/lint/run-tests.sh
 
+  preflight-static:
+    name: Cloud pre-flight (static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Everything about a cloud apply that can be settled without one.
+      # Cross-layer agreement that no other job can see: Terraform against
+      # the cloud-init it renders, and the cloud-init against the Ansible
+      # layer that finishes the node. shellcheck is present on the runner,
+      # so the rendered scripts are linted here and nowhere else.
+      - name: Check what an apply would otherwise have to discover
+        run: ./tests/preflight-static/run-tests.sh
+
   markdownlint:
     name: Markdown lint
     runs-on: ubuntu-latest

@@ -307,14 +307,16 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-five checks on every PR. Seven are static:
+GitHub Actions runs twenty-six checks on every PR. Eight are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, a shell-invariants check for patterns shellcheck has no
 opinion about, a docs-index check that fails when
 [`docs/README.md`](docs/README.md) stops matching the documents it
-indexes, and security scanning (gitleaks for committed secrets,
-Trivy for Terraform and Dockerfile misconfigurations — see
-[`docs/security.md`](docs/security.md)).
+indexes, a static cloud pre-flight that checks the agreements no single
+layer can see — Terraform against the cloud-init it renders, and that
+against the Ansible layer which finishes the node — and security scanning
+(gitleaks for committed secrets, Trivy for Terraform and Dockerfile
+misconfigurations — see [`docs/security.md`](docs/security.md)).
 
 Eleven run against fixtures and shims — fast, no credentials, and able to
 reach failure modes a live cluster will not reproduce on demand:

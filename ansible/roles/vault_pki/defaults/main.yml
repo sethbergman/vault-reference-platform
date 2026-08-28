@@ -44,4 +44,19 @@ vault_pki_token: ""
 # locally, and the renewal script itself talks to https://127.0.0.1:8200
 # — a certificate without them turns every local call into a TLS error.
 vault_pki_common_name: "{{ inventory_hostname }}.{{ vault_pki_domain }}"
-vault_pki_alt_names: "{{ inventory_hostname }},localhost"
+
+# The name a follower verifies the leader against.
+#
+# Raft peers connect to whichever node currently holds leadership, and
+# verify it against retry_join's leader_tls_servername -- one fixed name,
+# not the name of any particular node. So every node's certificate has to
+# carry it, or a join fails TLS verification against whichever node was
+# elected.
+#
+# This was wrong and invisible: the cloud templates asked for
+# vault.<cluster>.internal, nothing issued it, and the failure is a
+# cluster that never forms while every node reports healthy on its own.
+# tests/preflight-static asserts the two agree.
+vault_pki_cluster_servername: "vault.{{ vault_cluster_name | default('vault-reference') }}.internal"
+
+vault_pki_alt_names: "{{ inventory_hostname }},localhost,{{ vault_pki_cluster_servername }}"
