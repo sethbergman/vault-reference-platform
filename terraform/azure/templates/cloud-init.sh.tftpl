@@ -77,7 +77,7 @@ storage "raft" {
   retry_join {
     auto_join             = "provider=azure subscription_id=${subscription_id} resource_group=${resource_group} vm_scale_set=${vm_scale_set}"
     auto_join_scheme      = "https"
-    leader_tls_servername = "vault.$${CLUSTER_NAME}.internal"
+    leader_tls_servername = "$${CLUSTER_NAME}.vault.internal"
     leader_ca_cert_file   = "/etc/vault.d/tls/ca.crt"
   }
 }
