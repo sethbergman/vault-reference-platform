@@ -209,6 +209,40 @@ point elsewhere. The role verifies each certificate actually matches the
 host it lands on, because the alternative failure surfaces later as a
 Raft join error that reads like a network problem.
 
+### Promote the health check once Vault is serving
+
+The autoscaling group ships with `health_check_type = "EC2"`, and that is
+a deliberate compromise you are expected to undo.
+
+EC2 health only asks whether the instance is running. That is the only
+thing the group can usefully ask *before* this step: Terraform does not
+issue certificates, so until the playbook has run, Vault does not start,
+the load balancer's check cannot pass, and an `ELB` health check would
+mark every instance unhealthy at the end of its grace period, terminate
+it, and launch a replacement that does the same. A bare apply would never
+converge, and would bill for the privilege.
+
+Once the playbook has converged and the nodes are serving:
+
+```bash
+terraform apply -var health_check_type=ELB
+```
+
+Now a node that is running but sealed, wedged, or out of the Raft
+quorum is replaced, which EC2 health cannot see. Leaving it on `EC2`
+means an instance can sit up and useless indefinitely.
+
+Confirm the group agrees before relying on it:
+
+```bash
+Q='AutoScalingGroups[].[AutoScalingGroupName,HealthCheckType]'
+aws autoscaling describe-auto-scaling-groups --query "$Q" --output text
+```
+
+Both settings are asserted in `terraform/aws/tests/cluster.tftest.hcl` --
+that the default is `EC2`, and that `ELB` is reachable -- so neither half
+can be dropped without a test failing.
+
 ### What this has and has not been tested against
 
 `tests/ansible/run-tests.sh` exercises the handoff against saved

@@ -39,15 +39,26 @@ run "rolling_refresh_preserves_quorum" {
   }
 }
 
-run "health_check_uses_the_load_balancer_not_just_ec2" {
+run "health_check_defaults_to_ec2_so_a_bare_apply_terminates" {
   command = plan
 
-  # EC2 health only knows whether the instance is running. A node that is
-  # up but sealed, or wedged, is useless and must be replaced — only the
-  # load balancer's check can tell the difference.
+  # This assertion looks backwards and is not.
+  #
+  # ELB health is the better check once the cluster serves, because a node
+  # that is up but sealed or wedged is useless and only the load balancer
+  # can see that. But this profile does not issue TLS certificates —
+  # user-data says so and defers to Ansible — so until Ansible has run,
+  # Vault never starts and the load balancer's check can never pass.
+  #
+  # With ELB health that is not a delay, it is a loop: every instance is
+  # marked unhealthy at the end of the grace period, terminated, replaced,
+  # and the replacement repeats it. A bare `terraform apply` never
+  # converges and bills the whole time.
+  #
+  # EC2 is therefore the only default under which the apply terminates.
   assert {
-    condition     = aws_autoscaling_group.vault.health_check_type == "ELB"
-    error_message = "ASG health check must be ELB so sealed-but-running nodes are replaced."
+    condition     = aws_autoscaling_group.vault.health_check_type == "EC2"
+    error_message = "Default must be EC2; ELB cannot pass before Ansible has issued certificates, so the group would replace instances forever."
   }
 
   # A new node installs Vault, auto-unseals and joins Raft before it can
@@ -56,6 +67,29 @@ run "health_check_uses_the_load_balancer_not_just_ec2" {
   assert {
     condition     = aws_autoscaling_group.vault.health_check_grace_period >= 300
     error_message = "Health check grace period is too short for a node to bootstrap and join Raft."
+  }
+}
+
+run "health_check_can_be_promoted_to_elb_once_the_cluster_serves" {
+  command = plan
+
+  variables {
+    health_check_type = "ELB"
+  }
+
+  # The other half. The default protects the first apply; it must not trap
+  # the profile there, because a cluster running on EC2 health forever has
+  # no way to notice a node that is up and sealed.
+  assert {
+    condition     = aws_autoscaling_group.vault.health_check_type == "ELB"
+    error_message = "health_check_type must accept ELB, or there is no way to promote the check after Ansible has run."
+  }
+
+  # The target group is what ELB health reads, so the promotion is only
+  # meaningful while it still accepts a standby's 429.
+  assert {
+    condition     = aws_lb_target_group.vault.health_check[0].matcher == "200,429"
+    error_message = "Promoting to ELB health is pointless if the target group ejects healthy standbys."
   }
 }
 
