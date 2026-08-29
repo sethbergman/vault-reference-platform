@@ -59,16 +59,32 @@ diagrams/         architecture.md
 
 ## Common commands
 
+`make` on its own prints every target, grouped. The ones worth knowing:
+
 ```bash
-make deploy    # 3-node Raft cluster + monitoring, via Docker Compose
-make status    # compose ps + sys/health
-make destroy   # docker compose down -v
-make lint      # terraform fmt/validate, ansible-lint, shellcheck,
-               # and the docs-index staleness check
-make test      # the DR restore drill only (not the full suite)
-make docs      # regenerate docs/README.md from the doc set
-make docs-check  # fail if it is stale — what CI runs
+make deploy        # 3-node Raft cluster + monitoring
+make deploy-full   # every optional service, as tests/integration runs it
+make status        # compose ps, plus each node's seal and HA state
+make destroy       # docker compose down -v
+
+make test          # every suite that needs no cluster (seconds)
+make test-suite SUITE=snapshot   # one suite
+make test-cluster  # the integration suite against a real cluster
+make dr-drill      # the restore drill
+
+make lint          # every static check CI runs, and nothing weaker
+make docs          # regenerate docs/README.md
 ```
+
+`make test` changed meaning. It used to run the DR restore drill alone;
+it now runs the shim suites, and the drill is `make dr-drill`. The narrow
+version was surprising in the one way a `test` target should not be —
+somebody who ran it and saw green had tested almost nothing.
+
+Suites are discovered from `tests/*/run-tests.sh` rather than listed, so
+a new one is picked up without editing the Makefile.
+`make check-ci-coverage` fails if a suite exists that no CI job runs,
+which is the gap this file warns about below.
 
 `make test` is deliberately narrow. To run a test suite, call it
 directly:
@@ -343,7 +359,38 @@ CI enforces several invariants worth knowing before you push:
 **Terraform** — `terraform fmt -recursive` before committing; CI runs
 `fmt -check`. `required_version >= 1.7`, providers pinned with `~>`.
 `.terraform.lock.hcl` is committed deliberately (see `.gitignore`);
-regenerate with `terraform providers lock`, never by hand. New cloud
+regenerate with `terraform providers lock`, never by hand — and pass
+every platform, not just the one you are on:
+
+```bash
+PLATFORMS="-platform=linux_amd64 -platform=linux_arm64"
+PLATFORMS="$PLATFORMS -platform=darwin_amd64 -platform=darwin_arm64"
+PLATFORMS="$PLATFORMS -platform=windows_amd64"
+
+# shellcheck disable=SC2086  # word splitting is the point here
+terraform -chdir=terraform/aws   providers lock $PLATFORMS
+terraform -chdir=terraform/azure providers lock $PLATFORMS
+```
+
+Not `windows_arm64`. Neither `hashicorp/aws` nor `hashicorp/random`
+publishes a build for it, and asking for one fails the whole command:
+
+```text
+provider registry.terraform.io/hashicorp/aws 5.100.0 is not available
+for windows_arm64
+```
+
+Which is why a Windows-on-ARM machine runs Terraform inside WSL and locks
+`linux_arm64` instead. Adding a platform to that list is a claim the
+registry has to agree with.
+
+The registry `zh:` hashes cover every published platform, so `init`
+succeeds anywhere regardless. What it then does is append an `h1:` hash
+for whichever platform you are on, leaving the lock file modified in
+`git status` — which reads as "I broke something" to whoever hits it, and
+is most likely on an architecture nobody has developed on before. CI runs
+`linux_amd64` only, so it will never surface there. Locking every
+platform up front costs one line each and removes the surprise. New cloud
 providers go under `terraform/<provider>/` and consume
 `terraform/modules/vault-cluster` rather than duplicating its variables;
 the shared module defines shape only and creates no cloud resources.

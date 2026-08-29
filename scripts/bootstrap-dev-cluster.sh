@@ -43,7 +43,8 @@
 # other actually exercises.
 #
 # Requirements:
-#   - docker compose, curl, jq on the machine running this
+#   - docker, with the Compose V2 plugin (`docker compose version`), plus
+#     curl and jq. All four are checked before anything is created.
 #
 # Output:
 #   Log messages go to stderr. The root token is the only thing printed to
@@ -126,7 +127,45 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Step 0: TLS material
+# Step 0: the tools this needs
+# ---------------------------------------------------------------------------
+# Checked before anything is created, because the alternative is what
+# actually happened: the script generated TLS material, started work, and
+# only failed once docker rejected a flag -- leaving the operator with
+# docker's own usage output and no statement of what was missing.
+#
+# `docker compose` is checked as a subcommand rather than by looking for a
+# docker-compose binary. Compose V2 is a CLI plugin, so `docker` can exist
+# and answer perfectly well while `docker compose` does not resolve at
+# all. When that happens docker cannot match the subcommand, falls back to
+# parsing the rest as global flags, and reports
+#
+#   unknown flag: --project-directory
+#
+# which names neither compose nor the real problem.
+for tool in docker curl jq; do
+    command -v "$tool" >/dev/null 2>&1         || die "${tool} is required but not on PATH"
+done
+
+if ! docker compose version >/dev/null 2>&1; then
+    log "ERROR: 'docker compose' is not available."
+    log ""
+    log "  Compose V2 is a plugin to the docker CLI, so docker itself"
+    log "  working is not evidence that it is installed."
+    log ""
+    log "  Docker Desktop + WSL: enable integration for this distribution"
+    log "    Settings -> Resources -> WSL Integration"
+    log "  Native docker on Debian/Ubuntu:"
+    log "    sudo apt-get install docker-compose-plugin"
+    log ""
+    log "  Verify with: docker compose version"
+    exit 1
+fi
+
+docker info >/dev/null 2>&1     || die "the docker daemon is not reachable -- is Docker running?"
+
+# ---------------------------------------------------------------------------
+# Step 0.5: TLS material
 # ---------------------------------------------------------------------------
 # Vault refuses to start without its certificate, so this has to happen
 # before anything is brought up. The script is idempotent — it does
