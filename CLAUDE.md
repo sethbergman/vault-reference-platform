@@ -359,7 +359,38 @@ CI enforces several invariants worth knowing before you push:
 **Terraform** — `terraform fmt -recursive` before committing; CI runs
 `fmt -check`. `required_version >= 1.7`, providers pinned with `~>`.
 `.terraform.lock.hcl` is committed deliberately (see `.gitignore`);
-regenerate with `terraform providers lock`, never by hand. New cloud
+regenerate with `terraform providers lock`, never by hand — and pass
+every platform, not just the one you are on:
+
+```bash
+PLATFORMS="-platform=linux_amd64 -platform=linux_arm64"
+PLATFORMS="$PLATFORMS -platform=darwin_amd64 -platform=darwin_arm64"
+PLATFORMS="$PLATFORMS -platform=windows_amd64"
+
+# shellcheck disable=SC2086  # word splitting is the point here
+terraform -chdir=terraform/aws   providers lock $PLATFORMS
+terraform -chdir=terraform/azure providers lock $PLATFORMS
+```
+
+Not `windows_arm64`. Neither `hashicorp/aws` nor `hashicorp/random`
+publishes a build for it, and asking for one fails the whole command:
+
+```text
+provider registry.terraform.io/hashicorp/aws 5.100.0 is not available
+for windows_arm64
+```
+
+Which is why a Windows-on-ARM machine runs Terraform inside WSL and locks
+`linux_arm64` instead. Adding a platform to that list is a claim the
+registry has to agree with.
+
+The registry `zh:` hashes cover every published platform, so `init`
+succeeds anywhere regardless. What it then does is append an `h1:` hash
+for whichever platform you are on, leaving the lock file modified in
+`git status` — which reads as "I broke something" to whoever hits it, and
+is most likely on an architecture nobody has developed on before. CI runs
+`linux_amd64` only, so it will never surface there. Locking every
+platform up front costs one line each and removes the surprise. New cloud
 providers go under `terraform/<provider>/` and consume
 `terraform/modules/vault-cluster` rather than duplicating its variables;
 the shared module defines shape only and creates no cloud resources.
