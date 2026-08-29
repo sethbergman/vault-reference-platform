@@ -107,10 +107,24 @@ resource "aws_autoscaling_group" "vault" {
   vpc_zone_identifier = aws_subnet.private[*].id
   target_group_arns   = [aws_lb_target_group.vault.arn]
 
-  # ELB health rather than EC2: an instance that is running but whose Vault
-  # process is sealed or wedged should be replaced, and only the load
-  # balancer's health check can tell the difference.
-  health_check_type = "ELB"
+  # EC2 first, ELB once the cluster actually serves. The default is EC2,
+  # and that is not timidity -- it is the only value under which a bare
+  # `terraform apply` terminates.
+  #
+  # This profile deliberately does not issue TLS certificates; user-data
+  # says so and defers to the Ansible layer. Vault will not start without
+  # them, so the load balancer's health check cannot pass, so with
+  # health_check_type = "ELB" the group marks every instance unhealthy at
+  # the end of the grace period, terminates it, launches a replacement,
+  # and repeats -- billing EC2, NAT and EBS the whole time while looking
+  # like a slow bootstrap rather than a configuration gap.
+  #
+  # EC2 health only knows whether the instance is running, which is
+  # exactly enough to survive the window before Ansible has run and no
+  # more. Once the cluster is serving, switch to ELB: a node that is up
+  # but sealed or wedged is useless, and only the load balancer can tell
+  # the difference. docs/deployment.md sequences it.
+  health_check_type = var.health_check_type
   # Generous, because a new node has to install Vault, auto-unseal, and
   # join Raft before it can report healthy. Too short and the ASG kills
   # nodes mid-bootstrap in a loop.

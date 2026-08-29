@@ -72,6 +72,17 @@ variable "ssh_key_name" {
   default     = ""
 }
 
+variable "health_check_type" {
+  type        = string
+  description = "How the autoscaling group decides an instance is unhealthy. EC2 until Ansible has provisioned TLS and Vault is serving; ELB afterwards, so a node that is running but sealed or wedged is replaced."
+  default     = "EC2"
+
+  validation {
+    condition     = contains(["EC2", "ELB"], var.health_check_type)
+    error_message = "health_check_type must be EC2 or ELB."
+  }
+}
+
 variable "root_volume_size" {
   type        = number
   description = "Root volume size in GB. Raft storage lives here, and it grows between snapshots."
