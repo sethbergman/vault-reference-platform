@@ -23,3 +23,12 @@ docker/dev/tls/
 # role_id is not a secret; secret_id is, and Agent deletes it after
 # reading it anyway. Neither belongs in the repository.
 docker/dev/agent/
+
+# Per-machine Claude Code settings. `.local` is the convention for
+# "this developer's copy": it records which tool invocations they have
+# approved, which is machine state rather than anything the project
+# needs, and it grows as they work.
+#
+# Ignored by name rather than ignoring .claude/ wholesale, so a shared
+# settings.json or a checked-in skill can still be committed on purpose.
+.claude/settings.local.json
