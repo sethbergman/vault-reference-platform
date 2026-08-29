@@ -135,14 +135,49 @@ run "imds_v2_is_required" {
   }
 }
 
-run "root_volume_is_encrypted_with_the_cluster_key" {
+run "the_seal_key_and_the_volume_key_are_separate" {
   command = plan
 
-  # Raft data lives on this volume, so it should be encrypted with the
-  # same key that seals the cluster rather than the account default.
   assert {
     condition     = aws_launch_template.vault.block_device_mappings[0].ebs[0].encrypted == "true"
     error_message = "The root volume holding Raft data must be encrypted."
+  }
+
+  # Asserted on configuration, not on arns.
+  #
+  # The mock gives every aws_kms_key the same arn, so comparing
+  # kms_key_id against a key's arn either fails for both or passes for
+  # both and proves nothing either way. tests/README.md says exactly this
+  # about mocked values, and the first version of this block ignored it.
+  # The arns are compared in tests/cloud-apply-emulated, where they are
+  # real and distinct.
+  #
+  # What is checked here is that two keys are configured, with the
+  # lifecycles that make the split worth having.
+  #
+  # They used to be one key. `terraform destroy` then scheduled the seal
+  # key along with the volumes it also encrypted, so tearing down a test
+  # cluster put every snapshot ever taken with it on a deletion timer --
+  # including snapshots from clusters that no longer existed. storage.tf
+  # warned the key had to survive a teardown; the code deleted it.
+  assert {
+    condition     = aws_kms_key.vault_autounseal.deletion_window_in_days >= 30
+    error_message = "The seal key needs a long deletion window; seven days is a short time to notice a mistaken teardown."
+  }
+
+  assert {
+    condition     = aws_kms_key.vault_data.deletion_window_in_days <= 7
+    error_message = "The node volume key is not durable and does not need a long window."
+  }
+
+  assert {
+    condition     = aws_kms_key.vault_data.description != aws_kms_key.vault_autounseal.description
+    error_message = "The two keys must be distinct resources, not one key referenced twice."
+  }
+
+  assert {
+    condition     = aws_kms_key.vault_data.enable_key_rotation
+    error_message = "Both keys should rotate."
   }
 }
 

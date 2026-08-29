@@ -50,9 +50,11 @@ resource "aws_launch_template" "vault" {
       volume_size = var.root_volume_size
       volume_type = "gp3"
       encrypted   = true
-      # Raft data sits on this volume, so it is encrypted with the same
-      # key that seals the cluster rather than the default EBS key.
-      kms_key_id            = aws_kms_key.vault_autounseal.arn
+      # A dedicated key, not the seal key. Raft data does sit here, but a
+      # root volume is not a backup -- it goes when the instance goes.
+      # Sharing the seal key meant `terraform destroy` scheduled the one
+      # key every archived snapshot depends on. See main.tf.
+      kms_key_id            = aws_kms_key.vault_data.arn
       delete_on_termination = true
     }
   }
