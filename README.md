@@ -184,7 +184,7 @@ path for workloads that can't use OIDC.
 ## Disaster recovery
 
 See [`docs/disaster-recovery.md`](docs/disaster-recovery.md) for backup and
-restore procedures. `make test` runs the restore drill end to end — take a
+restore procedures. `make dr-drill` runs the restore drill end to end — take a
 snapshot, destroy the node and its storage, restore, verify the data came
 back — and CI runs it on every PR, so the procedure can't rot unnoticed.
 

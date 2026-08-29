@@ -59,16 +59,32 @@ diagrams/         architecture.md
 
 ## Common commands
 
+`make` on its own prints every target, grouped. The ones worth knowing:
+
 ```bash
-make deploy    # 3-node Raft cluster + monitoring, via Docker Compose
-make status    # compose ps + sys/health
-make destroy   # docker compose down -v
-make lint      # terraform fmt/validate, ansible-lint, shellcheck,
-               # and the docs-index staleness check
-make test      # the DR restore drill only (not the full suite)
-make docs      # regenerate docs/README.md from the doc set
-make docs-check  # fail if it is stale — what CI runs
+make deploy        # 3-node Raft cluster + monitoring
+make deploy-full   # every optional service, as tests/integration runs it
+make status        # compose ps, plus each node's seal and HA state
+make destroy       # docker compose down -v
+
+make test          # every suite that needs no cluster (seconds)
+make test-suite SUITE=snapshot   # one suite
+make test-cluster  # the integration suite against a real cluster
+make dr-drill      # the restore drill
+
+make lint          # every static check CI runs, and nothing weaker
+make docs          # regenerate docs/README.md
 ```
+
+`make test` changed meaning. It used to run the DR restore drill alone;
+it now runs the shim suites, and the drill is `make dr-drill`. The narrow
+version was surprising in the one way a `test` target should not be —
+somebody who ran it and saw green had tested almost nothing.
+
+Suites are discovered from `tests/*/run-tests.sh` rather than listed, so
+a new one is picked up without editing the Makefile.
+`make check-ci-coverage` fails if a suite exists that no CI job runs,
+which is the gap this file warns about below.
 
 `make test` is deliberately narrow. To run a test suite, call it
 directly:
