@@ -1,0 +1,52 @@
+# Line endings, pinned.
+#
+# Everything executable here runs on Linux: the containers, the CI
+# runners, the cloud nodes. A shell script checked out with CRLF is not
+# a shell script with cosmetic differences — it does not run at all:
+#
+#   /usr/bin/env: 'bash\r': No such file or directory
+#
+# The shebang becomes `bash\r`, which is not a program. The failure
+# surfaces as exit 127 from whatever invoked it, naming no file and no
+# reason, and it is invisible to CI because CI checks out on Linux.
+#
+# Git for Windows ships with core.autocrlf=true in its system config, so
+# this is the default experience for a Windows contributor rather than a
+# misconfiguration. It also spreads quietly: only files Git actually
+# rewrites are converted, so a checkout can be half LF and half CRLF, and
+# a script that worked yesterday stops after an unrelated merge touches
+# it. That is how it was found — `make test-all` failed on two scripts
+# and passed on fifty-eight.
+#
+# A .gitattributes rule beats core.autocrlf, so this fixes the repository
+# for everyone without anyone having to change their global settings.
+
+# Normalise every text file in the repository to LF in the index and in
+# the working tree. `text=auto` lets Git decide what is text; `eol=lf`
+# says what to do when it is.
+* text=auto eol=lf
+
+# Named explicitly rather than left to detection. These are the files
+# whose CRLF failure mode is total rather than cosmetic.
+*.sh        text eol=lf
+*.bash      text eol=lf
+Makefile    text eol=lf
+
+# The fake-bin shims deliberately have no extension — they stand in for
+# `vault`, `aws`, `curl` and must be named exactly that to be found on
+# PATH — so no suffix rule reaches them.
+tests/*/fake-bin/*  text eol=lf
+
+# Templates that render into shell.
+*.tftpl     text eol=lf
+
+# Binary, and must never be touched. Git's own detection is usually
+# right about these, but "usually" is not a property worth relying on
+# for the file that renders every link to this repository.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.zip       binary
+*.snap      binary
