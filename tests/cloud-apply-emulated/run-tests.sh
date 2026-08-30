@@ -187,7 +187,7 @@ fi
 # Two roles, not one: the node role in iam.tf, and the role network.tf
 # creates so VPC flow logs can publish to CloudWatch. Expecting 1 was
 # wrong about the profile rather than a finding about it.
-for pair in "aws_subnet:6" "aws_nat_gateway:3" "aws_kms_key:1" "aws_s3_bucket:1" "aws_autoscaling_group:1" "aws_lb_target_group:1" "aws_iam_role:2" "aws_iam_instance_profile:1" "aws_launch_template:1"; do
+for pair in "aws_subnet:6" "aws_nat_gateway:3" "aws_kms_key:2" "aws_s3_bucket:1" "aws_autoscaling_group:1" "aws_lb_target_group:1" "aws_iam_role:2" "aws_iam_instance_profile:1" "aws_launch_template:1"; do
     t="${pair%%:*}"; want="${pair##*:}"
     got="$(count_type "$t")"
     if [[ "$got" == "$want" ]]; then
