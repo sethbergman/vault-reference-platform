@@ -68,10 +68,52 @@ command -v openssl >/dev/null 2>&1 || die "openssl not found on PATH"
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL="*"
 
+# Existence is not the question. Consistency is.
+#
+# This used to check only that ca.crt was present, and say "nothing to
+# do". That is true right up until the material is half-replaced, which
+# happens in ordinary use: tests/integration runs the PKI migration
+# against this directory, which reissues the Vault nodes from Vault's own
+# PKI and swaps ca.crt for the PKI CA -- and leaves vault-unseal alone,
+# because it is the Transit backend rather than a Raft peer.
+#
+# The directory is then internally inconsistent, every file is present,
+# and the next bootstrap reports success and hands the cluster a CA that
+# cannot verify the first container it talks to. The symptom is
+#
+#   curl: (60) SSL certificate problem: unable to get local issuer certificate
+#
+# in a wait loop, which names neither the CA nor the certificate.
+#
+# So: verify every leaf against the CA on disk, and only skip the work if
+# they actually agree.
 if [[ -f "${TLS_DIR}/ca.crt" && "$FORCE" == false ]]; then
-    log "Certificates already exist in ${TLS_DIR} — nothing to do."
-    log "Pass --force to reissue them (every node must then be restarted)."
-    exit 0
+    inconsistent=()
+    for node in "${NODES[@]}"; do
+        if [[ ! -f "${TLS_DIR}/${node}.crt" ]]; then
+            inconsistent+=("${node} (no certificate)")
+        elif ! openssl verify -CAfile "${TLS_DIR}/ca.crt"                 "${TLS_DIR}/${node}.crt" >/dev/null 2>&1; then
+            inconsistent+=("${node} (not signed by the CA on disk)")
+        fi
+    done
+
+    if [[ ${#inconsistent[@]} -eq 0 ]]; then
+        log "Certificates already exist in ${TLS_DIR} and verify against the CA — nothing to do."
+        log "Pass --force to reissue them (every node must then be restarted)."
+        exit 0
+    fi
+
+    log "The material in ${TLS_DIR} is inconsistent:"
+    for item in "${inconsistent[@]}"; do
+        log "  ${item}"
+    done
+    log ""
+    log "Most likely the PKI migration ran here (tests/integration does"
+    log "this), which reissues the Vault nodes and replaces ca.crt while"
+    log "leaving vault-unseal on the original CA."
+    log ""
+    log "Reissuing everything so the directory agrees with itself."
+    FORCE=true
 fi
 
 mkdir -p "$TLS_DIR"

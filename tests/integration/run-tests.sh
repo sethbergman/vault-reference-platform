@@ -61,14 +61,42 @@ compose() {
         -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
 }
 
+# The TLS directory is the one thing this suite changes outside its own
+# temp space, and it changes it destructively: the migration section
+# reissues every Vault node from Vault's own PKI and replaces ca.crt with
+# the PKI CA. vault-unseal is left on the original CA, because it is the
+# Transit backend rather than a Raft peer.
+#
+# What survives the run is therefore a directory where every file exists
+# and the CA verifies none of them. Left in place it breaks the next
+# bootstrap, and the symptom is a wait loop reporting
+#
+#   curl: (60) SSL certificate problem: unable to get local issuer certificate
+#
+# which names neither the CA nor the certificate. Copy it out before the
+# migration touches anything, and put it back on the way out.
+TLS_BACKUP="${WORK}/tls-before"
+cp -r "$TLS_DIR" "$TLS_BACKUP" 2>/dev/null || true
+
+restore_tls() {
+    [[ -d "$TLS_BACKUP" ]] || return 0
+    # Into a directory the compose stack still mounts, so replace the
+    # contents rather than the directory itself.
+    rm -f "${TLS_DIR}"/*.crt "${TLS_DIR}"/*.key 2>/dev/null || true
+    cp "${TLS_BACKUP}"/* "$TLS_DIR" 2>/dev/null || true
+}
+
 cleanup() {
     local rc=$?
     if [[ "$KEEP_RUNNING" == true ]]; then
         info "Leaving the cluster up (--keep-running). Tear down with:"
         info "  cd docker/dev && docker compose down -v"
+        info "The TLS material is post-migration; regenerate before the"
+        info "next run with: ./scripts/generate-dev-certs.sh --force"
     else
         info "Tearing down the cluster..."
         compose down -v >/dev/null 2>&1 || true
+        restore_tls
     fi
     rm -rf "$WORK"
     exit "$rc"
@@ -1286,8 +1314,10 @@ fi
 # The payoff: the rendered credential is real. A file containing
 # plausible-looking values proves nothing until something authenticates
 # with them.
-AGENT_USER="$(sed -n 's/^DB_USERNAME=//p' <<< "$RENDERED" | tr -d '' | head -1)"
-AGENT_PASS="$(sed -n 's/^DB_PASSWORD=//p' <<< "$RENDERED" | tr -d '' | head -1)"
+AGENT_USER="$(sed -n 's/^DB_USERNAME=//p' <<< "$RENDERED" | tr -d '
+' | head -1)"
+AGENT_PASS="$(sed -n 's/^DB_PASSWORD=//p' <<< "$RENDERED" | tr -d '
+' | head -1)"
 
 if [[ -n "$AGENT_USER" && "$(psql_as "$AGENT_USER" "$AGENT_PASS" "SELECT 1;")" == "1" ]]; then
     ok "and the rendered credential actually connects to Postgres"
@@ -1311,7 +1341,8 @@ fi
 # Checked inside the container, which is where Agent reads from. The
 # copy left on the host is the provisioning system's to clean up; Agent
 # only ever sees the one it was given.
-LEFTOVER="$(compose exec -T vault-agent sh -c 'ls /vault/agent/creds/secret_id 2>/dev/null || true' 2>/dev/null | tr -d '[:space:]' || true)"
+LEFTOVER="$(compose exec -T vault-agent sh -c 'ls /vault/agent/creds/secret_id 2>/dev/null || true' 2>/dev/null | tr -d '[:space:]
+' || true)"
 if [[ -z "$LEFTOVER" ]]; then
     ok "the secret_id was removed after Agent read it"
 else
@@ -1321,7 +1352,8 @@ fi
 
 # Agent's default perms are 0644. For a file holding a live database
 # password that means every account on the host can read it.
-RENDER_MODE="$(compose exec -T vault-agent stat -c '%a' /rendered/db.env 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+RENDER_MODE="$(compose exec -T vault-agent stat -c '%a' /rendered/db.env 2>/dev/null | tr -d '[:space:]
+' || echo unknown)"
 if [[ "$RENDER_MODE" == "600" ]]; then
     ok "the rendered secret is mode 0600 (Agent defaults to 0644)"
 else
