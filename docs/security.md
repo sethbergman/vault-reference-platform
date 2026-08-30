@@ -137,8 +137,44 @@ In the local profile that is Prometheus and the blackbox exporter, which
 both mount `docker/dev/tls/ca.crt`:
 
 ```bash
-docker compose -f docker/dev/docker-compose.yml restart prometheus blackbox
+docker compose -f docker/dev/docker-compose.yml \
+    up -d --force-recreate prometheus blackbox
 ```
+
+Recreate, not `restart`, and the difference is not cosmetic. The prune
+replaces the bundle rather than editing it — `issue-node-cert.sh`
+installs the new one with `install -m 0644`, so the path survives and the
+inode does not — and both containers mount that path as a *single file*.
+Docker Desktop's WSL backend resolves a single-file bind mount once, when
+the container is created, into a content-addressed copy under
+`docker-desktop-bind-mounts`. After the prune that copy is gone, and
+`restart` reuses the reference to it:
+
+```text
+error mounting ".../docker-desktop-bind-mounts/..." to rootfs at
+"/etc/blackbox/vault-ca.crt": no such file or directory
+```
+
+The container then does not come back at all: it dies with exit 127, so
+the probe is not stale, it is absent — and so is every other metric
+Prometheus was reporting.
+
+The cache key is the host *path*, not the contents. Two runs against
+different PKI roots produce the same dangling entry, so this is not
+intermittent: it recurs on every run of the migration, on every machine
+using the Docker Desktop WSL backend.
+
+Native Linux Docker re-resolves the bind by path when the container
+starts, so a plain `restart` works there and CI has never reproduced
+this. That is worth naming as a hazard of its own: a green integration
+run says nothing about whether this procedure works on the machine you
+are about to run it on. It was found on a developer laptop, by a suite
+that passes in CI on the same commit.
+
+Mounting `docker/dev/tls` as a directory would sidestep all of it, since
+a directory bind mount survives a file being replaced inside it. That is
+deliberately not done — the directory holds every node's private key,
+and Prometheus has no business being able to read them.
 
 The failure mode is worth stating because it is quiet. The blackbox probe
 does not error in a way anyone sees — it simply stops producing
