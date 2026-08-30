@@ -23,6 +23,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.11 | Audit logs that outlive the node they describe |
 | v0.12 | Tamper-evident audit: a hash chain, and anchors the collector cannot reach |
 | v0.13 | Alert routing by severity; MySQL as a second database engine |
+| v0.14 | Five cloud defects found and fixed without an apply: static pre-flight, and a real apply against an emulated AWS API |
 
 ## The honest gap
 
