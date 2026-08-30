@@ -61,6 +61,23 @@ compose() {
         -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
 }
 
+# Prometheus answering /-/ready is the only evidence that it is actually
+# up. `docker compose restart` reports success for a service it never
+# created, and a running container is not the same as a serving one, so
+# neither is worth checking instead. -f is deliberate: /-/ready answers
+# 503 while Prometheus is still loading, and a bare curl would treat
+# that as a reachable endpoint.
+wait_prometheus() {
+    local tries="${1:-30}"
+    for _ in $(seq 1 "$tries"); do
+        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:9090/-/ready" 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 # The TLS directory is the one thing this suite changes outside its own
 # temp space, and it changes it destructively: the migration section
 # reissues every Vault node from Vault's own PKI and replaces ca.crt with
@@ -569,9 +586,28 @@ fi
 # Restarting them here is the documented remedy, and running it before
 # that assertion is what makes the assertion proof that the remedy works.
 info "Restarting monitoring so it reloads the new trust bundle..."
-compose restart prometheus blackbox >/dev/null 2>&1 \
-    || info "  (could not restart monitoring; probe assertions may fail)"
-sleep 10
+
+# Do not swallow what Docker said. When this restart failed on a
+# developer machine, the suite printed one parenthetical and carried a
+# stopped Prometheus into the monitoring section, where eight assertions
+# failed blaming rule_files, two unreported metrics, the blackbox probe
+# and Alertmanager. Every one of those messages was wrong, and the time
+# spent checking the rule file was spent because this line hid the only
+# accurate sentence available.
+if ! RESTART_OUT="$(compose restart prometheus blackbox 2>&1)"; then
+    info "  restart failed; docker said:"
+    echo "$RESTART_OUT" >&2
+fi
+
+# Sleeping a fixed ten seconds assumes the restart worked. Wait for
+# Prometheus to answer instead, and recreate it if it does not, rather
+# than carrying a stopped container into assertions that cannot tell a
+# stopped Prometheus from a broken rule file.
+if ! wait_prometheus 30; then
+    info "  Prometheus did not come back after the restart; recreating it..."
+    compose up -d prometheus blackbox >/dev/null 2>&1 || true
+    wait_prometheus 30 || info "  Prometheus is still not answering on 9090."
+fi
 
 # ---------------------------------------------------------------------------
 info ""
@@ -1132,7 +1168,28 @@ prom() {
     curl -sS --max-time 10 "http://127.0.0.1:9090/api/v1/$1" 2>/dev/null || echo '{}'
 }
 
-# Wait for Prometheus to have scraped at least once.
+# Assert reachability rather than falling through when the wait expires.
+# Every assertion below reads Prometheus, and `prom` answers {} for a
+# refused connection exactly as it does for an empty result — so a
+# Prometheus that is simply not running reports as a missing rule file,
+# two unreported metrics, a dead probe, an alert that never fires and a
+# push that never landed. Eight failures, none naming the cause. One
+# accurate failure here is worth more than all of them.
+if wait_prometheus 30; then
+    ok "Prometheus is reachable"
+else
+    bad "Prometheus is reachable" "nothing is answering on 127.0.0.1:9090 — the failures below describe that, not what they name"
+    info "  compose ps:"
+    compose ps prometheus blackbox >&2 || true
+    info "  last 20 lines of the prometheus log:"
+    compose logs --tail 20 prometheus >&2 || true
+fi
+
+# Ready is not the same as scraped. /-/ready answers as soon as the web
+# handler is up, but the assertions below ask for series, and the first
+# scrape has not necessarily happened yet. Wait for one, quietly: an
+# expiry here is not itself a failure, and the assertions that follow
+# now report an unreachable Prometheus accurately.
 for _ in $(seq 1 30); do
     [[ "$(prom 'query?query=up' | jq -r '.status // empty' 2>/dev/null)" == "success" ]] && break
     sleep 2
