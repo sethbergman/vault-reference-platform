@@ -29,10 +29,45 @@ module "vault_cluster" {
 # ansible/group_vars/vault_nodes_aws.yml.example). Key rotation is AWS-side
 # and transparent to Vault — it always calls KMS for the current key
 # version, so there's no coordination needed with the Vault cluster.
+# The key everything durable depends on.
+#
+# Vault seals the snapshot's own keyring with this, and storage.tf uses it
+# for the bucket's SSE-KMS as well -- deliberately the same key, because a
+# snapshot needs the SSE key to read the bytes AND the seal key to decrypt
+# what is inside them. One key to keep alive is a rule an operator can
+# follow; two is a rule they will half-follow.
+#
+# Thirty days rather than seven. `terraform destroy` schedules this for
+# deletion, and the window is the only thing standing between tearing
+# down a test cluster and permanently stranding every snapshot ever taken
+# with this key -- including from clusters that no longer exist. Seven
+# days is a short time to notice.
 resource "aws_kms_key" "vault_autounseal" {
-  description             = "Vault auto-unseal key for ${var.cluster_name}"
+  description             = "Vault auto-unseal and snapshot key for ${var.cluster_name}"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+}
+
+# Data at rest on the nodes, which is not durable and should not be
+# treated as though it were.
+#
+# Root volumes live and die with their instances: the autoscaling group
+# replaces them, a teardown removes them, and nothing is recoverable from
+# one afterwards. Encrypting them with the seal key coupled the lifecycle
+# of the disks to the lifecycle of the backups, so destroying a cluster
+# put its archived snapshots on a deletion timer.
+#
+# Seven days is right here. Losing this key costs nothing that was not
+# already going away.
+resource "aws_kms_key" "vault_data" {
+  description             = "Vault node volume encryption for ${var.cluster_name}"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+}
+
+resource "aws_kms_alias" "vault_data" {
+  name          = "alias/${var.cluster_name}-vault-data"
+  target_key_id = aws_kms_key.vault_data.key_id
 }
 
 resource "aws_kms_alias" "vault_autounseal" {

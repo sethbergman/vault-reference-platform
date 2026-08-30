@@ -35,8 +35,12 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "snapshots" {
 
   rule {
     apply_server_side_encryption_by_default {
-      # Encrypted with the same key that seals the cluster. Belt and
-      # braces — the snapshot contents are already encrypted by Vault.
+      # The seal key, deliberately, and not the node volume key.
+      #
+      # Reading a snapshot needs both: this key to decrypt the object, and
+      # the seal key to decrypt the keyring Vault sealed inside it. Using
+      # one key for both means exactly one thing has to outlive a
+      # teardown. See the note on the key in main.tf.
       sse_algorithm     = "aws:kms"
       kms_master_key_id = aws_kms_key.vault_autounseal.arn
     }

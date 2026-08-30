@@ -187,7 +187,7 @@ fi
 # Two roles, not one: the node role in iam.tf, and the role network.tf
 # creates so VPC flow logs can publish to CloudWatch. Expecting 1 was
 # wrong about the profile rather than a finding about it.
-for pair in "aws_subnet:6" "aws_nat_gateway:3" "aws_kms_key:1" "aws_s3_bucket:1" "aws_autoscaling_group:1" "aws_lb_target_group:1" "aws_iam_role:2" "aws_iam_instance_profile:1" "aws_launch_template:1"; do
+for pair in "aws_subnet:6" "aws_nat_gateway:3" "aws_kms_key:2" "aws_s3_bucket:1" "aws_autoscaling_group:1" "aws_lb_target_group:1" "aws_iam_role:2" "aws_iam_instance_profile:1" "aws_launch_template:1"; do
     t="${pair%%:*}"; want="${pair##*:}"
     got="$(count_type "$t")"
     if [[ "$got" == "$want" ]]; then
@@ -215,6 +215,33 @@ if [[ "$MATCHER" == "200,429" ]]; then
     ok "the target group accepts 200 and 429 from standbys"
 else
     bad "the target group accepts 200 and 429 from standbys" "matcher is '${MATCHER}'"
+fi
+
+# The two KMS keys must be genuinely different keys.
+#
+# terraform test cannot check this: its mock gives every aws_kms_key the
+# same arn, so the comparison passes or fails for both keys at once and
+# means nothing. Here the API mints real ones, so the question is
+# answerable.
+#
+# It matters because they used to be a single key. `terraform destroy`
+# then scheduled the seal key along with the node volumes it also
+# encrypted, putting every snapshot ever taken with it on a deletion
+# timer -- including snapshots from clusters long gone.
+SEAL_ARN="$(attr_of aws_kms_key vault_autounseal arn)"
+DATA_ARN="$(attr_of aws_kms_key vault_data arn)"
+EBS_KEY="$(attr_of aws_launch_template vault block_device_mappings.0.ebs.0.kms_key_id)"
+
+if [[ -n "$SEAL_ARN" && -n "$DATA_ARN" && "$SEAL_ARN" != "$DATA_ARN" ]]; then
+    ok "the seal key and the volume key are different keys"
+else
+    bad "the seal key and the volume key are different keys"         "seal=${SEAL_ARN:-<none>} data=${DATA_ARN:-<none>}"
+fi
+
+if [[ -n "$EBS_KEY" && "$EBS_KEY" != "$SEAL_ARN" ]]; then
+    ok "the root volume is not encrypted with the seal key"
+else
+    bad "the root volume is not encrypted with the seal key"         "destroy would then schedule the key every snapshot depends on"
 fi
 
 # The bucket the snapshots go to has to be encrypted with the cluster's own
