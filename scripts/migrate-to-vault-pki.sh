@@ -354,11 +354,21 @@ phase_prune() {
     # this bundle to verify Vault's TLS, and until they are restarted the
     # probe stops reporting -- certificate expiry silently unmonitored,
     # which is precisely the shape the absent() alerts exist to catch.
+    #
+    # The remedy is a recreate, not a restart. The bundle is replaced
+    # rather than edited, so a single-file bind mount of it can still be
+    # pointing at the file that went away -- on Docker Desktop the
+    # container then refuses to start at all. docs/security.md has the
+    # error and the reasoning.
     log ""
     log "NOTE: the bootstrap CA is gone from the trust bundle. Anything else"
     log "      that reads it -- monitoring, probes, application clients --"
     log "      loaded it at startup and must be restarted to pick up the"
-    log "      new contents. See docs/security.md."
+    log "      new contents. Recreate rather than restart anything that"
+    log "      bind-mounts the bundle as a single file -- the path is"
+    log "      unchanged and the inode is not, and a restart can reuse a"
+    log "      reference to the file that was replaced. See"
+    log "      docs/security.md."
 }
 
 case "$PHASE" in

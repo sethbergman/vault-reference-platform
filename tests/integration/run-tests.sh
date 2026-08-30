@@ -583,29 +583,53 @@ fi
 # reported, and certificate expiry goes unmonitored without an error
 # anywhere. The assertion further down caught exactly that.
 #
-# Restarting them here is the documented remedy, and running it before
+# Recreating them here is the documented remedy, and running it before
 # that assertion is what makes the assertion proof that the remedy works.
-info "Restarting monitoring so it reloads the new trust bundle..."
+info "Recreating monitoring so it reloads the new trust bundle..."
 
-# Do not swallow what Docker said. When this restart failed on a
-# developer machine, the suite printed one parenthetical and carried a
-# stopped Prometheus into the monitoring section, where eight assertions
-# failed blaming rule_files, two unreported metrics, the blackbox probe
-# and Alertmanager. Every one of those messages was wrong, and the time
+# Do not swallow what Docker said. When this failed on a developer
+# machine, the suite printed one parenthetical and carried a stopped
+# Prometheus into the monitoring section, where eight assertions failed
+# blaming rule_files, two unreported metrics, the blackbox probe and
+# Alertmanager. Every one of those messages was wrong, and the time
 # spent checking the rule file was spent because this line hid the only
 # accurate sentence available.
-if ! RESTART_OUT="$(compose restart prometheus blackbox 2>&1)"; then
-    info "  restart failed; docker said:"
-    echo "$RESTART_OUT" >&2
+#
+# --force-recreate, not `restart`, and the difference is load-bearing.
+# The prune replaced ca.crt rather than editing it -- issue-node-cert.sh
+# installs the new bundle with `install -m 0644`, so the path is the
+# same and the inode is not -- and both containers bind-mount that path
+# as a single file. Docker Desktop's WSL backend resolves a single-file
+# bind at container-create time into a content-addressed copy under
+# docker-desktop-bind-mounts, so the container still references the file
+# that was replaced. `restart` reuses that reference and the daemon
+# refuses outright:
+#
+#   error mounting ".../docker-desktop-bind-mounts/..." to rootfs at
+#   "/etc/blackbox/vault-ca.crt": no such file or directory
+#
+# The container then does not come back at all -- exit 127 -- so the
+# probe is not stale, it is absent. Recreating builds new containers,
+# which re-resolves the mount. It is also the portable answer: native
+# Linux Docker re-resolves the bind by path on a plain restart, which is
+# why CI has never reproduced this and a developer machine hits it on
+# every run.
+#
+# Mounting docker/dev/tls as a directory would sidestep all of it, and
+# is deliberately not done: that directory holds every node's private
+# key, and Prometheus has no business being able to read them.
+if ! RECREATE_OUT="$(compose up -d --force-recreate prometheus blackbox 2>&1)"; then
+    info "  recreate failed; docker said:"
+    echo "$RECREATE_OUT" >&2
 fi
 
-# Sleeping a fixed ten seconds assumes the restart worked. Wait for
-# Prometheus to answer instead, and recreate it if it does not, rather
+# Sleeping a fixed ten seconds assumes the recreate worked. Wait for
+# Prometheus to answer instead, and try once more if it does not, rather
 # than carrying a stopped container into assertions that cannot tell a
 # stopped Prometheus from a broken rule file.
 if ! wait_prometheus 30; then
-    info "  Prometheus did not come back after the restart; recreating it..."
-    compose up -d prometheus blackbox >/dev/null 2>&1 || true
+    info "  Prometheus did not come back; trying once more..."
+    compose up -d --force-recreate prometheus blackbox >/dev/null 2>&1 || true
     wait_prometheus 30 || info "  Prometheus is still not answering on 9090."
 fi
 
