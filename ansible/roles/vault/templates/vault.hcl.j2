@@ -50,6 +50,21 @@ listener "tcp" {
   tls_min_version = "tls12"
 }
 
+# Rendered from vault_ui_enabled rather than omitted when the UI is off,
+# so the config states the answer either way. An absent setting and an
+# explicit opt-out behave identically to Vault, and differ entirely to
+# the next person reading the file to find out whether the UI is on.
+#
+# Filtered through `lower` rather than tested with a conditional: an
+# override arriving as the string "false" is truthy to Jinja, so a
+# conditional would enable the UI for someone who explicitly asked to
+# turn it off. This renders the value instead of branching on it.
+#
+# Deliberately no literal setting forms in this comment: the tests grep
+# the rendered output, and a comment that quotes the line it explains
+# satisfies the assertion whether or not the line itself survives.
+ui = {{ vault_ui_enabled | lower }}
+
 api_addr     = "https://{{ ansible_default_ipv4.address }}:8200"
 cluster_addr = "https://{{ ansible_default_ipv4.address }}:8201"
 

@@ -276,6 +276,29 @@ assert_contains     "still configures storage"   "$LOCAL_HCL" 'storage "raft"'
 assert_contains     "still configures a listener" "$LOCAL_HCL" 'listener "tcp"'
 
 # ---------------------------------------------------------------------------
+printf '\n=== Rendered vault.hcl: the web UI ===\n'
+# ---------------------------------------------------------------------------
+# The UI is served by the API listener, so enabling it widens what is
+# reachable on a port that is already open. It was previously absent from
+# the template altogether, which left it off by omission rather than by
+# decision -- indistinguishable in behaviour, and invisible to anyone
+# reading the config to find out.
+assert_contains "defaults to off"        "$AWS_HCL"   "ui = false"
+assert_contains "off on azure too"       "$AZURE_HCL" "ui = false"
+assert_contains "off with no cloud"      "$LOCAL_HCL" "ui = false"
+
+UI_ON="$(python3 "$RENDER" "${WORK}/local.yml" vault_ui_enabled=true 2>&1 || echo "RENDER FAILED")"
+assert_contains "turns on when asked"    "$UI_ON" "ui = true"
+
+# The value is rendered, not branched on. A conditional would read the
+# string "false" as truthy and turn an explicit opt-out into ui = true --
+# the quiet direction to fail in, since the config would then say the
+# opposite of what was asked for.
+UI_OFF="$(python3 "$RENDER" "${WORK}/local.yml" vault_ui_enabled=false 2>&1 || echo "RENDER FAILED")"
+assert_contains "a string false is still off" "$UI_OFF" "ui = false"
+assert_not_contains "and not on"              "$UI_OFF" "ui = true"
+
+# ---------------------------------------------------------------------------
 printf '\n=== Template fails closed on a missing variable ===\n'
 # ---------------------------------------------------------------------------
 # Jinja2's default is to render an undefined variable as the empty

@@ -20,6 +20,33 @@ vault_cloud: ""
 vault_seal_type: shamir
 
 # ---------------------------------------------------------------------------
+# Web UI
+# ---------------------------------------------------------------------------
+# Vault's built-in web UI. It is served by the API listener on 8200, not
+# on a port of its own, so enabling it widens what is reachable on a port
+# already open rather than opening a new one. Nothing in the network
+# layer distinguishes the two.
+#
+# Off by default, which is also Vault's own default. That is deliberate
+# twice over. It matches the convention the rest of this role follows —
+# anything that changes a cluster's trust characteristics is opt-in — and
+# it preserves what every cluster this role has ever built already did:
+# the template carried no `ui` setting at all, so the UI was disabled by
+# omission rather than by decision. Flipping the default to true here
+# would silently expose a login surface on the next converge of an
+# existing cluster. Making the setting explicit keeps the behaviour and
+# removes the accident.
+#
+# The local profile deliberately differs: docker/vault/config/vault.hcl.tpl
+# sets ui = true, because a dev cluster exists to be looked at. Do not
+# read that as the recommendation for a deployed one.
+#
+# Turning this on is not sufficient for UI login through OIDC. The UI has
+# its own callback URL, which must be allowed on both the Vault role and
+# the IdP's client registration — see docs/human-authentication.md.
+vault_ui_enabled: false
+
+# ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
 vault_tls_dir: /etc/vault.d/tls
