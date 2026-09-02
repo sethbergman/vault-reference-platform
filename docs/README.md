@@ -27,7 +27,7 @@ tested.
 | [Human authentication (OIDC)](human-authentication.md) | Trying it locally · Groups do not map themselves · Where the policies show up · Why /etc/hosts · Logging in through the web UI · Pointing at a real identity provider · CI coverage · Troubleshooting |
 | [Monitoring and Alerting](monitoring.md) | Why the alerts are about absence · The trap these rules exist to avoid · The alerts · Where the numbers come from · Two things had to be added before absence was observable · Routing · What is tested · What is not covered |
 | [Operations Runbooks](operations.md) | Health checks · Upgrades · Secret rotation · Capacity planning · Scheduled timers · Responding to alerts · Common incidents |
-| [Roadmap](roadmap.md) | Shipped · The honest gap · Next · Toward v1.0 · What "done" means here |
+| [Roadmap](roadmap.md) | Shipped · The honest gap · Next · Toward v1.0 · After v1.0: production operations · What "done" means here |
 | [Rolling upgrades](rolling-upgrades.md) | What it does · Usage · Prerequisites · Rollback |
 | [Secret rotation](secret-rotation.md) | Why rotate `secret_id`s · One-time setup: `bootstrap-approle.sh` · Recurring rotation: `rotate-secret-id.sh` · Prerequisites · Rollback / troubleshooting |
 | [Security Model](security.md) | Transport · Unsealing · Authentication & policy · Secret rotation · Audit · Hardening baseline (applied via Ansible) · Automated scanning |

@@ -438,7 +438,7 @@ engines differ"). Do not use a `type:` prefix. Branch names do use one
 ## Project state and gaps
 
 `docs/roadmap.md` is the authority on what is done and what "not"
-means; the README's Roadmap section lists the three things standing
+means; the README's Roadmap section lists the five things standing
 between here and v1.0:
 
 1. A real AWS apply.
@@ -447,6 +447,20 @@ between here and v1.0:
 3. Off-host audit shipping. The trail is now hash-chained and anchored
    where the collector cannot write, but both volumes still sit on one
    Docker daemon — tamper *evidence*, not tamper proofing.
+4. Terraform state that survives a team. No profile declares a
+   `backend`, so state is local and unlocked. CI's `-backend=false` is
+   what keeps `validate` runnable without credentials; do not regress it
+   while adding one.
+5. An upgrade path matching how the profiles deploy. `vault-upgrade.sh`
+   is leader-aware SSH; the cloud profiles replace nodes through ASG
+   instance refresh and a manual-upgrade scale set, which are not.
+
+Items 4 and 5 were added after the first three and are about operating a
+cluster over time, so neither is reachable by `tests/cloud-apply-emulated`.
+`docs/roadmap.md` also carries an "After v1.0: production operations"
+list — cloud monitoring, the root token after bootstrap, seal migration
+and key rotation, quorum-loss recovery, and restore verification at the
+cloud destination. Those are deferred deliberately, not forgotten.
 
 When touching any of these, keep the documentation's precision about
 what is proven versus what is merely configured. Overstating it is the

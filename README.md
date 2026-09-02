@@ -450,6 +450,23 @@ What stands between here and v1.0, in order:
    Both volumes still sit on the same Docker daemon, so this is tamper
    *evidence*, not tamper proofing, and the trail does not yet leave the
    machine. Shipping it somewhere else is the remaining half.
+4. **Terraform state that survives a team.** Neither profile declares a
+   `backend`, so state is a file on whoever ran `apply` last — no lock
+   to stop two concurrent applies corrupting it, and losing the file
+   means losing the ability to change a running Vault cluster while
+   Vault itself stays up holding production secrets. The work is the
+   bootstrap ordering, not the backend block: the bucket has to exist
+   before the configuration that uses it.
+5. **An upgrade path that matches how the profiles deploy.**
+   `scripts/vault-upgrade.sh` steps the leader down and swaps binaries
+   over SSH. `terraform/aws` installs Vault from user-data and refreshes
+   instances through the scaling group; `terraform/azure` is a scale set
+   set to upgrade manually. The upgrade an operator would actually run
+   on AWS replaces nodes through a mechanism with no notion of Raft
+   leadership, and the leader-aware script never executes.
+
+Items 4 and 5 are about operating a cluster over time rather than
+standing one up, which is why the emulated apply reaches neither.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.
