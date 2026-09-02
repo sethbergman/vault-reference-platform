@@ -17,7 +17,7 @@ services:
       - ../dex/config.yaml:/etc/dex/config.yaml:ro
 
   # Target for the database secrets engine (see docs/dynamic-secrets.md).
-  # Started only by `bootstrap-dev-cluster.sh --with-database`.
+  # Started only by `bootstrap-dev-cluster.sh --with-postgres`.
   #
   # The credentials here are the *bootstrap* ones Vault uses to connect.
   # scripts/bootstrap-database-secrets.sh rotates the password immediately

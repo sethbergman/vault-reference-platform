@@ -5,7 +5,7 @@
 # Usage:
 #   ./bootstrap-dev-cluster.sh [--nodes vault-0,vault-1,vault-2]
 #                              [--with-monitoring] [--with-oidc]
-#                              [--with-database] [--with-mysql]
+#                              [--with-postgres] [--with-mysql]
 #                              [--with-audit] [--with-agent]
 #
 # Example:
@@ -13,10 +13,18 @@
 #   ./bootstrap-dev-cluster.sh --nodes vault-0         # single node, e.g. CI
 #   ./bootstrap-dev-cluster.sh --with-monitoring       # + Prometheus/Grafana
 #   ./bootstrap-dev-cluster.sh --with-oidc             # + Dex for human login
-#   ./bootstrap-dev-cluster.sh --with-database         # + Postgres for dynamic creds
+#   ./bootstrap-dev-cluster.sh --with-postgres         # + Postgres for dynamic creds
 #   ./bootstrap-dev-cluster.sh --with-mysql            # + MySQL, the second engine
 #   ./bootstrap-dev-cluster.sh --with-audit            # + collector for socket audit
 #   ./bootstrap-dev-cluster.sh --with-agent            # + Vault Agent for app secrets
+#
+# Deprecated flags:
+#   --with-database   Alias for --with-postgres. It was named when Postgres
+#                     was the only target for the database secrets engine, so
+#                     it read as "the database feature"; --with-mysql then
+#                     arrived named after its engine, leaving the pair
+#                     asymmetric about which of the two databases it started.
+#                     Still accepted, with a warning -- see the parser below.
 #
 # What it does:
 #   1. Starts vault-unseal (docker/vault-unseal) and brings it up the normal,
@@ -60,7 +68,7 @@ set -euo pipefail
 NODES="vault-0,vault-1,vault-2"
 WITH_MONITORING=false
 WITH_OIDC=false
-WITH_DATABASE=false
+WITH_POSTGRES=false
 WITH_MYSQL=false
 WITH_AUDIT=false
 WITH_AGENT=false
@@ -117,7 +125,14 @@ while [[ $# -gt 0 ]]; do
         --nodes)  NODES="$2"; shift 2 ;;
         --with-monitoring) WITH_MONITORING=true; shift ;;
         --with-oidc) WITH_OIDC=true; shift ;;
-        --with-database) WITH_DATABASE=true; shift ;;
+        --with-postgres) WITH_POSTGRES=true; shift ;;
+        # Warns rather than failing. This flag appears in every published
+        # example of this repository up to now, including ones a reader
+        # may have copied into their own CI; removing it outright would
+        # break those runs to buy nothing but a shorter case statement.
+        --with-database)
+            log "--with-database is deprecated; use --with-postgres."
+            WITH_POSTGRES=true; shift ;;
         --with-mysql) WITH_MYSQL=true; shift ;;
         --with-audit) WITH_AUDIT=true; shift ;;
         --with-agent) WITH_AGENT=true; shift ;;
@@ -196,7 +211,7 @@ fi
 # accepts TCP connections for a while before it will accept queries, so a
 # port check passes and the first `vault write database/config/...` fails
 # with "the database system is starting up".
-if [[ "$WITH_DATABASE" == true ]]; then
+if [[ "$WITH_POSTGRES" == true ]]; then
     log "Starting Postgres (target for the database secrets engine)..."
     compose up -d --wait postgres >&2         || die "Postgres did not become healthy"
     log "Postgres is accepting queries."

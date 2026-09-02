@@ -56,7 +56,7 @@ deploy-min: ## Just the cluster, no extras — fastest way to get a Vault
 
 .PHONY: deploy-full
 deploy-full: ## Every optional service, as the integration suite runs it
-	./scripts/bootstrap-dev-cluster.sh --with-monitoring --with-database \
+	./scripts/bootstrap-dev-cluster.sh --with-monitoring --with-postgres \
 		--with-oidc --with-audit --with-agent
 
 .PHONY: status

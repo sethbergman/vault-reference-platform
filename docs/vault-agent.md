@@ -8,7 +8,7 @@ The application does not authenticate to Vault. It holds no token. It
 makes no Vault API call. It reads a file.
 
 ```bash
-./scripts/bootstrap-dev-cluster.sh --with-database --with-agent
+./scripts/bootstrap-dev-cluster.sh --with-postgres --with-agent
 ./scripts/bootstrap-database-secrets.sh --password bootstrap-only-rotated-immediately
 ./scripts/bootstrap-agent.sh
 
