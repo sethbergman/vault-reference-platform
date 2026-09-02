@@ -15,7 +15,7 @@ Issues and PRs are welcome.
 
 ## Writing tests
 
-Two habits, both learned from assertions in this repository that passed
+Three habits, all learned from assertions in this repository that passed
 while the thing they described was broken.
 
 **Prefer pinning the value to naming what to exclude.** An assertion of
@@ -40,6 +40,29 @@ accident: write an assertion rejecting `CREATE, ALTER, DROP`, then
 mutation is the neighbouring one the assertion never mentions — granting
 only `CREATE` — because that is the change a future contributor actually
 makes.
+
+**Check that the assertion has a reachable failure.** Some cannot fail at
+all, and they look exactly like the ones that can. Two shapes have turned
+up here so far:
+
+- *It restates the code's arithmetic instead of reading it.* An assertion
+  that a Key Vault name fits Azure's 24-character limit re-derived
+  `substr(cluster_name, 0, 15)` in the test file and asserted
+  `15 + 1 + 8 <= 24`. `substr` caps its result, so that held whatever the
+  module did — widening the module's own budget to 20 left it green. If a
+  test recomputes what the code computes, it is testing the arithmetic,
+  not the code. Expose the value as a local or an output and read it.
+- *It sits on a bound something else already enforces.* Asserting
+  `soft_delete_retention_days >= 7` cannot fail, because the azurerm
+  provider refuses anything outside 7-90 before the assertion runs.
+  Provider schemas, platform floors and variable validations all do this.
+  An assertion has to sit above the enforced bound to mean anything.
+
+The mutation tables in `terraform/*/tests/README.md` exist for this: a
+row is added only after the mutation has been applied and the named run
+watched to fail. A table of rows nobody has run is worse than no table,
+because it reads as evidence. The Azure table was written that way, and
+six assertions did not survive the first run of it.
 
 ## Commit style
 

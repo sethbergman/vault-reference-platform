@@ -333,5 +333,30 @@ Both habits are in [CONTRIBUTING.md](../CONTRIBUTING.md), and
 opinion about — starting with trap handlers that return the result of a
 bare test, which made two scripts exit 1 after succeeding.
 
+A third habit joined them when the Azure mutation table was run for the
+first time. The table listed thirteen deliberate breaks and the run each
+should catch, and its own heading said none of the rows had ever been
+executed. Running all thirteen — plus one mutation for every run the
+table did not list, 36 in total — found six assertions that stayed green
+through the break they named.
+
+Two of them could not have failed at all. One re-derived
+`substr(cluster_name, 0, 15)` inside the test and asserted
+`15 + 1 + 8 <= 24`, which `substr` guarantees regardless of what the
+module does; widening the module's own budget to 20 left it green. The
+other asserted `soft_delete_retention_days >= 7`, which is the azurerm
+provider's own floor, so no value it accepts could break it. The rest
+watched the wrong object: a variable's default rather than the security
+rule built from it, one allow rule rather than all three, a scale-set
+discovery string missing half its selector.
+
+That table is now verified row by row, and
+[`terraform/azure/tests/README.md`](../terraform/azure/tests/README.md)
+records what each mutation did rather than what it was expected to do.
+The suite runs in about two seconds, which is the uncomfortable part.
+Nothing but the writing stood between the unverified table and the
+verified one — no credentials, no cluster, no cost — and it still shipped
+in v0.14 as a list of intentions.
+
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.
