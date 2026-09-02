@@ -63,7 +63,24 @@ VAULT_TOKEN="${VAULT_TOKEN:-}"
 
 # Where Vault sends the browser back to after the IdP authenticates.
 # 8250 is the port the Vault CLI listens on during `vault login`.
-REDIRECT_URIS="http://localhost:8250/oidc/callback,http://127.0.0.1:8250/oidc/callback"
+#
+# The third entry is the web UI's own callback, served by Vault itself.
+# The UI is a separate login path from the CLI and needs its own URI
+# allowed: without it, UI login fails with "redirect_uri is not allowed"
+# while the CLI keeps working perfectly -- which reads like a broken UI
+# rather than a missing entry in a list. It was absent here while the
+# step 3 note above already claimed it was allowed.
+#
+# A redirect URI has to match on BOTH sides, exactly. These mirror the
+# staticClients entry in docker/dex/config.yaml; change one and change
+# the other. https rather than http because the local listener serves
+# TLS, and an exact match means the scheme counts.
+#
+# Only the dev cluster lives at localhost:8200. Against a real
+# deployment, override the whole list with --redirect-uris.
+REDIRECT_URIS="http://localhost:8250/oidc/callback"
+REDIRECT_URIS+=",http://127.0.0.1:8250/oidc/callback"
+REDIRECT_URIS+=",https://localhost:8200/ui/vault/auth/oidc/oidc/callback"
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -516,6 +516,47 @@ jobs:
             --group vault-developers:examples/policies/developer.hcl \
             --group vault-operators:examples/policies/operator.hcl
 
+      - name: The UI callback must be allowed on both sides, not just one
+        run: |
+          # A redirect URI only works if the Vault role AND the IdP client
+          # both list it. Every other assertion in this job logs in through
+          # the CLI, which uses the :8250 pair, so the UI callback can go
+          # missing on either side and the whole job still passes -- while
+          # a human clicking "Sign in with OIDC" gets "redirect_uri is not
+          # allowed". It was missing on the Vault side in exactly that way,
+          # while this script's own help text claimed it was allowed.
+          vault read -format=json auth/oidc/role/default \
+            | jq -r '.data.allowed_redirect_uris[]' | sort > vault-uris.txt
+
+          awk '
+            /^ *redirectURIs:/ {f=1; next}
+            f && /^ *- "/ {gsub(/^ *- "/,""); gsub(/"$/,""); print; next}
+            f && /^ *#/ {next}
+            f {exit}
+          ' docker/dex/config.yaml | sort > dex-uris.txt
+
+          echo "Vault role allows:"; cat vault-uris.txt
+          echo "Dex client allows:"; cat dex-uris.txt
+
+          UI_CALLBACK="https://localhost:8200/ui/vault/auth/oidc/oidc/callback"
+          grep -qxF "$UI_CALLBACK" vault-uris.txt || {
+            echo "ERROR: Vault's OIDC role does not allow the web UI callback"
+            exit 1
+          }
+          grep -qxF "$UI_CALLBACK" dex-uris.txt || {
+            echo "ERROR: the Dex client does not allow the web UI callback"
+            exit 1
+          }
+
+          # Both sides must carry the same list, not merely both carry the
+          # UI entry -- drift in either direction is the failure mode.
+          diff vault-uris.txt dex-uris.txt || {
+            echo "ERROR: Vault and Dex disagree on the redirect URI list."
+            echo "See docs/human-authentication.md."
+            exit 1
+          }
+          echo "Vault and Dex agree on every redirect URI, UI callback included."
+
       - name: Log in as a developer through the real OIDC flow
         run: |
           TOKEN=$(./scripts/oidc-login-test.sh \

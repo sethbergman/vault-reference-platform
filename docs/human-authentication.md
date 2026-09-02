@@ -127,6 +127,41 @@ both sides, via the published port.
 Production doesn't have this problem — the IdP has a real DNS name
 reachable from everywhere.
 
+## Logging in through the web UI
+
+The UI is a second login path, not a view onto the first, and it has its
+own callback URL: `https://<vault>/ui/vault/auth/oidc/oidc/callback`.
+The CLI's callback is a temporary local listener on `:8250`; the UI's is
+served by Vault itself.
+
+That matters because the two paths fail independently. A CLI login
+proves nothing about the UI: if the UI's callback is missing from either
+side, `vault login -method=oidc` keeps working while the browser gets
+`redirect_uri is not allowed`, which reads like a broken UI rather than
+a missing entry in a list. It was missing from the Vault side here in
+exactly that way, while `bootstrap-oidc.sh`'s own help text said it was
+allowed.
+
+Both sides now carry it locally, and CI compares the two lists on every
+run rather than trusting them to stay in step:
+
+- the Vault role's `allowed_redirect_uris`, from `bootstrap-oidc.sh`
+- the IdP client's `redirectURIs`, in `docker/dex/config.yaml`
+
+**The UI has to be switched on first, and outside the local profile it
+is not.** `docker/vault/config/vault.hcl.tpl` sets `ui = true`, so the
+dev cluster serves it. The Ansible role defaults `vault_ui_enabled` to
+`false` — the same as Vault's own default, and the same behaviour every
+cluster this role has built already had, since the template previously
+carried no `ui` setting at all. Set it in group_vars to turn the UI on;
+`ansible/roles/vault/defaults/main.yml` explains the tradeoff.
+
+**What is not proven:** no test drives the UI in a browser. CI asserts
+that both sides *allow* the UI callback, which is the part that silently
+drifted. Whether a browser completes the round trip — against Vault's
+own TLS, with a real redirect — is unexercised, and a browser is the
+only thing that would settle it.
+
 ## Pointing at a real identity provider
 
 Only the arguments change:
@@ -144,7 +179,10 @@ Things to line up on the IdP side:
 
 - Register Vault as an OIDC application, with redirect URIs
   `http://localhost:8250/oidc/callback` (CLI) and
-  `https://<vault>/ui/vault/auth/oidc/oidc/callback` (web UI).
+  `https://<vault>/ui/vault/auth/oidc/oidc/callback` (web UI). Pass the
+  same list to `bootstrap-oidc.sh --redirect-uris`, since its defaults
+  point at `localhost:8200` and are only right for the dev cluster. The
+  two lists have to match exactly, scheme included.
 - Make sure the provider actually **emits a groups claim**. Several
   don't by default — Okta needs a groups claim added to the token, Entra
   needs group claims enabled, and Google Workspace doesn't emit groups
@@ -165,6 +203,9 @@ normally handles. It asserts more than "login worked":
 - a developer **cannot** take a raft snapshot
 - an operator gets the mirror image, and **cannot** read app secrets
 - a wrong password is rejected
+- the Vault role and the Dex client allow **the same** redirect URIs,
+  UI callback included — the one part of the UI login path that can be
+  checked without a browser
 
 `oidc-login-test.sh` is a testing aid, not a login path. It only works
 against a plain username/password form; against a real IdP with MFA it
@@ -179,6 +220,12 @@ won't work, and shouldn't.
   name doesn't match the IdP's exactly. Check `identity_policies`, not
   `policies`.
 - **`redirect_uri is not allowed`** — the URI must be listed both on the
-  Vault role (`allowed_redirect_uris`) and on the IdP's client.
+  Vault role (`allowed_redirect_uris`) and on the IdP's client. If this
+  happens in the browser while the CLI still logs in fine, it is the
+  UI's callback that is missing, not the CLI's — they are separate
+  entries and only one of them is exercised by a CLI login.
+- **The UI shows no OIDC option, or 404s entirely** — the UI is not
+  enabled. It is on in the local profile and off in the Ansible role by
+  default; see `vault_ui_enabled`.
 - **Issuer mismatch / discovery failures locally** — the `/etc/hosts`
   entry above is missing.
