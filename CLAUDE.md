@@ -351,6 +351,31 @@ CI enforces several invariants worth knowing before you push:
   alert-routing suites fail if a new one arrives without its partner. A
   threshold alert on a metric nobody reports never fires.
 
+### Watching a PR without burning the context window
+
+27 jobs means any "list the check runs" call returns 27 records, which
+makes it the most expensive question available about this repository.
+Ask it when you need a per-job conclusion, and once.
+
+- **A completion event has already answered it.** `check_suite.completed`
+  says nothing on that head is still running or failed. Re-listing every
+  run to confirm costs thousands of tokens to learn what woke you.
+- **`get_status` is not the cheap version.** It reads the legacy commit
+  status API, which nothing here writes to, so it returns
+  `total_count: 0` and a permanent `pending` — indistinguishable at a
+  glance from a job still running, and a reason to make the expensive
+  call anyway. Two calls where none was needed.
+- **A green, mergeable PR waiting on a human needs no polling.** The
+  merge, a review, and a conflict from a moved base all arrive as
+  events. A scheduled re-read is watching for the thing that would have
+  woken you regardless. Schedule one only while something genuinely
+  unobserved is in flight — an external job nothing reports back from —
+  and match the interval to how fast that changes.
+
+The general form: prefer the cheapest call that answers the question,
+and do not re-verify what an event already told you. Context spent
+re-reading state is context unavailable for the work.
+
 ## Conventions
 
 **Shell** — bash with `set -euo pipefail`, shellcheck-clean under
