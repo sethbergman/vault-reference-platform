@@ -192,7 +192,7 @@ The blockers are, in order:
      the fourth attempt rather than after.
 3. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node and an edit to it is now
-   detectable -- entries are hash-chained as they arrive, and the
+   detectable — entries are hash-chained as they arrive, and the
    `audit-anchor` service holds the chain head on a volume the collector
    cannot write to, which catches even a chain rewritten to be
    self-consistent.
@@ -200,6 +200,93 @@ The blockers are, in order:
    Both volumes still live on the same Docker daemon, so what exists is
    tamper *evidence* rather than tamper proofing, and the trail does not
    yet leave the machine. That is the remaining half.
+4. **Terraform state that survives a team.** Neither profile declares a
+   `backend`, so state is a file on whoever ran `apply` last. That is
+   correct for a reference someone reads and wrong for a cluster anyone
+   runs: two concurrent applies corrupt it with no lock to stop them,
+   nobody else can manage what you built, and losing the file means
+   losing the ability to change a *running* Vault cluster — while Vault
+   itself stays up, holding production secrets, unmanageable.
+
+   The work is not the backend block. It is the ordering: the bucket or
+   storage account holding the state has to exist before the
+   configuration that uses it, which is either a second root module or a
+   documented one-time bootstrap, and the choice is worth making
+   deliberately rather than discovering halfway through a first apply.
+   CI keeps `-backend=false`, which is what makes `validate` runnable
+   with no credentials — that must not regress.
+5. **An upgrade path that matches how the profiles actually deploy.**
+   `scripts/vault-upgrade.sh` steps the leader down, swaps the binary
+   over SSH, and waits for health before touching the next node. Nothing
+   in either cloud profile is upgraded that way. `terraform/aws`
+   installs a pinned `vault_version` from user-data at boot and carries
+   `instance_refresh` on the scaling group; `terraform/azure` is a scale
+   set with `upgrade_mode = "Manual"`.
+
+   So on AWS the upgrade an operator would actually perform — bump the
+   version, apply — replaces nodes through a mechanism that knows
+   nothing about Raft leadership or quorum, and the leader-aware script
+   does not run. On Azure, nothing replaces them at all until someone
+   says so. Two upgrade models, one of them tested, and the tested one
+   is not the one the cloud profiles reach for.
+
+   What settles it: deciding which model is canonical per profile, then
+   proving the canonical one. If it is instance refresh, the open
+   question is whether a refresh can be made leader-aware, or whether
+   `min_healthy_percentage` is enough to keep quorum on a three-node
+   cluster through a rolling replacement.
+
+Both are additions to this list rather than discoveries about the
+existing three. Neither is reachable by the emulated apply: state
+backends and node replacement are questions about operating a cluster
+over time, and an emulator has no time in it.
+
+## After v1.0: production operations
+
+Everything here is a day-2 operation with a failure mode worth naming,
+and none of it is exercised. It sits after v1.0 rather than before it
+because each item is a procedure a running cluster needs eventually,
+not a property the architecture has to have on the day it is stood up.
+
+- **Monitoring on the cloud profiles.** The rule set, the routing tree
+  and the `absent()` pairs exist and are tested — in the local profile
+  only. Nothing deploys them alongside `terraform/aws` or
+  `terraform/azure`, so a cloud cluster runs with the alerting story
+  written down and not running. The rules are ordinary PromQL against
+  standard Vault metrics and would port directly; what is missing is
+  somewhere to port them to, and a decision about whether this
+  repository ships a Prometheus or documents integrating with one.
+- **The root token, after bootstrap.** `bootstrap-dev-cluster.sh` emits
+  a root token because the local profile needs one to configure itself.
+  Nothing here says to revoke it once the auth methods are configured,
+  which is the step that turns a demonstration into a deployment.
+  Vault's own guidance is to revoke and re-generate on demand; this
+  repository is silent, and silence on that point is a recommendation
+  nobody meant to make.
+- **Seal migration and key rotation.** No coverage of `vault operator
+  rotate` for the barrier key, of a Shamir rekey, or of migrating an
+  existing cluster between seal types with `-migrate`. Rotating a KMS
+  key or changing seals can leave a cluster that will not unseal, which
+  is the failure this whole architecture is arranged to avoid, and it is
+  the one seam where the PKI migration path — scripted, sequenced and
+  tested end to end — has no counterpart.
+- **Quorum loss recovery.** The DR drill restores from a snapshot. It
+  does not cover losing two of three nodes and recovering the survivor
+  through Raft's `peers.json` recovery mode, which is a different
+  procedure answering a different failure. A cluster that has lost
+  quorum is not a cluster that needs restoring; treating them as the
+  same is how a recoverable incident becomes a restore from last night.
+- **Restore verification at the cloud destination.** `dr-drill.sh`
+  proves a snapshot restores, against a local cluster. Snapshots in the
+  cloud profiles are uploaded to S3 or blob storage, and nothing reads
+  one back from there and restores it. That is the cloud half of the
+  failure this repository was built around: the timer was green and the
+  backups were not there. Proving the upload succeeded is not proving
+  the object is a restorable snapshot.
+- **Rate limit quotas**, login MFA, an application-facing transit
+  engine, further database engines, and a cloud-provisioned database
+  for the secrets engine to point at. Feature breadth rather than
+  operational risk, which is why they are last.
 
 Dynamic secrets, alerting, audit devices and the PKI migration path have
 all moved off this list. The database
@@ -210,6 +297,12 @@ Explicitly *not* planned: Vault Enterprise features (performance
 replication, DR replication, namespaces, HSM auto-unseal). They would
 make the reference untestable for most readers, and the open-source
 feature set is enough to demonstrate the architecture.
+
+Also not planned: Kubernetes. The Agent Injector is a different
+deployment model with its own failure modes, and this repository targets
+the sidecar-on-a-VM shape throughout — see
+[vault-agent.md](vault-agent.md). Adding it would mean a second
+architecture rather than a feature.
 
 ## What "done" means here
 

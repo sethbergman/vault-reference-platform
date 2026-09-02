@@ -7,8 +7,8 @@ Everything else here is tested — 80 assertions against a real three-node
 cluster, promtool unit tests on the alert rules, `terraform test` against
 mocked providers. But mocked providers confirm that the configuration is
 *well-formed*, not that AWS accepts it. The gap between those two things
-is the last real blocker on the [roadmap](roadmap.md), and it is the
-reason this document exists.
+is the first blocker on the [roadmap](roadmap.md), and it is the reason
+this document exists.
 
 Part of that gap has since been closed for free.
 [`tests/cloud-apply-emulated`](../tests/cloud-apply-emulated/run-tests.sh)

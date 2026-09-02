@@ -351,6 +351,31 @@ CI enforces several invariants worth knowing before you push:
   alert-routing suites fail if a new one arrives without its partner. A
   threshold alert on a metric nobody reports never fires.
 
+### Watching a PR without burning the context window
+
+27 jobs means any "list the check runs" call returns 27 records, which
+makes it the most expensive question available about this repository.
+Ask it when you need a per-job conclusion, and once.
+
+- **A completion event has already answered it.** `check_suite.completed`
+  says nothing on that head is still running or failed. Re-listing every
+  run to confirm costs thousands of tokens to learn what woke you.
+- **`get_status` is not the cheap version.** It reads the legacy commit
+  status API, which nothing here writes to, so it returns
+  `total_count: 0` and a permanent `pending` — indistinguishable at a
+  glance from a job still running, and a reason to make the expensive
+  call anyway. Two calls where none was needed.
+- **A green, mergeable PR waiting on a human needs no polling.** The
+  merge, a review, and a conflict from a moved base all arrive as
+  events. A scheduled re-read is watching for the thing that would have
+  woken you regardless. Schedule one only while something genuinely
+  unobserved is in flight — an external job nothing reports back from —
+  and match the interval to how fast that changes.
+
+The general form: prefer the cheapest call that answers the question,
+and do not re-verify what an event already told you. Context spent
+re-reading state is context unavailable for the work.
+
 ## Conventions
 
 **Shell** — bash with `set -euo pipefail`, shellcheck-clean under
@@ -438,7 +463,7 @@ engines differ"). Do not use a `type:` prefix. Branch names do use one
 ## Project state and gaps
 
 `docs/roadmap.md` is the authority on what is done and what "not"
-means; the README's Roadmap section lists the three things standing
+means; the README's Roadmap section lists the five things standing
 between here and v1.0:
 
 1. A real AWS apply.
@@ -447,6 +472,20 @@ between here and v1.0:
 3. Off-host audit shipping. The trail is now hash-chained and anchored
    where the collector cannot write, but both volumes still sit on one
    Docker daemon — tamper *evidence*, not tamper proofing.
+4. Terraform state that survives a team. No profile declares a
+   `backend`, so state is local and unlocked. CI's `-backend=false` is
+   what keeps `validate` runnable without credentials; do not regress it
+   while adding one.
+5. An upgrade path matching how the profiles deploy. `vault-upgrade.sh`
+   is leader-aware SSH; the cloud profiles replace nodes through ASG
+   instance refresh and a manual-upgrade scale set, which are not.
+
+Items 4 and 5 were added after the first three and are about operating a
+cluster over time, so neither is reachable by `tests/cloud-apply-emulated`.
+`docs/roadmap.md` also carries an "After v1.0: production operations"
+list — cloud monitoring, the root token after bootstrap, seal migration
+and key rotation, quorum-loss recovery, and restore verification at the
+cloud destination. Those are deferred deliberately, not forgotten.
 
 When touching any of these, keep the documentation's precision about
 what is proven versus what is merely configured. Overstating it is the
