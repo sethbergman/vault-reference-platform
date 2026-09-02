@@ -66,14 +66,26 @@ run "unhealthy_nodes_are_repaired_not_just_stopped_ones" {
     error_message = "Repair grace period is too short for a node to bootstrap and join Raft."
   }
 
-  # Not asserted here: that health_probe_id points at the Vault probe
-  # specifically. That comparison needs the probe's computed ID, and
-  # resolving it means apply mode, which this module does not survive
-  # under mocks ("Failed to compute attribute" on the storage account's
-  # nested identity block). The probe's own configuration is covered by
-  # health_probe_keeps_standby_nodes_in_the_pool below, and wiring it to
-  # the scale set is a single visible line rather than something that
-  # drifts quietly.
+  # The probe wiring is asserted separately, below — it needs apply mode.
+}
+
+run "repair_watches_vault_rather_than_the_vm" {
+  # apply, not plan: health_probe_id resolves to the probe's computed ID.
+  # An earlier comment here said the module could not survive apply under
+  # mocks; fixing the storage account's identity mock for the discovery
+  # runs settled that, and this is the assertion it unblocks.
+  command = apply
+
+  # Both sides of this comparison are mocked IDs, so it proves the
+  # reference points at the probe resource and nothing about the probe
+  # itself — which is exactly the gap. Repair with no probe attached
+  # falls back to watching whether the VM is running, and a node that is
+  # up and sealed is the failure this whole block exists to catch.
+  # Deleting the health_probe_id line left every other run green.
+  assert {
+    condition     = azurerm_linux_virtual_machine_scale_set.vault.health_probe_id == azurerm_lb_probe.vault.id
+    error_message = "Repair must watch the Vault health probe; without it Azure only notices a stopped VM."
+  }
 }
 
 run "health_probe_keeps_standby_nodes_in_the_pool" {
@@ -249,6 +261,18 @@ run "raft_discovery_uses_scale_set_mode_not_tags" {
       "subscription_id="
     )
     error_message = "Azure auto_join requires subscription_id explicitly."
+  }
+
+  # Scale-set mode is (resource_group AND vm_scale_set), not either one.
+  # Dropping the resource group leaves a line that still reads like
+  # scale-set discovery and that go-discover rejects the same way as the
+  # mixed selector above — asserting on vm_scale_set alone missed it.
+  assert {
+    condition = strcontains(
+      base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data),
+      "resource_group="
+    )
+    error_message = "Azure auto_join needs resource_group alongside vm_scale_set; either alone is not a valid selector."
   }
 }
 

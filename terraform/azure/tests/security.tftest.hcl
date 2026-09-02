@@ -28,9 +28,15 @@ run "the_autounseal_key_cannot_be_purged" {
     error_message = "Purge protection must be enabled — without it the key, and therefore every snapshot, can be destroyed."
   }
 
+  # 30, not the 7 the module's floor comment might suggest: the azurerm
+  # provider already refuses anything below 7 ("expected
+  # soft_delete_retention_days to be in the range (7 - 90)"), so an
+  # assertion at 7 cannot fail and proves nothing. This one sits above
+  # the floor, where a contributor shortening 90 days to the minimum
+  # breaks it.
   assert {
-    condition     = azurerm_key_vault.vault_autounseal.soft_delete_retention_days >= 7
-    error_message = "Soft delete retention is too short to recover from an accidental deletion."
+    condition     = azurerm_key_vault.vault_autounseal.soft_delete_retention_days >= 30
+    error_message = "Soft delete retention is too short to recover from an accidental deletion noticed weeks later."
   }
 }
 
@@ -46,18 +52,30 @@ run "the_key_vault_denies_by_default" {
 run "the_key_vault_name_fits_azures_limit" {
   command = plan
 
+  variables {
+    # Longer than the budget on purpose. With the default 15-character
+    # cluster name the prefix is 15 characters however main.tf truncates
+    # it, so a name at the cap is the only input that can distinguish a
+    # correct budget from a widened one.
+    cluster_name = "vault-reference-platform-azure"
+  }
+
   # Key Vault names are capped at 24 characters and are globally unique.
   # "${cluster_name}-autounseal" was 26 at the default cluster name and
   # would have failed at apply — `terraform validate` cannot see this,
   # because it constrains the value rather than the schema.
   #
-  # Asserted on the naming arithmetic rather than the resolved name: the
-  # name includes random_id.hex, which is unknown at plan time, so
-  # reading the attribute yields "unknown condition value". The prefix
-  # length and the suffix width are both known, and they are what a
-  # future edit would get wrong.
+  # Asserted on local.key_vault_name_prefix rather than the resolved
+  # name: the name includes random_id.hex, which is unknown at plan time,
+  # so reading the attribute yields "unknown condition value".
+  #
+  # It has to read that local rather than recompute it. The version this
+  # replaced re-derived the same substr() in the test file, which made it
+  # a tautology — substr(s, 0, 15) is at most 15 characters, so
+  # 15 + 1 + 8 <= 24 held no matter what main.tf did. Widening the
+  # module's budget to 20 left it green.
   assert {
-    condition     = length(substr(replace(lower(var.cluster_name), "/[^a-z0-9-]/", ""), 0, 15)) + 1 + 8 <= 24
+    condition     = length(local.key_vault_name_prefix) + 1 + 8 <= 24
     error_message = "Key Vault name would exceed Azure's 24-character limit: 15-char prefix + dash + 8 hex is the budget."
   }
 
@@ -75,6 +93,20 @@ run "vault_api_is_not_reachable_from_the_whole_internet" {
   assert {
     condition     = !contains(var.allowed_cidr_blocks, "0.0.0.0/0")
     error_message = "allowed_cidr_blocks must not default to the entire internet."
+  }
+
+  # The variable's default is not the only way in. Asserting on it alone
+  # left the rule itself unguarded: replacing source_address_prefixes
+  # with source_address_prefix = "Internet" opens the API to everyone
+  # while the default stays RFC1918, and nothing here noticed.
+  assert {
+    condition     = azurerm_network_security_rule.vault_api.source_address_prefixes == toset(var.allowed_cidr_blocks)
+    error_message = "The Vault API rule must take its sources from allowed_cidr_blocks, not from a prefix set alongside it."
+  }
+
+  assert {
+    condition     = azurerm_network_security_rule.vault_api.source_address_prefix == null
+    error_message = "A singular source_address_prefix on the API rule bypasses allowed_cidr_blocks entirely."
   }
 
   # Asserted on the count rather than the frontend's public_ip_address_id,
@@ -129,9 +161,21 @@ run "the_security_group_denies_what_it_does_not_allow" {
     error_message = "There must be a catch-all deny rule below the explicit allows."
   }
 
+  # Below *every* allow, not just the first one. Comparing against
+  # vault_api alone let a deny at priority 105 through: the API stayed
+  # reachable, so nothing looked wrong, while Raft (110) and the health
+  # probe (120) were both denied — a cluster that never forms and a load
+  # balancer that ejects every node. Azure's floor is 100 and vault_api
+  # holds it, so 105 is the realistic version of this mistake.
   assert {
-    condition     = azurerm_network_security_rule.deny_all_inbound.priority > azurerm_network_security_rule.vault_api.priority
-    error_message = "The deny rule must sit below the allow rules or it blocks everything."
+    condition = alltrue([
+      for allow in [
+        azurerm_network_security_rule.vault_api,
+        azurerm_network_security_rule.vault_cluster,
+        azurerm_network_security_rule.health_probe,
+      ] : azurerm_network_security_rule.deny_all_inbound.priority > allow.priority
+    ])
+    error_message = "The deny rule must sit below every allow rule or it blocks what they permit."
   }
 }
 

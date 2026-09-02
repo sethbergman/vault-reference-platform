@@ -38,7 +38,7 @@ resource "random_id" "key_vault_suffix" {
   byte_length = 4
 }
 
-resource "azurerm_key_vault" "vault_autounseal" {
+locals {
   # Key Vault names are globally unique across Azure and capped at 24
   # characters, so neither the cluster name alone nor
   # "${cluster_name}-autounseal" works — the latter is 26 characters at
@@ -47,7 +47,17 @@ resource "azurerm_key_vault" "vault_autounseal" {
   # not the schema.
   #
   # 15 characters of cluster name + dash + 8 hex = 24 exactly.
-  name                = "${substr(replace(lower(var.cluster_name), "/[^a-z0-9-]/", ""), 0, 15)}-${random_id.key_vault_suffix.hex}"
+  #
+  # A local rather than an expression inlined into the resource, because
+  # the name itself is unknown at plan time (random_id.hex) and so cannot
+  # be asserted on. The test asserts on this prefix instead — reading the
+  # budget the module actually uses, rather than restating the same
+  # arithmetic in the test file, where it is true whatever this line says.
+  key_vault_name_prefix = substr(replace(lower(var.cluster_name), "/[^a-z0-9-]/", ""), 0, 15)
+}
+
+resource "azurerm_key_vault" "vault_autounseal" {
+  name                = "${local.key_vault_name_prefix}-${random_id.key_vault_suffix.hex}"
   resource_group_name = azurerm_resource_group.vault.name
   location            = azurerm_resource_group.vault.location
   tenant_id           = data.azurerm_client_config.current.tenant_id

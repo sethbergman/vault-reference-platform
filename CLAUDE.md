@@ -284,9 +284,13 @@ across the Terraform/cloud-init/Ansible seam that no single tool sees.
 deliberate break each test catches, every row confirmed by watching it
 fail; extend it when adding assertions.
 `terraform/azure/tests/README.md` covers the Azure suite and the three
-mechanisms with no AWS counterpart, but its mutation table is a list of
-intentions rather than evidence — none of the rows has been run. Verify
-one before trusting it, and mark it verified when you do.
+mechanisms with no AWS counterpart, and its mutation table is now
+verified the same way — every row watched to fail. Verifying it the
+first time broke five of the thirteen claims, including an assertion on
+the Key Vault name limit that could not fail at all; that README says
+what each was and what changed. The suite runs in about two seconds, so
+re-run the table when you add an assertion rather than adding a row you
+have not watched fail.
 
 Per-suite requirements:
 
