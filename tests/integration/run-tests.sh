@@ -131,7 +131,7 @@ done
 info ""
 info "=== Bringing up the cluster ==="
 # ---------------------------------------------------------------------------
-ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-database --with-mysql --with-monitoring --with-audit --with-agent)"
+ROOT_TOKEN="$("${REPO_ROOT}/scripts/bootstrap-dev-cluster.sh" --with-postgres --with-mysql --with-monitoring --with-audit --with-agent)"
 [[ -n "$ROOT_TOKEN" ]] || { red "ERROR: no root token from bootstrap-dev-cluster.sh"; exit 1; }
 
 export VAULT_TOKEN="$ROOT_TOKEN"

@@ -63,7 +63,7 @@ diagrams/         architecture.md
 
 ```bash
 make deploy        # 3-node Raft cluster + monitoring
-make deploy-full   # every optional service, as tests/integration runs it
+make deploy-full   # every optional service (superset of tests/integration)
 make status        # compose ps, plus each node's seal and HA state
 make destroy       # docker compose down -v
 
@@ -101,7 +101,7 @@ Bringing the cluster up with optional services:
 ./scripts/bootstrap-dev-cluster.sh --with-monitoring   # what make deploy runs
 ./scripts/bootstrap-dev-cluster.sh --nodes vault-0     # single node, CI
 ./scripts/bootstrap-dev-cluster.sh --with-oidc         # + Dex
-./scripts/bootstrap-dev-cluster.sh --with-database     # + Postgres
+./scripts/bootstrap-dev-cluster.sh --with-postgres     # + Postgres
 ./scripts/bootstrap-dev-cluster.sh --with-mysql        # + MySQL
 ./scripts/bootstrap-dev-cluster.sh --with-audit        # + audit collector
 ./scripts/bootstrap-dev-cluster.sh --with-agent        # + Vault Agent

@@ -167,7 +167,7 @@ the database credential except Vault, which is the difference between
 using Vault and keeping a password in it.
 
 ```bash
-./scripts/bootstrap-dev-cluster.sh --with-database
+./scripts/bootstrap-dev-cluster.sh --with-postgres
 ./scripts/bootstrap-database-secrets.sh --password bootstrap-only-rotated-immediately
 vault read database/creds/appdata-readonly
 ```

@@ -10,7 +10,7 @@ find in a CI log two years later — because there is no shared password.
 ## Try it
 
 ```bash
-./scripts/bootstrap-dev-cluster.sh --with-database
+./scripts/bootstrap-dev-cluster.sh --with-postgres
 export VAULT_ADDR=https://127.0.0.1:8200
 export VAULT_CACERT=$PWD/docker/dev/tls/ca.crt
 export VAULT_TOKEN=<root token printed above>
