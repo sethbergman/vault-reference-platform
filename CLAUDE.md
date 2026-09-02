@@ -63,7 +63,7 @@ diagrams/         architecture.md
 
 ```bash
 make deploy        # 3-node Raft cluster + monitoring
-make deploy-full   # every optional service, as tests/integration runs it
+make deploy-full   # every optional service (superset of tests/integration)
 make status        # compose ps, plus each node's seal and HA state
 make destroy       # docker compose down -v
 

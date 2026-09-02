@@ -54,10 +54,20 @@ deploy: ## 3-node Raft cluster + monitoring (what CI's smoke test brings up)
 deploy-min: ## Just the cluster, no extras — fastest way to get a Vault
 	./scripts/bootstrap-dev-cluster.sh
 
+# Every flag bootstrap-dev-cluster.sh has, which makes this a superset of
+# the integration suite rather than a match for it: that suite does not
+# pass --with-oidc, because human login is covered by its own CI job. The
+# header rule above applies -- say where a target diverges from CI rather
+# than implying it does not.
+#
+# --with-mysql was missing here while the integration suite passed it, so
+# `make deploy-full` produced a cluster with no second database engine
+# while the help text claimed otherwise. A local reproduction quietly
+# narrower than the thing it reproduces is worse than no target at all.
 .PHONY: deploy-full
-deploy-full: ## Every optional service, as the integration suite runs it
+deploy-full: ## Every optional service (a superset of the integration suite)
 	./scripts/bootstrap-dev-cluster.sh --with-monitoring --with-postgres \
-		--with-oidc --with-audit --with-agent
+		--with-mysql --with-oidc --with-audit --with-agent
 
 .PHONY: status
 status: ## Compose state plus each node's seal/HA status
