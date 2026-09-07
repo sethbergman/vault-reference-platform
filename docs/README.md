@@ -28,7 +28,7 @@ tested.
 | [Monitoring and Alerting](monitoring.md) | Why the alerts are about absence · The trap these rules exist to avoid · The alerts · Where the numbers come from · Two things had to be added before absence was observable · Routing · What is tested · What is not covered |
 | [Operations Runbooks](operations.md) | Health checks · Upgrades · Secret rotation · Capacity planning · Scheduled timers · Responding to alerts · Common incidents |
 | [Roadmap](roadmap.md) | Shipped · The honest gap · Next · Toward v1.0 · After v1.0: production operations · What "done" means here |
-| [Rolling upgrades](rolling-upgrades.md) | What it does · Usage · Prerequisites · Rollback |
+| [Rolling upgrades](rolling-upgrades.md) | What it does · Usage · Prerequisites · Which model is canonical, per profile · Why an instance refresh was unsafe, and what fixes it · What is proven, and what is not · Rollback |
 | [Secret rotation](secret-rotation.md) | Why rotate `secret_id`s · One-time setup: `bootstrap-approle.sh` · Recurring rotation: `rotate-secret-id.sh` · Prerequisites · Rollback / troubleshooting |
 | [Security Model](security.md) | Transport · Unsealing · Authentication & policy · Secret rotation · Audit · Hardening baseline (applied via Ansible) · Automated scanning |
 | [Terraform state](terraform-state.md) | The ordering problem · Standing it up · Why the backend blocks are empty · Locking, and why the providers differ · What the bootstrap modules create · Destroying · What this does not prove |

@@ -52,7 +52,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            18 suites; each is a self-contained run-tests.sh
+tests/            19 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -206,7 +206,9 @@ All of `scripts/*.sh` follow one shape. Match it when adding a script:
 
 Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 `bootstrap-{approle,jwt-github,oidc,audit,pki,agent,database-secrets}.sh`
-(one auth or secrets path each), `rotate-secret-id.sh`, `snapshot.sh`,
+(one auth or secrets path each), `configure-autopilot.sh` (the Raft
+setting that makes a replaced node stop counting as a voter),
+`rotate-secret-id.sh`, `snapshot.sh`,
 `dr-drill.sh`, `vault-upgrade.sh`, `issue-node-cert.sh`,
 `migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
 `preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`,
@@ -314,10 +316,11 @@ Per-suite requirements:
 | integration | docker compose, vault CLI, jq, openssl, curl |
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
+| autopilot | bash, jq |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 28 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 29 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -362,7 +365,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-28 jobs means any "list the check runs" call returns 28 records, which
+29 jobs means any "list the check runs" call returns 29 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 
@@ -492,9 +495,14 @@ between here and v1.0:
    keeps `validate` runnable without credentials, and
    `tests/state-backend` asserts it still works — do not regress it.
    Neither backend has been pointed at a real account.
-5. An upgrade path matching how the profiles deploy. `vault-upgrade.sh`
-   is leader-aware SSH; the cloud profiles replace nodes through ASG
-   instance refresh and a manual-upgrade scale set, which are not.
+5. An upgrade path matching how the profiles deploy. The canonical model
+   per profile is now decided (`docs/rolling-upgrades.md`): instance
+   refresh on AWS, `vault-upgrade.sh` on Azure and on fixed machines.
+   Settling it found that Vault's `cleanup_dead_servers = false` default
+   leaves replaced nodes as Raft voters, so a three-node refresh loses
+   quorum partway through the second node;
+   `scripts/configure-autopilot.sh` fixes it. A real refresh is still
+   unproven.
 
 Items 4 and 5 were added after the first three and are about operating a
 cluster over time. Item 5 is out of reach of an emulator for that

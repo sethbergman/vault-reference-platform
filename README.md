@@ -459,13 +459,23 @@ What stands between here and v1.0, in order:
    Still unproven in an account: the permissions to reach the bucket,
    two machines actually racing, and the whole Azure side, which has no
    emulator. See [`docs/terraform-state.md`](docs/terraform-state.md).
-5. **An upgrade path that matches how the profiles deploy.**
-   `scripts/vault-upgrade.sh` steps the leader down and swaps binaries
-   over SSH. `terraform/aws` installs Vault from user-data and refreshes
-   instances through the scaling group; `terraform/azure` is a scale set
-   set to upgrade manually. The upgrade an operator would actually run
-   on AWS replaces nodes through a mechanism with no notion of Raft
-   leadership, and the leader-aware script never executes.
+5. **An upgrade path that matches how the profiles deploy.** Which
+   model is canonical is now decided per profile — instance refresh on
+   AWS, where the version comes from user-data and there is no binary to
+   swap; `scripts/vault-upgrade.sh` on Azure and anywhere the machines
+   outlive the upgrade. See
+   [`docs/rolling-upgrades.md`](docs/rolling-upgrades.md).
+
+   Settling it turned up a defect. Vault ships autopilot with
+   `cleanup_dead_servers = false`, so a replaced node stays a Raft voter
+   — and because both cloud profiles derive `node_id` from the machine,
+   every replacement adds a voter and leaves the old one behind. A
+   three-node instance refresh loses quorum partway through the *second*
+   node, and `min_healthy_percentage` cannot prevent it: the scaling
+   group counts instances it can see, Raft counts voters it cannot.
+   `scripts/configure-autopilot.sh` fixes it, with `min_quorum` as the
+   safety rather than the threshold. What is still unproven is a real
+   refresh against that configuration.
 
 Items 4 and 5 are about operating a cluster over time rather than
 standing one up. That is why the emulated apply reaches item 5 not at
