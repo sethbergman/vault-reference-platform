@@ -106,10 +106,22 @@ which sets:
 **`min_quorum` is the safety, not the threshold.** Cleanup on its own
 would let autopilot prune a node during a network partition, taking the
 cluster further from quorum exactly when it can least afford it. With
-three voters and `min_quorum = 3`, nothing can be pruned until a
-replacement has joined and made it four. Join, then prune — that ordering
-is the whole property, and it is what makes a five-minute threshold safe
-when it would otherwise be reckless.
+three nodes and `min_quorum = 3`, nothing can be pruned until a
+replacement has joined. Join, then prune — that ordering is the whole
+property, and it is what makes a five-minute threshold safe when it would
+otherwise be reckless.
+
+The floor counts **servers, not voters**, and the sequence is not the one
+you would guess. A replacement joins as a *non-voter*; that alone takes
+the server count to four and satisfies the floor; the dead voter is
+pruned; only then is the replacement promoted. The voter count never
+rises above three.
+
+This page said the opposite until `tests/autopilot-prune` was written —
+that the count rises to four and falls back — and the suite's first
+assertion encoded that guess and failed against a cluster doing exactly
+the right thing. The property survived the test; the mechanism described
+here did not.
 
 Run it once per cluster, after bootstrap:
 
@@ -121,8 +133,10 @@ It is idempotent, and re-running verifies rather than assuming.
 
 ## What is proven, and what is not
 
-Proven, against a real three-node cluster on every PR
-([`tests/integration`](../tests/integration/run-tests.sh)):
+Proven, against a real cluster on every PR — by
+[`tests/autopilot-prune`](../tests/autopilot-prune/run-tests.sh), which
+runs the whole replacement sequence, and by
+[`tests/integration`](../tests/integration/run-tests.sh):
 
 - Vault really does ship `cleanup_dead_servers = false` — asserted rather
   than assumed, so an upstream change breaks a test instead of quietly
@@ -144,14 +158,22 @@ pruning it would drop below the floor. That is the safety property
 behaving as designed. Vault also refuses `min_quorum = 2` outright while
 cleanup is on, which is the same rule enforced a layer down.
 
-**Not observed: a dead voter actually being pruned.** That needs a fourth
-voter — pruning cannot happen at three with a floor of three, which is
-the whole point — and a fourth voter needs a node with a *different*
-`node_id`, which the local compose profile has no way to produce: its
-three nodes are named, fixed, and rejoin as themselves. So the guard is
-demonstrated and the cleanup it guards is not. It is Vault's behaviour
-rather than this repository's configuration, but the fix rests on it, and
-saying so is cheaper than a reader assuming it was checked.
+Observed, and it took a fourth node to do it.
+[`tests/autopilot-prune`](../tests/autopilot-prune/run-tests.sh) destroys
+a node, adds `docker/dev`'s `vault-3` spare — a `node_id` the cluster has
+never seen, which is what an EC2 replacement is — and watches the voter
+count go to four and the dead one disappear back to three, with the
+cluster still accepting writes.
+
+That spare is the whole reason the suite exists. The three named nodes
+cannot model it: destroy `vault-2` and it rejoins as `vault-2`, so the
+count never rises and nothing is ever pruned. Pruning cannot happen at
+three voters with a floor of three, which is the point of the floor, so
+until there was a fourth node this was the one claim nothing tested.
+
+Two of the numbers here are Vault's, not ours, and both were found by
+trying them: `min_quorum` must be at least 3 when cleanup is on, and
+`dead_server_last_contact_threshold` cannot go below `1m`.
 
 **Not proven: any of this on a cloud profile.** No ASG instance refresh
 has ever run against this configuration, because no cloud profile has

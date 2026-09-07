@@ -52,9 +52,16 @@
 # cleanup_dead_servers on its own would let autopilot prune a node during
 # a network partition, taking the cluster further from quorum exactly when
 # it is least able to afford it. min_quorum is the floor it will not prune
-# below, so with three nodes and min_quorum = 3 no pruning can happen
-# until a replacement has joined and made it four. That ordering — join,
-# then prune — is the whole property.
+# below, so with three nodes no pruning can happen until a replacement has
+# joined. That ordering — join, then prune — is the whole property.
+#
+# The floor counts SERVERS, not voters, which is worth knowing because it
+# is not what the sequence looks like from outside. A replacement joins as
+# a non-voter; that alone takes the server count to four and satisfies the
+# floor; the dead voter is pruned; only then is the replacement promoted.
+# The voter count never rises above three. Watched happening in
+# tests/autopilot-prune, whose first assertion guessed the opposite and
+# failed against a cluster doing the right thing.
 #
 # It is also why the dead-server threshold can be short. Five minutes
 # would be reckless without a floor and is fine with one, and it has to be

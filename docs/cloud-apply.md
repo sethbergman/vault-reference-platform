@@ -567,9 +567,13 @@ loses quorum partway through the *second* node, with the ASG reporting
 healthy instances the whole time. See
 [rolling-upgrades.md](rolling-upgrades.md) for the arithmetic.
 
-Nothing here has been observed. A dead voter has never been watched being
-pruned even locally — that needs a fourth voter, which the local profile
-cannot produce — so this item is the first evidence either way.
+Pruning itself has been observed locally: `tests/autopilot-prune` runs
+this exact sequence against a real cluster, using a spare node with a
+`node_id` the cluster has not seen, and watches the dead voter go. What
+has *not* been observed is an autoscaling group producing that sequence —
+in that order, with instance warmup and health checks in the way, and
+with the leader among the nodes being replaced. That is what this item
+settles.
 
 **On Azure there is nothing to run.** The scale set is
 `upgrade_mode = "Manual"`, so no refresh happens; the canonical upgrade

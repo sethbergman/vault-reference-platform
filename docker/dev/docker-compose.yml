@@ -237,6 +237,37 @@ services:
       VAULT_CACERT: "/vault/tls/ca.crt"
       VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
 
+  # The spare, and the only node here that is not part of the cluster.
+  #
+  # Behind a compose profile so nothing starts it by accident: neither a
+  # bare `docker compose up` nor bootstrap-dev-cluster.sh, which starts
+  # nodes by name. tests/autopilot-prune brings it up on purpose.
+  #
+  # WHY IT EXISTS
+  #
+  # Vault's autopilot only prunes a departed voter once a replacement has
+  # joined and taken the voter count back above min_quorum. The three
+  # named nodes cannot demonstrate that: destroy vault-2 and it rejoins as
+  # vault-2, so the count never rises. On AWS a replacement is a new EC2
+  # instance with a new instance id, and therefore a new voter — which is
+  # exactly the shape this node reproduces.
+  #
+  # Without it, "dead voters get pruned" is a claim rather than a test.
+  vault-3:
+    profiles: ["spare"]
+    build:
+      context: ../vault
+      args:
+        VAULT_NODE_ID: vault-3
+    ports:
+      - "8230:8200"
+    volumes:
+      - ./tls:/vault/tls:ro
+    environment:
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
+      VAULT_TRANSIT_TOKEN: "${VAULT_TRANSIT_TOKEN:-}"
+
   # Monitoring — started only by `bootstrap-dev-cluster.sh --with-monitoring`
   # (and therefore `make deploy`), not by a bare `docker compose up`.
   prometheus:

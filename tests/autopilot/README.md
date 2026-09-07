@@ -58,10 +58,16 @@ upstream change breaks a test instead of quietly making the docs wrong —
 that the script configures a live cluster, that the values read back, and
 that a second run is a no-op which still verifies.
 
-**Neither suite proves the fix works on a cloud profile.** No ASG
-instance refresh has ever run against this configuration, because no
-cloud profile has ever been applied. And a dead voter has never been
-watched being pruned: that needs a fourth voter, and a fourth voter needs
-a node with a different `node_id`, which the local compose profile — three
-named nodes that rejoin as themselves — has no way to produce. The guard
-is demonstrated; the cleanup it guards is not.
+A dead voter being pruned is covered by a third suite,
+[`tests/autopilot-prune`](../autopilot-prune/run-tests.sh), which needs a
+fourth node to do it: pruning cannot happen at three voters with a floor
+of three, so it adds the `vault-3` spare and watches the count go to four
+and back to three.
+
+**None of them proves the fix works on a cloud profile.** No ASG instance
+refresh has ever run against this configuration, because no cloud profile
+has ever been applied. What the local suites establish is that autopilot
+behaves as documented when a replacement arrives; whether an autoscaling
+group produces that sequence — in that order, with its own warmup and
+health checks in the way — is the checklist item in
+[`docs/cloud-apply.md`](../../docs/cloud-apply.md).
