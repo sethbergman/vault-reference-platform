@@ -888,6 +888,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Same reason as the integration job: the suite drives the cluster
+      # from the host, through the published ports, so the runner needs
+      # the CLI. Pinned to the version the container image runs -- a
+      # floating CLI would make a failure here hard to attribute, and
+      # this suite is about Raft membership, which is exactly the kind of
+      # thing that moves between versions.
+      - name: Install the Vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o /tmp/vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o -d /tmp /tmp/vault.zip vault
+          sudo install -m 0755 /tmp/vault /usr/local/bin/vault
+          vault version
+
       # The half of the autopilot claim that neither the shim suite nor
       # the integration suite reaches: a dead voter actually disappearing.
       # It cannot happen at three voters with a floor of three, which is
@@ -899,6 +914,12 @@ jobs:
       # 1m, so the wait proving the floor holds cannot be shortened.
       - name: Watch a replaced voter get pruned
         run: ./tests/autopilot-prune/run-tests.sh
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose down -v || true
 
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
