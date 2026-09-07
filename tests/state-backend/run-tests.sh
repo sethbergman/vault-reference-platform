@@ -390,16 +390,28 @@ else
         "state is still a file on this machine, which is the thing the backend removes"
 fi
 
-list_keys() {
-    python3 - "$1" <<'PY'
-import sys, urllib.request, xml.etree.ElementTree as ET
-url = "http://localhost:5000/%s?list-type=2" % sys.argv[1]
-body = urllib.request.urlopen(url).read()
-ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-root = ET.fromstring(body)
-for c in root.findall(".//s3:Contents/s3:Key", ns) or root.findall(".//Contents/Key"):
-    print(c.text)
+# boto3 rather than curl: the emulator rejects unsigned mutating
+# requests, and boto3 arrives with moto[server] anyway.
+s3_client_py() {
+    cat <<'PY'
+import boto3
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:5000",
+    aws_access_key_id="emulated",
+    aws_secret_access_key="emulated",
+    region_name="us-east-1",
+)
 PY
+}
+
+list_keys() {
+    { s3_client_py; cat <<'PY'
+import sys
+for o in s3.list_objects_v2(Bucket=sys.argv[1]).get("Contents", []):
+    print(o["Key"])
+PY
+    } | python3 - "$1"
 }
 
 if list_keys "$BUCKET" | grep -qx "$STATE_KEY"; then
@@ -420,20 +432,19 @@ info "=== The lock: two applies at once ==="
 # One process planting the lock object rather than two racing applies:
 # the race is not reproducible on demand, and what is being checked is
 # that the second apply asks and is refused.
-python3 - "$BUCKET" "$STATE_KEY" <<'PY'
-import json, sys, urllib.request
-bucket, key = sys.argv[1], sys.argv[2]
-body = json.dumps({
-    "ID": "00000000-0000-0000-0000-000000000000",
-    "Operation": "OperationTypeApply",
-    "Who": "someone-else@another-laptop",
-    "Version": "1.10.0",
-}).encode()
-req = urllib.request.Request(
-    "http://localhost:5000/%s/%s.tflock" % (bucket, key),
-    data=body, method="PUT")
-urllib.request.urlopen(req)
+{ s3_client_py; cat <<'PY'
+import json, sys
+s3.put_object(
+    Bucket=sys.argv[1],
+    Key=sys.argv[2] + ".tflock",
+    Body=json.dumps({
+        "ID": "00000000-0000-0000-0000-000000000000",
+        "Operation": "OperationTypeApply",
+        "Who": "someone-else@another-laptop",
+    }).encode(),
+)
 PY
+} | python3 - "$BUCKET" "$STATE_KEY"
 
 if terraform -chdir="$AWS_DIR" apply -auto-approve -input=false -lock-timeout=5s \
         -target=random_id.bucket_suffix >"${WORK}/apply-locked.log" 2>&1; then
@@ -450,13 +461,11 @@ fi
 
 # The positive half. Without it, the assertion above passes just as well
 # when the apply is broken for an unrelated reason.
-python3 - "$BUCKET" "$STATE_KEY" <<'PY'
-import sys, urllib.request
-bucket, key = sys.argv[1], sys.argv[2]
-req = urllib.request.Request(
-    "http://localhost:5000/%s/%s.tflock" % (bucket, key), method="DELETE")
-urllib.request.urlopen(req)
+{ s3_client_py; cat <<'PY'
+import sys
+s3.delete_object(Bucket=sys.argv[1], Key=sys.argv[2] + ".tflock")
 PY
+} | python3 - "$BUCKET" "$STATE_KEY"
 
 if terraform -chdir="$AWS_DIR" apply -auto-approve -input=false -lock-timeout=5s \
         -target=random_id.bucket_suffix >"${WORK}/apply-unlocked.log" 2>&1; then
