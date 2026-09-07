@@ -1,0 +1,30 @@
+# Backend configuration for terraform/azure. Copy to backend.hcl, or
+# better, generate it so it cannot disagree with what exists:
+#
+#   terraform -chdir=terraform/azure/bootstrap apply
+#   terraform -chdir=terraform/azure/bootstrap output -raw backend_config \
+#     > terraform/azure/backend.hcl
+#   terraform -chdir=terraform/azure init -backend-config=backend.hcl
+#
+# backend.hcl is gitignored. It names a subscription's storage account,
+# which is not a secret but is also not a fact about this repository.
+
+resource_group_name  = "vault-reference-tfstate-rg"
+storage_account_name = "vaultreferencetfstateCH"
+container_name       = "tfstate"
+
+# One container, one key per cluster. Two clusters sharing a key is two
+# clusters overwriting each other's state.
+key = "vault-reference.terraform.tfstate"
+
+# The state account sets shared_access_key_enabled = false, so there is
+# no account key to fall back on. Without this the backend looks for one,
+# finds none, and fails at init.
+#
+# The principal running Terraform needs "Storage Blob Data Contributor"
+# on the account. terraform/azure/bootstrap grants it to whoever applied
+# the bootstrap module; anyone else needs it granted explicitly.
+use_azuread_auth = true
+
+# No locking setting here, unlike the AWS side. The azurerm backend takes
+# a lease on the state blob and always has.
