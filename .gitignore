@@ -16,6 +16,9 @@ terraform/*/backend.hcl
 # broken by an upstream release and a substituted provider can't install
 # silently. Regenerate with `terraform providers lock` (see
 # docs/deployment.md), never by hand.
+#
+# Nothing below is attached to that note; it describes an absence.
+
 .DS_Store
 
 # Vault rotation script state (accessors only, not secrets — but keep out of the repo)
@@ -39,3 +42,16 @@ docker/dev/agent/
 # Ignored by name rather than ignoring .claude/ wholesale, so a shared
 # settings.json or a checked-in skill can still be committed on purpose.
 .claude/settings.local.json
+
+# Spec Kit scaffolding, installed into this checkout by the Specify CLI
+# rather than by anything here. No tracked file in this repository refers
+# to `.specify` or to these skills, no CI job runs them, and the Makefile
+# does not know about them — so they are one developer's tooling sitting
+# in a shared tree, and they made `git status` noisy on every branch.
+#
+# Named rather than wholesale, following the line above: if this project
+# ever adopts Spec Kit, committing `.specify/` and its skills becomes a
+# deliberate act with a commit message, not something that happens because
+# an ignore rule stopped covering them.
+.specify/
+.claude/skills/speckit-*/
