@@ -104,7 +104,15 @@ wait_for() {
     for i in $(seq 1 "$attempts"); do
         # --cacert is harmless against the plain-HTTP endpoints (Dex,
         # Prometheus) and required for the Vault ones.
-        if curl --cacert "${TLS_DIR}/ca.crt" -fsS -o /dev/null "$url"; then
+        #
+        # No -S, deliberately. The first poll almost always lands before
+        # the container's listener is up, and curl's error for that is
+        # indistinguishable at a glance from a real one. A healthy boot
+        # that prints three red lines teaches the reader to skip past
+        # error text, which is the habit that hides the failure that
+        # matters. The exhausted-loop path below is what reports a
+        # genuine one, with the container's own logs attached.
+        if curl --cacert "${TLS_DIR}/ca.crt" -fs -o /dev/null "$url"; then
             log "${label} is responding."
             return 0
         fi
@@ -260,7 +268,7 @@ compose exec -T vault-unseal vault operator unseal "$UNSEAL_KEY" >/dev/null
 log "Waiting for vault-unseal to become the active node..."
 for i in $(seq 1 30); do
     # /sys/health returns 200 only when initialized, unsealed and active.
-    if vcurl -fsS -o /dev/null "https://127.0.0.1:8300/v1/sys/health"; then
+    if vcurl -fs -o /dev/null "https://127.0.0.1:8300/v1/sys/health"; then
         log "vault-unseal is active."
         break
     fi
@@ -319,7 +327,7 @@ done
 # return from here straight into `vault secrets enable`.
 log "Waiting for ${LEADER} to become the active node..."
 for i in $(seq 1 30); do
-    if vcurl -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/health"; then
+    if vcurl -fs -o /dev/null "https://127.0.0.1:8200/v1/sys/health"; then
         log "${LEADER} is active."
         break
     fi
