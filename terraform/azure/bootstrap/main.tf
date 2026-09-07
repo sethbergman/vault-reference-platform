@@ -137,6 +137,20 @@ resource "azurerm_storage_account" "tfstate" {
     bypass         = ["AzureServices"]
   }
 
+  # The Azure half of the AWS bucket's prevent_destroy. `terraform
+  # destroy` in this directory is a plausible thing to run while tidying
+  # up a subscription, and it would take the state of every running
+  # cluster in the account with it. Making that an edit rather than a
+  # command is the whole guard.
+  #
+  # There is no force_destroy counterpart to pair it with: azurerm has no
+  # such argument, and destroying an account with blobs in it does not
+  # fail the way an S3 bucket does. So on this side the lifecycle block
+  # is not defence in depth — it is the only thing standing there.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = var.tags
 }
 
