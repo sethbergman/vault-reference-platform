@@ -26,6 +26,12 @@ terraform/*/backend.hcl
 # compromised from the moment it lands, whether or not anyone notices.
 docker/dev/tls/
 
+# Recovery keys from bootstrap-dev-cluster.sh. With a seal stanza,
+# `operator init` returns these instead of unseal keys, and they are what
+# `generate-root` and `rekey` need. Dev-only and regenerated on every
+# bootstrap — but a key is a key, and none of them belong in git.
+docker/dev/.recovery-keys.json
+
 # Vault Agent credentials, written by scripts/bootstrap-agent.sh.
 # role_id is not a secret; secret_id is, and Agent deletes it after
 # reading it anyway. Neither belongs in the repository.

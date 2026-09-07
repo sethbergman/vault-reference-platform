@@ -35,7 +35,7 @@ ALL_SUITES  := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard tests/*/run-test
 # and state-backend each need terraform and moto. Everything else is shims
 # and runs in seconds.
 SLOW_SUITES := integration cloud-apply-emulated state-backend autopilot-prune \
-               quorum-recovery
+               quorum-recovery root-token
 FAST_SUITES := $(filter-out $(SLOW_SUITES),$(ALL_SUITES))
 
 .PHONY: help
@@ -93,7 +93,14 @@ logs: ## Follow every container's logs
 
 .PHONY: destroy
 destroy: ## Tear the cluster down, volumes included
-	$(COMPOSE) down -v
+	$(COMPOSE) --profile spare down -v
+	@# The recovery keys belong to the cluster that just stopped existing.
+	@# Leaving them is a quorum of key shares on disk for a Vault that is
+	@# gone -- harmless in the sense that nothing can be unsealed with
+	@# them any more, and untidy in the sense that a credential file
+	@# should not outlive its cluster by weeks waiting for the next
+	@# bootstrap to overwrite it.
+	@rm -f docker/dev/.recovery-keys.json
 
 ##@ Day-two operations
 

@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            21 suites; each is a self-contained run-tests.sh
+tests/            23 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -121,6 +121,12 @@ peers.
 Log output goes to stderr; the root token is the only thing on stdout,
 so `ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh)` works. Preserve
 that split when editing.
+
+The recovery keys go to `docker/dev/.recovery-keys.json` (0600,
+gitignored) rather than stdout. With a seal stanza `operator init`
+returns those instead of unseal keys, and they are what `generate-root`
+and `rekey` need — the script used to discard them, which made revoking
+the root token a one-way door.
 
 ## The four profiles
 
@@ -213,7 +219,9 @@ Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 setting that makes a replaced node stop counting as a voter),
 `rotate-secret-id.sh`, `snapshot.sh`,
 `dr-drill.sh`, `recover-quorum.sh` (quorum loss, which is not the same
-failure as data loss), `vault-upgrade.sh`, `issue-node-cert.sh`,
+failure as data loss), `revoke-root-token.sh` / `generate-root-token.sh`
+(retire the root token, and mint one from recovery keys when a task needs
+it), `vault-upgrade.sh`, `issue-node-cert.sh`,
 `migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
 `preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`,
 `oidc-login-test.sh`, `generate-docs-index.sh`.
@@ -323,10 +331,12 @@ Per-suite requirements:
 | autopilot | bash, jq |
 | autopilot-prune | docker compose, vault CLI, jq |
 | quorum-recovery | docker compose, vault CLI, jq, curl |
+| root-token | docker compose, vault CLI, jq |
+| recover-quorum-systemd | bash, jq |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 31 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 33 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -371,7 +381,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-31 jobs means any "list the check runs" call returns 31 records, which
+33 jobs means any "list the check runs" call returns 33 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 

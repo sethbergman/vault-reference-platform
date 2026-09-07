@@ -188,6 +188,23 @@ restore procedures. `make dr-drill` runs the restore drill end to end — take a
 snapshot, destroy the node and its storage, restore, verify the data came
 back — and CI runs it on every PR, so the procedure can't rot unnoticed.
 
+**Losing quorum is a different failure from losing data**, and the
+remedies are not interchangeable. If a majority of nodes are gone but one
+survivor still has its storage, that survivor holds every write Raft
+committed — it simply cannot elect a leader to serve them.
+`scripts/recover-quorum.sh` tells it to stop waiting for peers that are
+not coming back, and keeps the lot. Restoring a snapshot instead works,
+and silently discards everything written since that snapshot.
+
+`tests/quorum-recovery` runs the whole sequence against a real cluster on
+every PR: destroy two of three, confirm the survivor cannot serve,
+recover it, confirm the pre-outage write reads back.
+
+One thing it found is worth knowing before an incident: a quorum-less
+node answers `sys/health?standbyok=true` with **200**, so a load balancer
+matching `200,429` keeps routing to a node that returns 500 for
+everything. The `VaultNoActiveNode` alert catches it; the pool does not.
+
 ## Scheduled snapshots
 
 Raft snapshots run hourly from a systemd timer on every node, installed by
@@ -388,6 +405,13 @@ for real:
 - **DR restore drill** — snapshots a cluster, destroys the node and its
   storage, restores into a replacement, and verifies a secret written
   before the disaster reads back.
+- **Quorum loss and recovery** — destroys two of three nodes, confirms
+  the survivor cannot serve, recovers it through Raft's `peers.json`, and
+  confirms the write made before the outage is still there.
+- **Root token lifecycle** — revokes the root token, confirms an AppRole
+  token still administers the cluster, and mints a new root from a quorum
+  of recovery keys. Both refusals are exercised in the state where they
+  should refuse, including offering a token entitled to nothing.
 - **Rolling upgrade tests** — proves a bad checksum aborts before any
   node is touched, and that an unhealthy node stops the rollout rather
   than costing a second node and quorum.

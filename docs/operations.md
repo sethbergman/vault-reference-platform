@@ -205,8 +205,25 @@ journalctl -u vault --since '15 minutes ago' | grep -i seal
 Fewer than two of three nodes are unsealed. Raft needs a majority, so the
 cluster cannot elect a leader or accept writes. This is an outage.
 
-Restore nodes rather than reconfiguring quorum. If nodes are gone
-permanently, see [`disaster-recovery.md`](disaster-recovery.md).
+**Bring the missing nodes back if you can.** A node that returns rejoins
+on its own and the alert clears; nothing below is needed.
+
+If they are gone permanently, the next question decides the remedy, and
+the two are not interchangeable:
+
+- **A survivor still has its storage.** It holds every write Raft
+  committed. `scripts/recover-quorum.sh` tells it to stop waiting for
+  peers that are not coming back, and keeps the lot. Nothing is lost.
+- **The storage is gone or suspect.** Then there is nothing to preserve
+  and the restore path in
+  [`disaster-recovery.md`](disaster-recovery.md#restore-procedure) is the
+  answer.
+
+Reaching for the restore in the first case works and silently discards
+everything written since the last snapshot — on an hourly schedule, up to
+an hour of secrets, leases and tokens, to fix a failure that lost
+nothing. [`disaster-recovery.md`](disaster-recovery.md#loss-of-quorum-scenario)
+draws the line.
 
 ### VaultNoActiveNode
 
@@ -214,12 +231,26 @@ Every node is unsealed and none holds leadership. Nothing looks wrong on
 an availability dashboard; writes fail with `local node not active but
 active cluster node not found`.
 
+**The load balancer will not tell you.** A node in this state answers
+`sys/health?standbyok=true` with **200**, and the AWS target group matches
+`200,429` — so it stays in the pool, routing requests to something that
+returns 500 for all of them. This alert is the signal; pool membership is
+not.
+
 ```bash
 vault read -format=json sys/leader | jq '.data.is_self'
-vault operator raft list-peers
 ```
 
 Exactly one node should report `is_self: true`.
+
+Note that `vault operator raft list-peers` **does not work here** — it
+needs a leader to answer, so it fails with the same 500 as everything
+else. This runbook used to recommend it. If you need the peer list during
+the outage, read it from the node's own storage or wait until leadership
+returns.
+
+If no node can hold leadership because a majority are gone, this is
+`VaultQuorumLost` in a different costume — follow that runbook.
 
 ### VaultSnapshotStale
 

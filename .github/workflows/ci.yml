@@ -957,6 +957,55 @@ jobs:
           cd docker/dev
           docker compose --profile spare down -v || true
 
+  root-token-test:
+    name: Root token lifecycle (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o /tmp/vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o -d /tmp /tmp/vault.zip vault
+          sudo install -m 0755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      # Revoking the root token is the step that turns a demonstration
+      # into a deployment, and this repository was silent about it --
+      # which for a security reference reads as "keep it".
+      #
+      # It could not have said otherwise either: the bootstrap discarded
+      # the recovery keys, so revoking root was a one-way door. This
+      # covers the whole lifecycle, including both refusals in the state
+      # where they should refuse.
+      - name: Revoke the root token, and get one back
+        run: ./tests/root-token/run-tests.sh
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose --profile spare down -v || true
+
+  recover-quorum-systemd-test:
+    name: recover-quorum.sh on a real node (shims)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The --service-name path had no test: tests/quorum-recovery runs
+      # the compose path against a real cluster, and the one an operator
+      # uses on an actual node was reviewed but never exercised.
+      #
+      # Shims, so this proves the script issues the right commands in the
+      # right order -- in particular that every refusal happens before
+      # systemctl stop, because a guard that refuses after stopping Vault
+      # has taken the node down and then declined to fix it.
+      - name: Exercise the systemd recovery path
+        run: ./tests/recover-quorum-systemd/run-tests.sh
+
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest

@@ -300,13 +300,6 @@ not a property the architecture has to have on the day it is stood up.
   standard Vault metrics and would port directly; what is missing is
   somewhere to port them to, and a decision about whether this
   repository ships a Prometheus or documents integrating with one.
-- **The root token, after bootstrap.** `bootstrap-dev-cluster.sh` emits
-  a root token because the local profile needs one to configure itself.
-  Nothing here says to revoke it once the auth methods are configured,
-  which is the step that turns a demonstration into a deployment.
-  Vault's own guidance is to revoke and re-generate on demand; this
-  repository is silent, and silence on that point is a recommendation
-  nobody meant to make.
 - **Seal migration and key rotation.** No coverage of `vault operator
   rotate` for the barrier key, of a Shamir rekey, or of migrating an
   existing cluster between seal types with `-migrate`. Rotating a KMS
@@ -314,12 +307,6 @@ not a property the architecture has to have on the day it is stood up.
   is the failure this whole architecture is arranged to avoid, and it is
   the one seam where the PKI migration path — scripted, sequenced and
   tested end to end — has no counterpart.
-- **Quorum loss recovery.** The DR drill restores from a snapshot. It
-  does not cover losing two of three nodes and recovering the survivor
-  through Raft's `peers.json` recovery mode, which is a different
-  procedure answering a different failure. A cluster that has lost
-  quorum is not a cluster that needs restoring; treating them as the
-  same is how a recoverable incident becomes a restore from last night.
 - **Restore verification at the cloud destination.** `dr-drill.sh`
   proves a snapshot restores, against a local cluster. Snapshots in the
   cloud profiles are uploaded to S3 or blob storage, and nothing reads
@@ -331,6 +318,28 @@ not a property the architecture has to have on the day it is stood up.
   engine, further database engines, and a cloud-provisioned database
   for the secrets engine to point at. Feature breadth rather than
   operational risk, which is why they are last.
+
+Two items came off this list without spending anything, which is worth
+noting because the list was written as though a cloud account were the
+constraint. It was not; the constraint was that nobody had tried.
+
+**Quorum loss recovery** turned out to be a correction as much as an
+addition. `docs/disaster-recovery.md` sent a lost majority to a snapshot
+restore, which works and silently discards everything written since that
+snapshot — to fix a failure where the survivor still holds every
+committed write. `peers.json` keeps it. The old warning against editing
+the Raft log stands; `peers.json` is not that. `tests/quorum-recovery`
+runs the whole sequence on every PR, and found on the way that a
+quorum-less node answers the load balancer's health check with 200 while
+returning 500 to everything else.
+
+**The root token** could not have been documented without a prior fix:
+`bootstrap-dev-cluster.sh` discarded the recovery keys, so revoking root
+was a one-way door and the advice would have been destructive to whoever
+took it. The keys are kept now, `revoke-root-token.sh` refuses without a
+working non-root token to prove there is still a way in, and
+`generate-root-token.sh` mints a replacement from a quorum of shares.
+`tests/root-token` proves the lifecycle end to end.
 
 Dynamic secrets, alerting, audit devices and the PKI migration path have
 all moved off this list. The database
