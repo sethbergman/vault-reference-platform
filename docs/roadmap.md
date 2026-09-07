@@ -200,21 +200,31 @@ The blockers are, in order:
    Both volumes still live on the same Docker daemon, so what exists is
    tamper *evidence* rather than tamper proofing, and the trail does not
    yet leave the machine. That is the remaining half.
-4. **Terraform state that survives a team.** Neither profile declares a
-   `backend`, so state is a file on whoever ran `apply` last. That is
-   correct for a reference someone reads and wrong for a cluster anyone
-   runs: two concurrent applies corrupt it with no lock to stop them,
-   nobody else can manage what you built, and losing the file means
-   losing the ability to change a *running* Vault cluster — while Vault
-   itself stays up, holding production secrets, unmanageable.
+4. **Terraform state that survives a team.** Both profiles now declare a
+   `backend`, and the ordering it depends on is a second root module per
+   provider — `terraform/{aws,azure}/bootstrap` — which creates the
+   bucket or storage account, keeps local state of its own, and emits the
+   matching `backend.hcl`. `tests/state-backend` applies the AWS half
+   against an emulated AWS API on every PR and checks the properties that
+   make the arrangement worth having: that `init` against a bucket which
+   does not exist is refused rather than quietly creating an empty state,
+   that state lands in the bucket and not on disk, and that a second
+   apply is turned away while the first holds the lock. CI's
+   `-backend=false` still runs `validate` with no credentials, which is
+   asserted rather than assumed.
 
-   The work is not the backend block. It is the ordering: the bucket or
-   storage account holding the state has to exist before the
-   configuration that uses it, which is either a second root module or a
-   documented one-time bootstrap, and the choice is worth making
-   deliberately rather than discovering halfway through a first apply.
-   CI keeps `-backend=false`, which is what makes `validate` runnable
-   with no credentials — that must not regress.
+   What is left is what is left everywhere else in this section: neither
+   backend has been pointed at a real account. Nothing here shows that
+   the IAM permissions to reach the bucket are the ones granted, that two
+   applies from two machines race the way one process planting a lock
+   file does, or that the Entra role assignment on the Azure side is
+   enough for a second person to run `terraform` at all — and the Azure
+   bootstrap module has never been applied to anything, because moto is
+   an AWS API and there is no emulator for the other side.
+
+   So this item moves from "not started" to the same footing as blockers
+   1 and 2, and it closes when they do. See
+   [terraform-state.md](terraform-state.md).
 5. **An upgrade path that matches how the profiles actually deploy.**
    `scripts/vault-upgrade.sh` steps the leader down, swaps the binary
    over SSH, and waits for health before touching the next node. Nothing
@@ -237,9 +247,20 @@ The blockers are, in order:
    cluster through a rolling replacement.
 
 Both are additions to this list rather than discoveries about the
-existing three. Neither is reachable by the emulated apply: state
-backends and node replacement are questions about operating a cluster
-over time, and an emulator has no time in it.
+existing three, and when they were added this paragraph said neither was
+reachable by an emulated apply — that state backends and node
+replacement are questions about operating a cluster over time, and an
+emulator has no time in it.
+
+Half of that was wrong, and finding out cost nothing. Item 5 is as
+described: an instance refresh replacing a leader is a question about
+what happens over minutes, and moto has no minutes in it. Item 4 was
+not. The durability half — does the bucket survive, do two people
+racing corrupt each other — is indeed unreachable. But the *ordering*
+half is a question about what a command does when a bucket is missing,
+and an emulator answers that as well as an account does. The sentence
+generalised from one item to two on the strength of them arriving
+together.
 
 ## After v1.0: production operations
 

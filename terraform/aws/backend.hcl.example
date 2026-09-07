@@ -1,0 +1,35 @@
+# Backend configuration for terraform/aws. Copy to backend.hcl, or
+# better, generate it so it cannot disagree with what exists:
+#
+#   terraform -chdir=terraform/aws/bootstrap apply
+#   terraform -chdir=terraform/aws/bootstrap output -raw backend_config \
+#     > terraform/aws/backend.hcl
+#   terraform -chdir=terraform/aws init -backend-config=backend.hcl
+#
+# backend.hcl is gitignored. It names an account's bucket, which is not a
+# secret but is also not a fact about this repository.
+
+bucket = "vault-reference-tfstate-CHANGEME"
+
+# One bucket, one key per cluster. Two clusters sharing a key is two
+# clusters overwriting each other's state, and the first symptom is a
+# plan offering to destroy a cluster that is running.
+key = "vault-reference/terraform.tfstate"
+
+region = "us-east-1"
+
+# The key from terraform/aws/bootstrap, not the cluster's auto-unseal
+# key. The bucket's default encryption already applies it; naming it here
+# means the backend fails loudly rather than writing state under whatever
+# the bucket default happens to be after somebody changes it.
+kms_key_id = "arn:aws:kms:us-east-1:000000000000:key/CHANGEME"
+encrypt    = true
+
+# S3 native locking, Terraform 1.10 and later. Without it, two applies
+# run concurrently and the second overwrites the first's state — which is
+# the specific corruption this backend exists to prevent, so leave it on.
+#
+# Not a DynamoDB table: the `dynamodb_table` argument still works and is
+# deprecated, and it is a second resource to create, pay for, and forget
+# to create for the next cluster.
+use_lockfile = true

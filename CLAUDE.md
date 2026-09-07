@@ -28,6 +28,8 @@ Two consequences shape almost every decision here:
 terraform/
   aws/        VPC, ASG, NLB, KMS auto-unseal, versioned snapshot bucket
   azure/      VNet, VMSS, LB, Key Vault auto-unseal, blob container
+  */bootstrap State bucket or storage account, applied once, before
+              the profile beside it. Local state of its own.
   local/      Placeholder so fmt/validate has a target for every profile
   modules/    Provider-agnostic shape (cluster_name, node_count, tags)
 ansible/
@@ -50,7 +52,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            17 suites; each is a self-contained run-tests.sh
+tests/            18 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -311,17 +313,20 @@ Per-suite requirements:
 | upgrade | bash, curl, unzip, jq, sha256sum, python3 |
 | integration | docker compose, vault CLI, jq, openssl, curl |
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
+| state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 27 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 28 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
-with gitleaks and Trivy); one (`emulated-apply`) applies the AWS profile
-against an emulated API; the rest each run one suite from `tests/`, or
-bring up the compose cluster and exercise it live (smoke test, AppRole
-rotation, GitHub OIDC, human OIDC via Dex, DR drill, integration).
+with gitleaks and Trivy); two run Terraform against an emulated AWS API
+(`emulated-apply` applies the whole profile, `state-backend` applies the
+bootstrap module and points the profile's backend at it); the rest each
+run one suite from `tests/`, or bring up the compose cluster and
+exercise it live (smoke test, AppRole rotation, GitHub OIDC, human OIDC
+via Dex, DR drill, integration).
 
 Adding a suite under `tests/` does **not** wire it into CI — add the job
 too. Shellcheck, by contrast, discovers test scripts via `git ls-files`
@@ -357,7 +362,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-27 jobs means any "list the check runs" call returns 27 records, which
+28 jobs means any "list the check runs" call returns 28 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 
@@ -399,6 +404,11 @@ PLATFORMS="$PLATFORMS -platform=windows_amd64"
 # shellcheck disable=SC2086  # word splitting is the point here
 terraform -chdir=terraform/aws   providers lock $PLATFORMS
 terraform -chdir=terraform/azure providers lock $PLATFORMS
+
+# The state bootstrap modules are root modules too, with lock files of
+# their own that nothing else regenerates.
+terraform -chdir=terraform/aws/bootstrap   providers lock $PLATFORMS
+terraform -chdir=terraform/azure/bootstrap providers lock $PLATFORMS
 ```
 
 Not `windows_arm64`. Neither `hashicorp/aws` nor `hashicorp/random`
@@ -476,16 +486,21 @@ between here and v1.0:
 3. Off-host audit shipping. The trail is now hash-chained and anchored
    where the collector cannot write, but both volumes still sit on one
    Docker daemon — tamper *evidence*, not tamper proofing.
-4. Terraform state that survives a team. No profile declares a
-   `backend`, so state is local and unlocked. CI's `-backend=false` is
-   what keeps `validate` runnable without credentials; do not regress it
-   while adding one.
+4. Terraform state that survives a team. Both profiles declare a
+   `backend`, filled at init time from a gitignored `backend.hcl` that
+   `terraform/<cloud>/bootstrap` generates. CI's `-backend=false` is what
+   keeps `validate` runnable without credentials, and
+   `tests/state-backend` asserts it still works — do not regress it.
+   Neither backend has been pointed at a real account.
 5. An upgrade path matching how the profiles deploy. `vault-upgrade.sh`
    is leader-aware SSH; the cloud profiles replace nodes through ASG
    instance refresh and a manual-upgrade scale set, which are not.
 
 Items 4 and 5 were added after the first three and are about operating a
-cluster over time, so neither is reachable by `tests/cloud-apply-emulated`.
+cluster over time. Item 5 is out of reach of an emulator for that
+reason; item 4's ordering half turned out not to be, which is what
+`tests/state-backend` covers.
+
 `docs/roadmap.md` also carries an "After v1.0: production operations"
 list — cloud monitoring, the root token after bootstrap, seal migration
 and key rotation, quorum-loss recovery, and restore verification at the

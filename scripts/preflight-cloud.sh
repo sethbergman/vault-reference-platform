@@ -299,6 +299,32 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== Where does the state go? ==="
+# ---------------------------------------------------------------------------
+# Worth answering before the apply rather than after. Applying with local
+# state produces a running Vault cluster whose only record of itself is a
+# file on this machine — recoverable by importing every resource by hand,
+# and not at all if the machine is a CI runner that is about to be
+# destroyed.
+if [[ -f "${TF_DIR}/backend.hcl" ]]; then
+    ok "backend.hcl is present, so state has somewhere to go"
+    if [[ -d "${TF_DIR}/.terraform" ]] && grep -q '"backend"' "${TF_DIR}/.terraform/terraform.tfstate" 2>/dev/null; then
+        ok "the backend is initialised"
+    else
+        warn "backend.hcl exists but the backend is not initialised" \
+            "run: terraform -chdir=${TF_DIR} init -backend-config=backend.hcl"
+    fi
+    if [[ -f "${TF_DIR}/terraform.tfstate" ]]; then
+        warn "a local terraform.tfstate is also present in ${TF_DIR}" \
+            "left over from a local-state apply; migrate it before applying again, or it is ignored and the cluster gets built twice"
+    fi
+else
+    warn "no backend.hcl in ${TF_DIR} — this apply would use local state" \
+        "apply terraform/${CLOUD}/bootstrap first; see docs/terraform-state.md"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== Does it plan? ==="
 # ---------------------------------------------------------------------------
 if command -v terraform >/dev/null 2>&1; then

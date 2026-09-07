@@ -37,6 +37,12 @@
 # and why — because a teardown that silently leaves things behind is how
 # a test deployment becomes a line item.
 #
+# The Terraform state bucket is the one survivor that is not a
+# consolation prize. It belongs to the account rather than to the
+# cluster, it holds the state of every other cluster in that account, and
+# it carries prevent_destroy so this script cannot remove it even by
+# accident. See docs/terraform-state.md.
+#
 # Requirements: terraform, and the CLI for the chosen cloud (aws or az).
 
 set -euo pipefail
@@ -220,6 +226,22 @@ else
     log ""
     log "  The name carries a random suffix, so re-applying still works."
 fi
+
+log ""
+if [[ "$CLOUD" == "aws" ]]; then
+    log "The Terraform state bucket: untouched, and that is correct."
+else
+    log "The Terraform state account: untouched, and that is correct."
+fi
+log "  It belongs to the account rather than to this cluster, it holds"
+log "  the state of every other cluster in the account, and it carries"
+log "  prevent_destroy — so a 'terraform destroy' in the bootstrap"
+log "  directory fails rather than quietly taking all of it with it."
+log ""
+log "  It costs cents a month empty, and the next apply here reuses it."
+log "  Removing it means editing terraform/${CLOUD}/bootstrap first,"
+log "  which is the deliberate act it ought to be. See"
+log "  docs/terraform-state.md."
 
 log ""
 log "Check the console before you walk away. A destroy that reported"

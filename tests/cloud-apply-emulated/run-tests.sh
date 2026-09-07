@@ -51,6 +51,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TF_DIR="${REPO_ROOT}/terraform/aws"
 OVERRIDE_SRC="${SCRIPT_DIR}/provider_override.tf"
 OVERRIDE_DST="${TF_DIR}/zz_emulated_override.tf"
+BACKEND_SRC="${SCRIPT_DIR}/backend_override.tf"
+BACKEND_DST="${TF_DIR}/zz_emulated_backend_override.tf"
 ENDPOINT="http://localhost:5000"
 
 WORK="$(mktemp -d)"
@@ -76,7 +78,7 @@ cleanup() {
             >"${WORK}/destroy.log" 2>&1 || red "  (destroy failed; see ${WORK}/destroy.log)"
     fi
     [[ -n "$MOTO_PID" ]] && kill "$MOTO_PID" 2>/dev/null
-    rm -f "$OVERRIDE_DST"
+    rm -f "$OVERRIDE_DST" "$BACKEND_DST"
     rm -rf "${TF_DIR}/.terraform" "${TF_DIR}/terraform.tfstate" \
            "${TF_DIR}/terraform.tfstate.backup" "${TF_DIR}/.terraform.lock.hcl.bak"
     rm -rf "$WORK"
@@ -89,6 +91,7 @@ for dep in terraform python3 curl; do
 done
 python3 -c "import moto" 2>/dev/null || { red "ERROR: moto is not installed (pip install 'moto[server]')"; exit 1; }
 [[ -f "$OVERRIDE_SRC" ]] || { red "ERROR: missing ${OVERRIDE_SRC}"; exit 1; }
+[[ -f "$BACKEND_SRC" ]] || { red "ERROR: missing ${BACKEND_SRC}"; exit 1; }
 
 # ---------------------------------------------------------------------------
 info ""
@@ -117,12 +120,17 @@ else
 fi
 
 cp "$OVERRIDE_SRC" "$OVERRIDE_DST"
+cp "$BACKEND_SRC" "$BACKEND_DST"
 
 # ---------------------------------------------------------------------------
 info ""
 info "=== terraform apply, for real, against the emulator ==="
 # ---------------------------------------------------------------------------
-if terraform -chdir="$TF_DIR" init -backend=false -input=false >"${WORK}/init.log" 2>&1; then
+# Not -backend=false. The profile declares a backend now, and `apply`
+# refuses to run against one that was never initialised -- which is how
+# this suite broke the moment the backend block landed. The override
+# copied in above replaces that backend with a local one for this run.
+if terraform -chdir="$TF_DIR" init -input=false >"${WORK}/init.log" 2>&1; then
     ok "terraform init"
 else
     bad "terraform init" "$(tail -15 "${WORK}/init.log")"

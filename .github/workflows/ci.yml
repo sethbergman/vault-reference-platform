@@ -26,7 +26,10 @@ jobs:
           # the network on every run; that lookup returned a 504 on
           # 2026-08-25 and failed the job before any Terraform ran.
           #
-          # terraform/{aws,azure} declare required_version >= 1.7.
+          # terraform/aws declares required_version >= 1.10, because its
+          # backend uses `use_lockfile`; terraform/azure and both
+          # bootstrap modules are still >= 1.7. This pin satisfies all of
+          # them, and the floor that matters is the highest one.
           terraform_version: "1.15.9"
       - name: terraform fmt
         run: terraform fmt -check -recursive terraform/
@@ -40,6 +43,18 @@ jobs:
           cd terraform/azure
           terraform init -backend=false
           terraform validate
+
+      # The state bootstrap modules are root modules of their own, so
+      # `fmt -recursive` covers them but nothing else here would. They
+      # deliberately declare no backend — a module that creates the state
+      # bucket cannot store its state in it — so -backend=false changes
+      # nothing for them and is passed only for symmetry with the above.
+      - name: terraform validate (state bootstrap)
+        run: |
+          for d in terraform/aws/bootstrap terraform/azure/bootstrap; do
+            terraform -chdir="$d" init -backend=false
+            terraform -chdir="$d" validate
+          done
 
       - name: terraform test (aws)
         run: |
@@ -201,6 +216,37 @@ jobs:
       # that the cluster works. See docs/cloud-apply.md.
       - name: Apply the AWS profile against the emulator
         run: ./tests/cloud-apply-emulated/run-tests.sh
+
+  state-backend:
+    name: State backend + bootstrap ordering (emulated AWS API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: "1.15.9"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the AWS API emulator
+        run: pip install 'moto[server]'
+
+      # The backend block is the small half of remote state; the ordering
+      # is the rest. A configuration cannot assert that the bucket holding
+      # its state existed before it did, so this applies
+      # terraform/aws/bootstrap against an emulated AWS API and then points
+      # the real profile's backend at what that created.
+      #
+      # AWS only, and deliberately so: moto implements an AWS API, so the
+      # Azure half of the suite is static reads of the configuration and is
+      # labelled that way. terraform/azure/bootstrap has never been applied
+      # to anything. See docs/terraform-state.md.
+      - name: Exercise the state backend and the ordering it depends on
+        run: ./tests/state-backend/run-tests.sh
 
   smoke-test:
     name: Deploy + smoke test (Docker Compose)

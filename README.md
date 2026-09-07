@@ -450,13 +450,15 @@ What stands between here and v1.0, in order:
    Both volumes still sit on the same Docker daemon, so this is tamper
    *evidence*, not tamper proofing, and the trail does not yet leave the
    machine. Shipping it somewhere else is the remaining half.
-4. **Terraform state that survives a team.** Neither profile declares a
-   `backend`, so state is a file on whoever ran `apply` last — no lock
-   to stop two concurrent applies corrupting it, and losing the file
-   means losing the ability to change a running Vault cluster while
-   Vault itself stays up holding production secrets. The work is the
-   bootstrap ordering, not the backend block: the bucket has to exist
-   before the configuration that uses it.
+4. **Terraform state that survives a team.** Both profiles now declare a
+   `backend`, with the ordering it depends on in a second root module
+   per provider that creates the bucket or storage account and emits the
+   matching config. `tests/state-backend` proves the AWS half against an
+   emulated API on every PR — including that `init` before the bucket
+   exists is refused, and that a held lock turns away a second apply.
+   Still unproven in an account: the permissions to reach the bucket,
+   two machines actually racing, and the whole Azure side, which has no
+   emulator. See [`docs/terraform-state.md`](docs/terraform-state.md).
 5. **An upgrade path that matches how the profiles deploy.**
    `scripts/vault-upgrade.sh` steps the leader down and swaps binaries
    over SSH. `terraform/aws` installs Vault from user-data and refreshes
@@ -466,7 +468,10 @@ What stands between here and v1.0, in order:
    leadership, and the leader-aware script never executes.
 
 Items 4 and 5 are about operating a cluster over time rather than
-standing one up, which is why the emulated apply reaches neither.
+standing one up. That is why the emulated apply reaches item 5 not at
+all — and, as it turned out, why it reaches the ordering half of item 4
+perfectly well: whether a command refuses a missing bucket is not a
+question about time.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for what is planned, what is
 deliberately excluded, and what "done" is taken to mean.
