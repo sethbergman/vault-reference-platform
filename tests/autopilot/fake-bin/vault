@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI. Records every invocation and answers with
+# whatever the scenario needs. See tests/autopilot/README.md.
+#
+# Modelled on the real `vault operator raft autopilot` output, not on the
+# output the script would find convenient -- the integration suite exists
+# because a shim once agreed with a bug. The get-config shape here is the
+# one a real cluster returned (Vault 1.17.2), including the durations
+# coming back normalised: 5m goes in, "5m0s" comes out.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+# Where a set-config is remembered, so get-config can answer with what was
+# actually written rather than with the defaults forever.
+STATE="${FAKE_STATE:-${FAKE_LOG}.state}"
+
+emit_config() {
+    local cleanup min_quorum threshold
+    if [[ -f "$STATE" ]] && [[ "${FAKE_SET_TAKES:-true}" == "true" ]]; then
+        # shellcheck disable=SC1090
+        source "$STATE"
+        cleanup="${SET_CLEANUP}"
+        min_quorum="${SET_MIN_QUORUM}"
+        threshold="${SET_THRESHOLD}"
+    else
+        # Vault's shipped defaults, confirmed against a real cluster.
+        cleanup="${FAKE_CLEANUP:-false}"
+        min_quorum="${FAKE_MIN_QUORUM:-0}"
+        threshold="${FAKE_THRESHOLD:-24h0m0s}"
+    fi
+    printf '{"cleanup_dead_servers":%s,"dead_server_last_contact_threshold":"%s","disable_upgrade_migration":false,"last_contact_threshold":"10s","max_trailing_logs":1000,"min_quorum":%s,"server_stabilization_time":"10s"}\n' \
+        "$cleanup" "$threshold" "$min_quorum"
+}
+
+if [[ "$*" == *"autopilot get-config"* ]]; then
+    if [[ "${FAKE_GET_CONFIG_RC:-0}" != "0" ]]; then
+        echo "Error reading autopilot configuration: unsupported path" >&2
+        exit "${FAKE_GET_CONFIG_RC}"
+    fi
+    emit_config
+    exit 0
+fi
+
+if [[ "$*" == *"autopilot set-config"* ]]; then
+    if [[ "${FAKE_SET_CONFIG_RC:-0}" != "0" ]]; then
+        echo "Error writing autopilot configuration: permission denied" >&2
+        exit "${FAKE_SET_CONFIG_RC}"
+    fi
+    # Remember what was asked for, so the read-back sees it -- unless the
+    # scenario is the one where a write reports success and does not take.
+    cleanup=true; min_quorum=0; threshold="5m0s"
+    for arg in "$@"; do
+        case "$arg" in
+            -cleanup-dead-servers=*)              cleanup="${arg#*=}" ;;
+            -min-quorum=*)                        min_quorum="${arg#*=}" ;;
+            -dead-server-last-contact-threshold=*) threshold="${arg#*=}0s" ;;
+        esac
+    done
+    {
+        printf 'SET_CLEANUP=%s\n' "$cleanup"
+        printf 'SET_MIN_QUORUM=%s\n' "$min_quorum"
+        printf 'SET_THRESHOLD=%s\n' "$threshold"
+    } > "$STATE"
+    exit 0
+fi
+
+if [[ "$*" == *"list-peers"* ]]; then
+    if [[ "${FAKE_LIST_PEERS_RC:-0}" != "0" ]]; then
+        echo "Error listing peers" >&2
+        exit "${FAKE_LIST_PEERS_RC}"
+    fi
+    # The real shape: .data.config.servers[], each with a voter boolean.
+    n="${FAKE_VOTERS:-3}"
+    nonvoters="${FAKE_NONVOTERS:-0}"
+    servers=""
+    for ((i = 0; i < n; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        servers="${servers}{\"node_id\":\"vault-${i}\",\"address\":\"vault-${i}:8201\",\"voter\":true}"
+    done
+    for ((i = 0; i < nonvoters; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        servers="${servers}{\"node_id\":\"new-${i}\",\"address\":\"new-${i}:8201\",\"voter\":false}"
+    done
+    printf '{"data":{"config":{"servers":[%s]}}}\n' "$servers"
+    exit 0
+fi
+
+echo "fake vault: unhandled invocation: $*" >&2
+exit 64
