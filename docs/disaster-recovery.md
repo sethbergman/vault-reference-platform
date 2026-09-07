@@ -66,9 +66,86 @@ takes a snapshot when it comes back rather than skipping the cycle.
 
 ## Loss-of-quorum scenario
 
-If a majority of Raft peers are lost, follow the documented Vault
-"disaster recovery via snapshot on a single node, then re-join peers"
-procedure — do not attempt to manually edit the Raft log.
+**Losing quorum is not the same failure as losing data**, and this page
+used to send both to the same remedy. It does not any more, because the
+remedies differ in what they cost.
+
+If a majority of nodes are gone but one survivor still has its storage,
+that survivor holds every write Raft committed. It cannot *do* anything
+with them — no leader can be elected, so reads and writes fail with
+`local node not active but active cluster node not found` — but nothing
+is lost. Restoring a snapshot into it would work, and would silently
+discard everything written since that snapshot was taken. On an hourly
+snapshot schedule that is up to an hour of secrets, leases and tokens
+thrown away to fix a problem that did not require throwing anything
+away.
+
+Raft's own recovery mechanism for this is `peers.json`: a file naming
+the peers that are actually left, read once at startup and consumed.
+[`scripts/recover-quorum.sh`](../scripts/recover-quorum.sh) performs it:
+
+```bash
+./scripts/recover-quorum.sh \
+    --peers vault-0=vault-0:8201 \
+    --compose-service vault-0
+```
+
+On a real node the same three steps are `systemctl stop vault`, write
+`peers.json` into the Raft directory, `systemctl start vault` — which is
+what `--service-name` does. That path is written from Vault's documented
+procedure and is **not exercised by any test here**; the suite runs the
+compose path. Treat it as reviewed, not proven.
+
+Name **every** surviving voter, not just the one you are running on.
+Recovering a five-node cluster that lost two means listing the three that
+are left; listing one discards two healthy nodes' votes.
+
+### This is not "editing the Raft log"
+
+The previous version of this section warned against manually editing the
+Raft log, and that warning stands — `raft.db` is not something to touch.
+`peers.json` is a different thing: a recovery file Raft supports, reads
+once, applies, and deletes. Conflating the two is what made a supported
+procedure look reckless and pushed a snapshot restore that costs data.
+
+### When to restore instead
+
+When the survivor's storage is gone or suspect. If there is no node that
+still holds the data, there is nothing for `peers.json` to preserve, and
+[the restore procedure](#restore-procedure) is the answer.
+
+### A quorum-less node still reports healthy
+
+Worth knowing before an incident, because it changes where the traffic
+goes. A node that has lost quorum is still *unsealed*, so:
+
+```text
+GET /v1/sys/health?standbyok=true   →   200
+```
+
+The AWS target group matches `200,429` — 200 active, 429 standby — so it
+keeps a quorum-less node in the pool, routing requests to something that
+answers every one of them with a 500. The health check is not lying; it
+is answering a narrower question than the load balancer is asking.
+
+Monitoring does catch it: `VaultNoActiveNode` fires on
+`sum(vault_core_active) < 1`, and its description quotes the exact error
+the node returns. So the alert is the thing to trust here, not the pool
+membership. [`tests/quorum-recovery`](../tests/quorum-recovery/run-tests.sh)
+asserts the 200, so if Vault ever changes it this page gets revisited
+rather than quietly going stale.
+
+### What is proven
+
+[`tests/quorum-recovery`](../tests/quorum-recovery/run-tests.sh) runs the
+whole sequence against a real three-node cluster on every PR: write a
+secret, destroy two nodes, confirm the survivor cannot serve, recover it,
+confirm the pre-outage write reads back, and bring a replacement node in.
+It also runs the recovery script against a *healthy* cluster to confirm
+it refuses — a guard only ever exercised where it passes is not a guard.
+
+Not proven: the `--service-name` path on a real node, and any of this on
+a cloud profile, neither of which has been applied.
 
 ## The snapshot is only half of a backup
 

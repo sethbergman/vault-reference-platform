@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            20 suites; each is a self-contained run-tests.sh
+tests/            21 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -212,7 +212,8 @@ Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 (one auth or secrets path each), `configure-autopilot.sh` (the Raft
 setting that makes a replaced node stop counting as a voter),
 `rotate-secret-id.sh`, `snapshot.sh`,
-`dr-drill.sh`, `vault-upgrade.sh`, `issue-node-cert.sh`,
+`dr-drill.sh`, `recover-quorum.sh` (quorum loss, which is not the same
+failure as data loss), `vault-upgrade.sh`, `issue-node-cert.sh`,
 `migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
 `preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`,
 `oidc-login-test.sh`, `generate-docs-index.sh`.
@@ -321,10 +322,11 @@ Per-suite requirements:
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
 | autopilot | bash, jq |
 | autopilot-prune | docker compose, vault CLI, jq |
+| quorum-recovery | docker compose, vault CLI, jq, curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 30 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 31 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -369,7 +371,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-30 jobs means any "list the check runs" call returns 30 records, which
+31 jobs means any "list the check runs" call returns 31 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 
