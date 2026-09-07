@@ -240,11 +240,34 @@ The blockers are, in order:
    says so. Two upgrade models, one of them tested, and the tested one
    is not the one the cloud profiles reach for.
 
-   What settles it: deciding which model is canonical per profile, then
-   proving the canonical one. If it is instance refresh, the open
-   question is whether a refresh can be made leader-aware, or whether
-   `min_healthy_percentage` is enough to keep quorum on a three-node
-   cluster through a rolling replacement.
+   The first half is now settled, and the answer to the second half was
+   no. [rolling-upgrades.md](rolling-upgrades.md) names the canonical
+   model per profile: instance refresh on AWS, because the version is
+   installed from user-data and there is no binary to swap; the script on
+   Azure, because its scale set replaces nothing until told to; the
+   script anywhere the machines outlive the upgrade.
+
+   `min_healthy_percentage` is *not* enough, and the reason is not a
+   tuning question. Vault ships autopilot with
+   `cleanup_dead_servers = false`, so a replaced node stays a voter — and
+   because both cloud profiles derive `node_id` from the machine, every
+   replacement adds a voter and leaves the old one behind. A three-node
+   refresh then loses quorum partway through the *second* node. The ASG
+   counts instances it can see; Raft counts voters it cannot. That is why
+   the setting looks sufficient.
+
+   [`scripts/configure-autopilot.sh`](../scripts/configure-autopilot.sh)
+   fixes it, with `min_quorum` as the safety rather than the threshold:
+   nothing is pruned until a replacement has joined. `tests/autopilot`
+   covers the script, `tests/integration` asserts the live configuration
+   on every PR — including that Vault still ships the default this is
+   built around, so an upstream change breaks a test rather than the
+   argument.
+
+   What remains is a real refresh. No ASG has ever run against this
+   configuration, and a dead voter has never been watched being pruned:
+   that needs a fourth voter, which the local profile cannot produce.
+   So this closes with blocker 1, not before it.
 
 Both are additions to this list rather than discoveries about the
 existing three, and when they were added this paragraph said neither was

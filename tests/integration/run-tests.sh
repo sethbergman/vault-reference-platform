@@ -197,6 +197,76 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== Autopilot, and the voters that outlive their machines ==="
+# ---------------------------------------------------------------------------
+# Vault ships autopilot with cleanup_dead_servers = false and a 24 hour
+# dead-server threshold, so a node that is destroyed stays in the Raft
+# configuration as a voter. On a fixed set of machines that is survivable.
+# On the cloud profiles it is not: a replacement is a different machine
+# with a different node_id, so every replacement adds a voter and leaves
+# the old one behind, and an ASG instance refresh walks a three-node
+# cluster out of quorum partway through the second node.
+# See docs/rolling-upgrades.md for the arithmetic.
+#
+# This runs here rather than only in tests/autopilot because the shim
+# suite can show the script issues the right command and nothing more.
+# Whether Vault accepts these values, and reports them back, is a
+# question only a real cluster answers.
+
+# The default is load-bearing for the whole argument, so it is asserted
+# rather than assumed. If a future Vault ships cleanup on by default, this
+# is the assertion that says so instead of the docs quietly going stale.
+BEFORE_CFG="$(vault operator raft autopilot get-config -format=json 2>/dev/null || echo '{}')"
+if [[ "$(jq -r '.cleanup_dead_servers' <<< "$BEFORE_CFG")" == "false" ]]; then
+    ok "Vault still ships cleanup_dead_servers=false"
+else
+    bad "Vault still ships cleanup_dead_servers=false" \
+        "got $(jq -r '.cleanup_dead_servers' <<< "$BEFORE_CFG") — if this changed upstream, docs/rolling-upgrades.md needs revisiting"
+fi
+
+if "${REPO_ROOT}/scripts/configure-autopilot.sh" >"${WORK}/autopilot.log" 2>&1; then
+    ok "configure-autopilot.sh runs against the live cluster"
+else
+    bad "configure-autopilot.sh runs against the live cluster" "$(tail -5 "${WORK}/autopilot.log")"
+fi
+
+AFTER_CFG="$(vault operator raft autopilot get-config -format=json 2>/dev/null || echo '{}')"
+if [[ "$(jq -r '.cleanup_dead_servers' <<< "$AFTER_CFG")" == "true" ]]; then
+    ok "the live cluster now cleans up dead servers"
+else
+    bad "the live cluster now cleans up dead servers" \
+        "cleanup_dead_servers is $(jq -r '.cleanup_dead_servers' <<< "$AFTER_CFG")"
+fi
+
+# The floor, and the reason the short dead-server threshold is safe: with
+# three voters and min_quorum three, nothing can be pruned until a
+# replacement has joined and made it four. Join, then prune.
+if [[ "$(jq -r '.min_quorum' <<< "$AFTER_CFG")" == "3" ]]; then
+    ok "min_quorum is the voter count, so pruning waits for a replacement"
+else
+    bad "min_quorum is the voter count, so pruning waits for a replacement" \
+        "min_quorum is $(jq -r '.min_quorum' <<< "$AFTER_CFG")"
+fi
+
+# Pinned to the value rather than checked for "not 24h": a threshold of
+# 23h would pass that and be just as useless inside a refresh window.
+if [[ "$(jq -r '.dead_server_last_contact_threshold' <<< "$AFTER_CFG")" == "5m0s" ]]; then
+    ok "the dead-server threshold is inside the ASG's instance warmup"
+else
+    bad "the dead-server threshold is inside the ASG's instance warmup" \
+        "threshold is $(jq -r '.dead_server_last_contact_threshold' <<< "$AFTER_CFG")"
+fi
+
+# Re-running is a no-op that still verifies. An operator who is unsure
+# whether it was ever run should be able to just run it.
+if "${REPO_ROOT}/scripts/configure-autopilot.sh" >"${WORK}/autopilot2.log" 2>&1; then
+    ok "and running it a second time is a no-op that still passes"
+else
+    bad "and running it a second time is a no-op that still passes" "$(tail -5 "${WORK}/autopilot2.log")"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== Snapshots against real Raft data ==="
 # ---------------------------------------------------------------------------
 SNAP_DIR="${WORK}/snapshots"

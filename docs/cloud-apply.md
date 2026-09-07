@@ -47,8 +47,9 @@ Three parts:
 ## Which profile this is written for
 
 The commands are **AWS** unless an item carries an **On Azure** block.
-Six of the nine do — 1, 2, 4, 5, 6 and 9 — and the absence of one means
-the item is genuinely identical, not that the Azure case was skipped.
+Eight of the ten do — 1, 2, 3, 4, 5, 6, 9 and 10 — and the absence
+of one means the item is genuinely identical, not that the Azure case was
+skipped.
 
 Item 4 is the one where Azure differs in the *assertion* rather than the
 command, because its probe has no status-code matcher to check.
@@ -535,7 +536,48 @@ echo | openssl s_client -connect <node>:8200 2>/dev/null \
 bootstrap certificate, and the audit log to contain entries with hashed
 values rather than plaintext.
 
-### 9. Destructive: losing a node (do this last)
+### 9. An instance refresh keeps quorum (AWS)
+
+The upgrade an AWS operator would actually run, and the one check that
+settles whether the autopilot fix works. Bump `vault_version` and apply,
+which replaces all three nodes through the scaling group:
+
+```bash
+terraform -chdir=terraform/aws apply -var 'vault_version=<newer>'
+aws autoscaling describe-instance-refreshes \
+    --auto-scaling-group-name <asg> --query 'InstanceRefreshes[0].Status'
+```
+
+**Expect,** watching `vault operator raft list-peers` throughout:
+
+- the voter count rises to four and falls back to three, once per node,
+  and **never leaves three live nodes facing a quorum of three**
+- each dead voter disappears within about five minutes of its instance
+  going away — that is `dead_server_last_contact_threshold`, and it has
+  to complete inside the ASG's `instance_warmup` of 600s or the next
+  node is terminated before the last dead voter is gone
+- the cluster serves reads and writes throughout, apart from a brief
+  election each time the leader is the node being replaced
+
+**If the voter count only ever rises**, autopilot is not pruning and
+`scripts/configure-autopilot.sh` has not been run against this cluster —
+run it and start again. That is the failure this item exists to catch,
+and before the autopilot work it was the guaranteed outcome: the refresh
+loses quorum partway through the *second* node, with the ASG reporting
+healthy instances the whole time. See
+[rolling-upgrades.md](rolling-upgrades.md) for the arithmetic.
+
+Nothing here has been observed. A dead voter has never been watched being
+pruned even locally — that needs a fourth voter, which the local profile
+cannot produce — so this item is the first evidence either way.
+
+**On Azure there is nothing to run.** The scale set is
+`upgrade_mode = "Manual"`, so no refresh happens; the canonical upgrade
+there is `scripts/vault-upgrade.sh` against the instances. The autopilot
+setting still matters, because a scale set that reconciles a deleted
+instance produces a new VM name and therefore a new voter.
+
+### 10. Destructive: losing a node (do this last)
 
 Nothing is recovered after this. Everything above should already be
 recorded.

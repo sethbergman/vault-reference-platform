@@ -864,6 +864,24 @@ jobs:
       - name: Exercise scripts/bootstrap-agent.sh
         run: ./tests/agent/run-tests.sh
 
+  autopilot-test:
+    name: Autopilot configuration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Covers scripts/configure-autopilot.sh against a fake vault CLI:
+      # that it counts voters rather than assuming three, refuses a
+      # cluster too small for the floor to mean anything, and catches a
+      # set-config that reports success without taking.
+      #
+      # Whether Vault then behaves that way is asserted against the live
+      # cluster by the integration job. Whether an ASG instance refresh
+      # keeps quorum needs an apply nobody has done — see
+      # docs/rolling-upgrades.md.
+      - name: Exercise scripts/configure-autopilot.sh
+        run: ./tests/autopilot/run-tests.sh
+
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest
