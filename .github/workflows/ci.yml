@@ -924,6 +924,39 @@ jobs:
           cd docker/dev
           docker compose --profile spare down -v || true
 
+  quorum-recovery-test:
+    name: Quorum loss and recovery (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Vault CLI
+        run: |
+          VAULT_VERSION=1.17.2
+          curl -fsSL -o /tmp/vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o -d /tmp /tmp/vault.zip vault
+          sudo install -m 0755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      # Losing quorum is a different failure from losing data, and until
+      # this existed the docs sent both to a snapshot restore -- which
+      # works and silently discards everything written since the snapshot.
+      # This destroys two of three nodes and recovers the survivor through
+      # peers.json, checking the pre-outage write is still there.
+      #
+      # It also asserts the thing nobody wants to find during an incident:
+      # a quorum-less node answers sys/health with 200, so the load
+      # balancer keeps routing to it.
+      - name: Lose quorum, and get it back
+        run: ./tests/quorum-recovery/run-tests.sh
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd docker/dev
+          docker compose --profile spare down -v || true
+
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest

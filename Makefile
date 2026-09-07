@@ -34,7 +34,8 @@ ALL_SUITES  := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard tests/*/run-test
 # integration and autopilot-prune need a real cluster; cloud-apply-emulated
 # and state-backend each need terraform and moto. Everything else is shims
 # and runs in seconds.
-SLOW_SUITES := integration cloud-apply-emulated state-backend autopilot-prune
+SLOW_SUITES := integration cloud-apply-emulated state-backend autopilot-prune \
+               quorum-recovery
 FAST_SUITES := $(filter-out $(SLOW_SUITES),$(ALL_SUITES))
 
 .PHONY: help
