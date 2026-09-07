@@ -69,41 +69,77 @@ Neither backend has been pointed at a real account. See
 
 ## Mutation table
 
-Rows here were run and watched to fail. A row nobody has executed is
-worse than no row at all — verifying the Azure table for the first time
-broke five of thirteen claims, two of which could not have failed at
-all. That story is at the end of [`docs/roadmap.md`](../../docs/roadmap.md).
+Every row was run and watched to fail. A row nobody has executed is worse
+than no row at all — verifying the Azure table for the first time broke
+five of thirteen claims, two of which could not have failed at all. That
+story is at the end of [`docs/roadmap.md`](../../docs/roadmap.md).
 
 The rule the mutations follow is the one in
-[`CONTRIBUTING.md`](../../CONTRIBUTING.md): break the code with
-something the assertion does not name.
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md): break the code with something
+the assertion does not name. Where an assertion reads a committed example
+file, the mutation changes the *generated* output instead, so passing
+requires the property rather than the spelling.
 
-| Deliberate break | Caught by | Watched |
+Baseline is 23 passed, 0 failed.
+
+| Deliberate break | Caught by | Result |
 |---|---|---|
-| `outputs.tf` emits `use_lockfile = false`, so the generated backend config turns locking off | "an apply is refused while another holds the lock" — and only that assertion; 22 of 23 still passed | yes, twice |
+| `outputs.tf` emits `use_lockfile = false`, so the generated backend config turns locking off | an apply is refused while another holds the lock | 22 / 1 |
+| `aws_s3_bucket_versioning` set to `Suspended` | the state bucket has versioning enabled | 22 / 1 |
+| `sse_algorithm` dropped to `AES256`, losing the module's own key | the state bucket encrypts under the key the module created | 22 / 1 |
+| `ignore_public_acls = false` — one of the four, not all four | all four public access block settings are on | 22 / 1 |
+| `force_destroy = true` | force_destroy is off, so a destroy cannot empty the bucket first | 22 / 1 |
+| `prevent_destroy = false` | destroying the bootstrap module is refused by prevent_destroy | 22 / 1 |
+| the profile's backend swapped to `backend "local" {}` | terraform/aws declares an S3 backend with nothing filled in; the profile initialises against the generated config | 15 / 2 |
+| `outputs.tf` emits a bucket name that was never created | the generated backend config names the bucket that was created; the profile initialises against the generated config | 15 / 2 |
+| a bucket name committed inside `backend "s3"` | terraform/aws declares an S3 backend with nothing filled in | 22 / 1 |
+| a container name committed inside `backend "azurerm"` | terraform/azure declares an azurerm backend with nothing filled in | 22 / 1 |
+| `backend.hcl.example` turns locking off | the AWS backend example turns S3 native locking on | 22 / 1 |
+| the Azure state account accepts shared keys | the Azure state account refuses account keys, and the backend asks for Entra auth | 22 / 1 |
+| `.gitignore` no longer covers `backend.hcl` | a generated backend.hcl is ignored by git in both profiles | 22 / 1 |
 
-The mutation is on the module's **generated output**, not on
-`backend.hcl.example`, which a static assertion does name. That
+Two of these are worth reading twice.
+
+The locking row mutates what the module **emits**, not
+`backend.hcl.example` — which a static assertion does name. That
 assertion stayed green through the break, which is the point: locking is
-asserted as a property of what the module emits, not as a spelling in a
-committed example.
+asserted as a property of what the module generates, not as a spelling in
+a committed example.
+
+The public-access row breaks **one** of the four settings. Breaking all
+four would have proved only that the loop runs.
+
+### A mutation that proved nothing, and what it cost
+
+The first attempt at the versioning row replaced `status = "Enabled"`
+with `sed`, which matched twice: once in `aws_s3_bucket_versioning` and
+once in the bucket's lifecycle rule. `Suspended` is not a valid lifecycle
+rule status, so the apply failed and the run reported "the bootstrap
+module applies end to end" — a real assertion catching a real breakage,
+and nothing whatsoever about versioning.
+
+It would have been easy to record that as a verified row. The rerun,
+targeted to the versioning resource alone, is the row above.
 
 ### Assertions without a verified mutation
 
-Stated rather than left to be assumed. These have not yet been watched
-to fail, so treat them as untested tests:
+Stated rather than left to be assumed. These have not been watched to
+fail:
 
-- versioning is enabled on the state bucket
-- the bucket encrypts under the key the module created
-- all four public access block settings are on
-- `force_destroy` is off
-- the bootstrap module refuses `terraform destroy`
-- initialising against a missing bucket is refused
-- state lands in the bucket, and no local state file is written
-- the generated config names the bucket that was created
-- every static assertion, including both Azure ones
+- the emulator is answering — infrastructure for the suite, not a claim
+  about the profile
+- `terraform/aws` and `terraform/azure`: `init -backend=false`, then
+  `validate` — the CI path; breaking it means breaking `validate` itself
+- initialising against a bucket that does not exist is refused, by name
+- the bootstrap module initialises
+- an apply against the remote backend succeeds
+- no local `terraform.tfstate` was written
+- the state object is in the bucket at the expected key
+- and the same apply succeeds once the lock is released
 
-Each is a one-line `sed` against `terraform/aws/bootstrap` followed by a
-suite run; the cost is that a run takes about six minutes, so verifying
-the lot is an hour rather than an afternoon. Worth doing before this
-table is quoted as evidence for anything.
+The last four are the ones worth doing next. They are the assertions that
+say state actually goes where the backend claims, and the obvious
+mutation — swapping the backend to `local` — is caught earlier by the
+static check and by `init`, so it never reaches them. A mutation that
+tests them has to leave the backend intact and break something further
+down, which is exactly the kind that finds a test agreeing with a bug.
