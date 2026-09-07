@@ -50,6 +50,13 @@
 #     cluster that still has quorum can strand the nodes left out of the
 #     file. The check is "can this node answer a Raft configuration
 #     query", because a node with quorum can and a node without cannot.
+#     It refuses just as firmly when it cannot run that check at all --
+#     a guard that downgrades to a log line when the operator is in a
+#     hurry is not a guard, and an incident is exactly when VAULT_TOKEN
+#     is least likely to be exported.
+#   - Refuses to start without curl and VAULT_ADDR, which are what
+#     confirm the node came back. Stopping a node whose recovery cannot
+#     be verified is worse than not starting.
 #   - Lists every surviving voter, not just this one. Recovering a
 #     five-node cluster that lost two means naming the three that are
 #     left; naming only one discards two healthy nodes' votes.
@@ -101,6 +108,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
+
+# Checked here rather than at the point of use, because the point of use
+# is after the node has been stopped and rewritten. A run that cannot
+# verify the outcome must not start: this script's whole job is to end
+# with a node that is serving again, and "I stopped it and cannot tell
+# you what happened" is the worst report it could give during an
+# incident.
+command -v curl >/dev/null 2>&1 \
+    || die "curl not found on PATH, and it is what confirms the node came back. Refusing to stop a node whose recovery cannot be verified."
+[[ -n "${VAULT_ADDR:-}" ]] \
+    || die "VAULT_ADDR is not set, so there is no way to confirm the node came back. Refusing to stop a node whose recovery cannot be verified."
+
 [[ -n "$PEERS" ]] || die "--peers is required, e.g. --peers vault-0=vault-0:8201"
 [[ -n "$COMPOSE_SERVICE" || -n "$SERVICE_NAME" ]] \
     || die "one of --compose-service or --service-name is required"
@@ -150,8 +169,7 @@ if [[ "$FORCE" != true ]]; then
         fi
         log "The cluster cannot answer a Raft configuration query — consistent with lost quorum."
     else
-        log "WARNING: no VAULT_TOKEN or no vault CLI, so the quorum check was skipped."
-        log "         Run this only against a cluster you have confirmed has lost quorum."
+        die "cannot check whether this cluster still has quorum: no VAULT_TOKEN, or no vault CLI on PATH. That check is the only thing standing between a misdiagnosis and dropping every node not named in --peers, so it is not something to skip quietly. Set VAULT_TOKEN, or pass --force if you have confirmed the loss another way."
     fi
 fi
 
@@ -220,19 +238,15 @@ fi
 log "Waiting for the node to report itself active..."
 DEADLINE=$((SECONDS + WAIT_SECONDS))
 ACTIVE=false
+CURL_ARGS=(-s -o /dev/null -w '%{http_code}')
+[[ -n "${VAULT_CACERT:-}" ]] && CURL_ARGS+=(--cacert "$VAULT_CACERT")
+
 while (( SECONDS < DEADLINE )); do
-    if [[ -n "${VAULT_ADDR:-}" ]] && command -v curl >/dev/null 2>&1; then
-        CODE="$(curl -s -o /dev/null -w '%{http_code}' \
-            ${VAULT_CACERT:+--cacert "$VAULT_CACERT"} \
-            "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || true)"
-        # 200 means active. 429 is a standby, which after a recovery
-        # means it is still looking for a leader that will not appear.
-        if [[ "$CODE" == "200" ]]; then ACTIVE=true; break; fi
-    else
-        sleep 5
-        ACTIVE=true
-        break
-    fi
+    CODE="$(curl "${CURL_ARGS[@]}" "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || true)"
+    # 200 means active. 429 is a standby, which after a recovery means it
+    # is still looking for a leader that will not appear -- so this waits
+    # for 200 specifically and lets the deadline expire otherwise.
+    if [[ "$CODE" == "200" ]]; then ACTIVE=true; break; fi
     sleep 3
 done
 

@@ -133,6 +133,51 @@ else
     fi
 fi
 
+# The guard has to hold when it cannot run, not only when it can. A
+# review found it downgrading to a warning with no VAULT_TOKEN and
+# proceeding to stop the node -- and an incident is exactly when
+# VAULT_TOKEN is least likely to be exported, because the cluster that
+# would have issued it is the one that is down.
+if env -u VAULT_TOKEN "${REPO_ROOT}/scripts/recover-quorum.sh" \
+        --peers vault-0=vault-0:8201 --compose-service vault-0 \
+        >"${WORK}/no-token.log" 2>&1; then
+    bad "recover-quorum.sh refuses when it cannot check for quorum" \
+        "it ran without a token, so the healthy-cluster guard was skipped entirely"
+else
+    if grep -q "cannot check whether this cluster still has quorum" "${WORK}/no-token.log"; then
+        ok "recover-quorum.sh refuses when it cannot check for quorum"
+    else
+        bad "recover-quorum.sh refuses when it cannot check for quorum" \
+            "it failed for another reason: $(tail -3 "${WORK}/no-token.log")"
+    fi
+fi
+
+# And refuses before touching anything when it has no way to confirm the
+# node came back. Stopping a node whose recovery cannot be verified is
+# worse than not starting.
+if env -u VAULT_ADDR "${REPO_ROOT}/scripts/recover-quorum.sh" \
+        --peers vault-0=vault-0:8201 --compose-service vault-0 \
+        >"${WORK}/no-addr.log" 2>&1; then
+    bad "recover-quorum.sh refuses without a way to verify the outcome" "it ran anyway"
+else
+    if grep -q "no way to confirm the node came back" "${WORK}/no-addr.log"; then
+        ok "recover-quorum.sh refuses without a way to verify the outcome"
+    else
+        bad "recover-quorum.sh refuses without a way to verify the outcome" \
+            "it failed for another reason: $(tail -3 "${WORK}/no-addr.log")"
+    fi
+fi
+
+# Both refusals must happen before the node is stopped, or the guard is
+# just a louder way of breaking things. The cluster is still healthy here,
+# so if either had gone through, this read would fail.
+if timeout 30 vault kv get -mount=quorum -field=phase canary >/dev/null 2>&1; then
+    ok "and neither refusal stopped the node on its way out"
+else
+    bad "and neither refusal stopped the node on its way out" \
+        "the cluster is no longer serving, so a refusal path stopped it first"
+fi
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== Losing two of three ==="
