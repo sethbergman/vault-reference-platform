@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stand-in for systemctl. Records every invocation; that ordering is most
+# of what this suite checks. See tests/recover-quorum-systemd/README.md.
+set -uo pipefail
+printf 'systemctl %s\n' "$*" >> "${FAKE_LOG}"
+
+# A stop or start that fails is a real case: the script must not carry on
+# and report a recovery it did not perform.
+case "$1" in
+    stop)  exit "${FAKE_STOP_RC:-0}" ;;
+    start) exit "${FAKE_START_RC:-0}" ;;
+esac
+exit 0

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stand-in for curl. The script uses it only to ask sys/health for the
+# status code, and waits for 200 specifically -- 429 is a standby still
+# looking for a leader that will not appear, which is the state being
+# recovered from.
+set -uo pipefail
+printf 'curl %s\n' "$*" >> "${FAKE_LOG}"
+printf '%s' "${FAKE_HEALTH_CODE:-200}"
+exit 0

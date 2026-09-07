@@ -989,6 +989,23 @@ jobs:
           cd docker/dev
           docker compose --profile spare down -v || true
 
+  recover-quorum-systemd-test:
+    name: recover-quorum.sh on a real node (shims)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The --service-name path had no test: tests/quorum-recovery runs
+      # the compose path against a real cluster, and the one an operator
+      # uses on an actual node was reviewed but never exercised.
+      #
+      # Shims, so this proves the script issues the right commands in the
+      # right order -- in particular that every refusal happens before
+      # systemctl stop, because a guard that refuses after stopping Vault
+      # has taken the node down and then declined to fix it.
+      - name: Exercise the systemd recovery path
+        run: ./tests/recover-quorum-systemd/run-tests.sh
+
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest

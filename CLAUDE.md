@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            22 suites; each is a self-contained run-tests.sh
+tests/            23 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -332,10 +332,11 @@ Per-suite requirements:
 | autopilot-prune | docker compose, vault CLI, jq |
 | quorum-recovery | docker compose, vault CLI, jq, curl |
 | root-token | docker compose, vault CLI, jq |
+| recover-quorum-systemd | bash, jq |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 32 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 33 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -380,7 +381,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-32 jobs means any "list the check runs" call returns 32 records, which
+33 jobs means any "list the check runs" call returns 33 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 

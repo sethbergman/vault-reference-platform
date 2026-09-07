@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Stand-in for the vault CLI. Only the quorum check reaches it.
+#
+# Modelled on what a real cluster does in the two states that matter: a
+# cluster with quorum answers a Raft configuration query, and one without
+# fails with "local node not active but active cluster node not found".
+# That distinction is the whole basis of the guard, so the shim has to
+# reproduce it rather than something convenient.
+set -uo pipefail
+printf 'vault %s\n' "$*" >> "${FAKE_LOG}"
+
+if [[ "$*" == *"list-peers"* ]]; then
+    if [[ "${FAKE_QUORUM:-lost}" == "intact" ]]; then
+        printf '{"data":{"config":{"servers":[{"node_id":"vault-0","voter":true}]}}}\n'
+        exit 0
+    fi
+    echo "Error reading the raft cluster configuration: Error making API request." >&2
+    echo "* local node not active but active cluster node not found" >&2
+    exit 2
+fi
+
+echo "fake vault: unhandled invocation: $*" >&2
+exit 64
