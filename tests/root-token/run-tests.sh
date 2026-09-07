@@ -194,6 +194,45 @@ else
     fi
 fi
 
+# The assertion that would have caught the original guard.
+#
+# It checked `vault read sys/health`, which is unauthenticated -- the
+# bootstrap polls it with plain curl and no token -- so it answered for
+# any token at all, including one entitled to nothing. The check passed
+# exactly when the lookup before it already had.
+#
+# A token with only the default policy is the case that separates the two
+# implementations: it authenticates, it passes lookup-self, sys/health
+# answers it, and it can administer nothing. Handing it over as proof of
+# a way back in should be refused.
+# -policy=default explicitly. A child of a root token inherits the
+# parent's policies when none are named, so a plain `vault token create`
+# here produces another root token -- which the check above then refuses,
+# for the wrong reason, and the assertion fails while the guard it is
+# testing works. The first run of this assertion did exactly that.
+DEFAULT_ONLY="$(vault token create -policy=default -field=token 2>/dev/null)"
+if [[ -n "$DEFAULT_ONLY" ]] && "${REPO_ROOT}/scripts/revoke-root-token.sh" \
+        --verify-with "$DEFAULT_ONLY" >"${WORK}/default-only.log" 2>&1; then
+    bad "revoking refuses a token entitled to nothing" \
+        "it accepted a default-only token as proof of a way back in, and revoked root"
+else
+    if grep -q "no policy beyond" "${WORK}/default-only.log"; then
+        ok "revoking refuses a token entitled to nothing"
+    else
+        bad "revoking refuses a token entitled to nothing" \
+            "it failed for another reason: $(tail -3 "${WORK}/default-only.log")"
+    fi
+fi
+
+# And the root token is still usable, so none of the three refusals
+# revoked anything on their way out.
+if vault token lookup >/dev/null 2>&1; then
+    ok "and no refusal revoked the root token on its way out"
+else
+    bad "and no refusal revoked the root token on its way out" \
+        "root is already gone before the revocation step"
+fi
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== Revoking it ==="

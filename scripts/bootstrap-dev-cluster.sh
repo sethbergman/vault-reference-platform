@@ -331,8 +331,18 @@ ROOT_TOKEN="$(jq -r '.root_token' <<< "$LEADER_INIT_JSON")"
 # stderr. Same sensitivity as the root token itself, which is to say: a
 # throwaway credential for a local Vault, and gitignored regardless.
 RECOVERY_KEYS_FILE="${COMPOSE_DIR}/.recovery-keys.json"
-jq '{recovery_keys_b64, recovery_keys_shares, recovery_keys_threshold}' \
-    <<< "$LEADER_INIT_JSON" > "$RECOVERY_KEYS_FILE"
+
+# Created private, then written. A plain redirect creates the file at the
+# umask -- 0644 on most systems -- and writes the shares into it, so there
+# is a window where any local user can read a quorum of recovery keys.
+# A chmod afterwards only closes the door behind them.
+#
+# rm first because redirecting onto an existing file keeps that file's
+# mode, so a 0644 leftover from an older bootstrap would outlive the
+# umask below.
+rm -f "$RECOVERY_KEYS_FILE"
+( umask 077; jq '{recovery_keys_b64, recovery_keys_shares, recovery_keys_threshold}' \
+    <<< "$LEADER_INIT_JSON" > "$RECOVERY_KEYS_FILE" )
 chmod 0600 "$RECOVERY_KEYS_FILE"
 log "Recovery keys written to docker/dev/.recovery-keys.json (mode 0600)."
 log "  They are what 'vault operator generate-root' and 'rekey' need."

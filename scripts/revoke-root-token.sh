@@ -14,8 +14,8 @@
 #
 # What it does:
 #   1. Checks the token in --verify-with works and is NOT a root token.
-#   2. Checks it can read sys/health, so it is a token that can see the
-#      cluster rather than merely a token that exists.
+#   2. Checks it carries a policy of its own, so it is a token somebody
+#      configured rather than merely a token that authenticates.
 #   3. Revokes the root token in VAULT_TOKEN.
 #   4. Confirms the root token no longer works.
 #
@@ -41,6 +41,10 @@
 # The check is deliberately two-part. A token that exists is not the same
 # as a token that can do anything, and `token lookup-self` succeeds for a
 # token with no policies at all.
+#
+# The second part used to read sys/health, which is unauthenticated and
+# therefore answered for any token at all. It checked nothing, which a
+# review caught before this shipped.
 #
 # GETTING BACK IN
 #
@@ -111,8 +115,25 @@ if [[ "$FORCE" != true ]]; then
 
     # Existing is not the same as useful. A token with no policies passes
     # lookup-self and can do nothing at all.
-    VAULT_TOKEN="$VERIFY_TOKEN" vault read sys/health >/dev/null 2>&1 \
-        || die "the --verify-with token cannot read sys/health, so it is not a token that can administer anything"
+    #
+    # This used to check `vault read sys/health`, which proves nothing:
+    # sys/health is unauthenticated -- bootstrap-dev-cluster.sh polls it
+    # with plain curl and no token at all -- so it answers for an expired
+    # token, a revoked one, or one entitled to nothing. It passed exactly
+    # when the lookup above already had: a guard that could not fail,
+    # standing in front of the one outcome it exists to prevent.
+    #
+    # A policy of its own is the weakest honest signal. It does not prove
+    # the token can do the specific thing needed next -- nothing here can
+    # know what that is -- but it separates a token someone configured
+    # from one that merely authenticates.
+    NON_DEFAULT="$(jq -r '[.data.policies[]? | select(. != "default")] | length' <<< "$VERIFY_JSON")"
+    [[ "${NON_DEFAULT:-0}" -gt 0 ]] \
+        || die "the --verify-with token carries no policy beyond 'default', so it can administer nothing and revoking root would lock you out"
+
+    log "Note: this proves the token is live and carries a policy of its"
+    log "      own. It does not prove that policy grants what you will"
+    log "      need tomorrow -- check that before you rely on it."
 
     log "Verified: a non-root token works and can reach the cluster."
     log "  policies: $(jq -r '.data.policies | join(", ")' <<< "$VERIFY_JSON")"
