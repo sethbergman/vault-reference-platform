@@ -221,6 +221,75 @@ repository can provide — that is a real limitation, not a recommendation.
 - Policies are least-privilege and scoped per application/environment;
   see `examples/policies/` for the starting set.
 
+## The root token
+
+`vault operator init` mints a root token because a new cluster has no
+other way in. It answers to no policy, expires at no time, and ends up in
+the shell history of everyone who exported it. Vault's guidance is to
+revoke it once the auth methods are configured and generate a new one on
+demand.
+
+This repository used to say nothing about that. For a security reference
+that is not neutral — silence reads as "keep it", which is a
+recommendation nobody meant to make.
+
+### Revoking it
+
+```bash
+# a token that proves there is still a way in
+TOKEN=$(vault write -field=token auth/approle/login \
+    role_id="$ROLE_ID" secret_id="$SECRET_ID")
+
+./scripts/revoke-root-token.sh --verify-with "$TOKEN"
+```
+
+The `--verify-with` token is required, and the script checks two things
+about it: that it is **not** itself a root token, and that it can read
+`sys/health`. A token that merely exists proves nothing — `token
+lookup-self` succeeds for a token with no policies at all. Revoking root
+with nothing else able to administer the cluster is a lock-out whose only
+remedy is a quorum of recovery-key holders in a room.
+
+### Getting one back
+
+```bash
+./scripts/generate-root-token.sh --keys-file docker/dev/.recovery-keys.json
+```
+
+With a seal stanza the cluster unseals itself, so `operator init` returns
+**recovery keys** rather than unseal keys. They exist for exactly this,
+and for `operator rekey`. The ceremony is a nonce, a one-time password,
+one call per share, and a decode step — fiddly enough that doing it from
+memory during an incident is how people end up deciding to keep the root
+token instead, which is why it is a script.
+
+In a real deployment the shares are held by different people and passed
+in one at a time with `--key`. `--keys-file` exists because the dev
+profile has no second person.
+
+### On the local profile
+
+`bootstrap-dev-cluster.sh` writes the recovery keys to
+`docker/dev/.recovery-keys.json`, mode 0600, gitignored, regenerated on
+every bootstrap. It used to discard them, which made revoking the root
+token a one-way door — and would have made the advice above destructive
+to anyone who followed it.
+
+Root stays on stdout and the keys do not: `ROOT_TOKEN=$(...)` still works.
+
+### What is proven
+
+[`tests/root-token`](../tests/root-token/run-tests.sh) runs the whole
+lifecycle against a real cluster on every PR: the keys are kept at 0600
+and gitignored, both refusals fire in the state where they should refuse,
+the root token stops working, an AppRole token carries on administering
+the cluster, and a new root token comes back from a quorum of shares and
+is a different credential from the one revoked.
+
+Not covered: doing this on a cloud profile, where the seal is KMS rather
+than Transit. The ceremony is the same and the recovery keys come from
+the same place, but no cloud profile has been applied.
+
 ## Secret rotation
 
 AppRole `secret_id`s are treated as short-lived credentials, not
