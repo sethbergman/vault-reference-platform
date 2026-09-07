@@ -80,7 +80,7 @@ the assertion does not name. Where an assertion reads a committed example
 file, the mutation changes the *generated* output instead, so passing
 requires the property rather than the spelling.
 
-Baseline is 23 passed, 0 failed.
+Baseline is 24 passed, 0 failed.
 
 | Deliberate break | Caught by | Result |
 |---|---|---|
@@ -97,6 +97,7 @@ Baseline is 23 passed, 0 failed.
 | `backend.hcl.example` turns locking off | the AWS backend example turns S3 native locking on | 22 / 1 |
 | the Azure state account accepts shared keys | the Azure state account refuses account keys, and the backend asks for Entra auth | 22 / 1 |
 | `.gitignore` no longer covers `backend.hcl` | a generated backend.hcl is ignored by git in both profiles | 22 / 1 |
+| the state key template drops `cluster_name`, becoming a constant | the state key is namespaced by cluster, so one bucket holds many | 23 / 1 |
 
 Two of these are worth reading twice.
 
@@ -137,9 +138,20 @@ fail:
 - the state object is in the bucket at the expected key
 - and the same apply succeeds once the lock is released
 
-The last four are the ones worth doing next. They are the assertions that
-say state actually goes where the backend claims, and the obvious
-mutation — swapping the backend to `local` — is caught earlier by the
-static check and by `init`, so it never reaches them. A mutation that
-tests them has to leave the backend intact and break something further
-down, which is exactly the kind that finds a test agreeing with a bug.
+The per-cluster key row above came out of this list, and finding a
+mutation for it is what showed why the rest are hard.
+
+Those assertions read the key out of the generated config and then check
+the state arrived there, so they follow the module wherever it goes: a
+key template of plain `terraform.tfstate` passed all of them while
+quietly giving two clusters one state file. The fix was not a mutation
+but a *new assertion* that pins the key independently — and only then was
+there something a mutation could break.
+
+The three that remain are the same shape. Any configuration change that
+would stop state reaching the bucket — swapping the backend to `local`,
+pointing it at a bucket that does not exist — is caught earlier, by the
+static check or by `init`, so it never reaches them. Breaking them needs
+either a Terraform change or a harness change, and neither is a mutation
+of this repository's configuration. They are better read as guards
+against a future edit to the suite than as claims about the profile.
