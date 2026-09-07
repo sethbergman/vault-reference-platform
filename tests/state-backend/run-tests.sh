@@ -349,6 +349,26 @@ fi
 
 STATE_KEY="$(grep -E '^key' "${WORK}/backend-generated.hcl" | head -1 | sed -e 's/.*= *"//' -e 's/"//')"
 
+# Pinned to the literal, not rebuilt from var.cluster_name.
+#
+# Everything else in this section reads the key out of the generated
+# config and then checks the state arrived at that key -- which follows
+# the module wherever it goes, so a key template of plain
+# "terraform.tfstate" would pass every one of those assertions. One bucket
+# is meant to hold many clusters, one key each; a shared key is two
+# clusters overwriting each other's state, and the first symptom is a plan
+# offering to destroy a cluster that is running.
+#
+# Deriving the expected value from the module's own variable would restate
+# the module's arithmetic in the test, which is how the Azure suite ended
+# up with assertions that could not fail (see terraform/azure/tests/README.md).
+if [[ "$STATE_KEY" == "vault-reference/terraform.tfstate" ]]; then
+    ok "the state key is namespaced by cluster, so one bucket holds many"
+else
+    bad "the state key is namespaced by cluster, so one bucket holds many" \
+        "key is '${STATE_KEY}', expected the cluster name and then terraform.tfstate"
+fi
+
 {
     cat "${WORK}/backend-generated.hcl"
     printf '%s\n' "$EMULATOR_BACKEND_LINES"
