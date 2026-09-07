@@ -24,6 +24,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.12 | Tamper-evident audit: a hash chain, and anchors the collector cannot reach |
 | v0.13 | Alert routing by severity; MySQL as a second database engine |
 | v0.14 | Five cloud defects found and fixed without an apply: static pre-flight, and a real apply against an emulated AWS API |
+| v0.15 | Remote, locked Terraform state; the autopilot default that walks an instance refresh out of quorum; quorum recovery and the root token, both closed without a cloud account |
 
 ## The honest gap
 
