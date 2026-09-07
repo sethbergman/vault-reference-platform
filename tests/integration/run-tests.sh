@@ -657,6 +657,11 @@ fi
 # that assertion is what makes the assertion proof that the remedy works.
 info "Recreating monitoring so it reloads the new trust bundle..."
 
+# Captured so the recreate can be asserted rather than assumed; the
+# assertion is below the wait, and explains itself there.
+PROM_CID_BEFORE="$(compose ps -aq prometheus 2>/dev/null || true)"
+BLACKBOX_CID_BEFORE="$(compose ps -aq blackbox 2>/dev/null || true)"
+
 # Do not swallow what Docker said. When this failed on a developer
 # machine, the suite printed one parenthetical and carried a stopped
 # Prometheus into the monitoring section, where eight assertions failed
@@ -701,6 +706,33 @@ if ! wait_prometheus 30; then
     info "  Prometheus did not come back; trying once more..."
     compose up -d --force-recreate prometheus blackbox >/dev/null 2>&1 || true
     wait_prometheus 30 || info "  Prometheus is still not answering on 9090."
+fi
+
+# The revert this exists to catch. --force-recreate is only *necessary*
+# on Docker Desktop, where a single-file bind mount has to be
+# re-resolved; native Linux Docker re-resolves it by path on a plain
+# `restart`, so every assertion downstream still passes there. CI is
+# native Linux. A revert to `restart` would therefore go green in CI and
+# break every developer machine, with nothing standing against it but
+# the comment above -- which is not a test.
+#
+# A new container id is the portable evidence that the mount was
+# re-resolved, because it is evidence on every platform: `restart` and a
+# plain `up -d` both leave the id alone, and only a recreate changes it.
+# All three were run to confirm that rather than assumed. It is the same
+# trick the SIGHUP assertion uses in mirror image -- that one compares
+# start times to prove Vault did *not* restart.
+PROM_CID_AFTER="$(compose ps -aq prometheus 2>/dev/null || true)"
+BLACKBOX_CID_AFTER="$(compose ps -aq blackbox 2>/dev/null || true)"
+if [[ -n "$PROM_CID_BEFORE" &&
+      -n "$PROM_CID_AFTER" &&
+      -n "$BLACKBOX_CID_BEFORE" &&
+      -n "$BLACKBOX_CID_AFTER" &&
+      "$PROM_CID_BEFORE" != "$PROM_CID_AFTER" &&
+      "$BLACKBOX_CID_BEFORE" != "$BLACKBOX_CID_AFTER" ]]; then
+    ok "monitoring was recreated, not restarted"
+else
+    bad "monitoring was recreated, not restarted" "container ids are unchanged, so the bind mounts were reused -- that cannot pick up a replaced ca.crt"
 fi
 
 # ---------------------------------------------------------------------------

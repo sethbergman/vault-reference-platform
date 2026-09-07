@@ -52,6 +52,35 @@ success from the outside. The start time is what separates the two.
 Alongside it: the node is still unsealed, all three peers are still
 voters, and a secret written before the swap is still readable.
 
+The same trick runs in mirror image a few assertions later. After the PKI
+prune the monitoring containers must be *recreated*, not restarted: the
+trust bundle is replaced rather than edited, and a single-file bind mount
+has to be re-resolved before the container can see the new file. Only
+Docker Desktop enforces that — native Linux Docker re-resolves the bind
+by path on a plain restart — so a revert to `restart` would pass every
+assertion downstream in CI and break every developer machine. Comparing
+the container id either side catches it on any platform:
+
+```bash
+docker compose ps -aq prometheus
+```
+
+`restart` and a plain `up -d` both leave the id alone; only a recreate
+changes it. All three were run to confirm that, rather than assumed.
+
+Watched to fail, on Docker Desktop: reverting the recreate to a plain
+`up -d` fails this assertion **and** `probe_ssl_earliest_cert_expiry is
+being reported`, because blackbox keeps the old trust bundle and cannot
+probe the re-issued certificates. Two of a hundred, and the second is the
+downstream damage this exists to prevent.
+
+The claim that CI would stay green through the same revert is the
+*premise* rather than a result: it rests on native Linux Docker
+re-resolving the bind by path, which this run does not test — a mutation
+is not something to leave in a branch and push. If that premise is ever
+wrong, the cost is a redundant assertion, which is the cheap direction to
+be wrong in.
+
 ## What is real here
 
 Everything except the cloud. Real Raft consensus, real leader election,
