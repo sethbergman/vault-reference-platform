@@ -411,5 +411,41 @@ Nothing but the writing stood between the unverified table and the
 verified one — no credentials, no cluster, no cost — and it still shipped
 in v0.14 as a list of intentions.
 
+A fourth arrived with the quorum and root-token work, and it is the one
+that needed no mutation to find because it could not have failed at all.
+
+`revoke-root-token.sh` refuses to retire the root token unless handed a
+working non-root token first — the guard against locking yourself out of
+a cluster. It proved that token "can administer anything" by running
+`vault read sys/health`.
+
+`sys/health` is unauthenticated. This repository's own
+`bootstrap-dev-cluster.sh` polls it with plain `curl` and no token at
+all, and has for as long as it has existed. So the check answered for an
+expired token, a revoked one, or one entitled to nothing, and passed in
+exactly the cases where the `token lookup` before it already had. It was
+not a weak check; it was not a check.
+
+The suite did not catch it because every run supplied a token that
+genuinely had policies, so the assertion held — for a reason unrelated to
+what it claimed. The mutation that would have exposed it is a token
+carrying only `default`: it authenticates, it passes `lookup-self`,
+`sys/health` answers it, and it can do nothing.
+
+The three earlier entries are all about a *test* that fails to
+discriminate. This one is about a test that asks the wrong service. The
+question that finds it is the same in every case and worth stating on its
+own: **what would have to break for this assertion to fail?** If the
+answer is "nothing", the assertion is decoration, and it is decoration
+standing exactly where a reader will assume there is a guard.
+
+Writing the replacement produced a small version of the same lesson. The
+new assertion creates a token with only the `default` policy — except
+`vault token create` from a root token inherits the parent's policies, so
+the first attempt made another root token, which the check above it
+refused. The assertion failed, correctly, because it greps the specific
+refusal rather than checking the exit code. Had it only checked that the
+script exited non-zero, it would have gone green while testing nothing.
+
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.
