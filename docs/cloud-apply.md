@@ -173,6 +173,15 @@ indefinitely.** Set a calendar reminder before you start, not after.
 
 ```bash
 ./scripts/preflight-cloud.sh --cloud aws --az-count 2
+
+# Once per account, before the first apply. Creates the bucket the next
+# command keeps its state in — see terraform-state.md.
+terraform -chdir=terraform/aws/bootstrap init
+terraform -chdir=terraform/aws/bootstrap apply
+terraform -chdir=terraform/aws/bootstrap output -raw backend_config \
+    > terraform/aws/backend.hcl
+
+terraform -chdir=terraform/aws init -backend-config=backend.hcl
 terraform -chdir=terraform/aws apply \
     -var 'az_count=2' -var 'ssh_key_name=your-key'
 ./scripts/terraform-to-ansible.sh --cloud aws   # outputs -> group_vars
@@ -183,6 +192,14 @@ cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
 
 ```bash
 ./scripts/preflight-cloud.sh --cloud azure
+
+# Once per subscription, before the first apply.
+terraform -chdir=terraform/azure/bootstrap init
+terraform -chdir=terraform/azure/bootstrap apply
+terraform -chdir=terraform/azure/bootstrap output -raw backend_config \
+    > terraform/azure/backend.hcl
+
+terraform -chdir=terraform/azure init -backend-config=backend.hcl
 terraform -chdir=terraform/azure apply \
     -var "ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
 ./scripts/terraform-to-ansible.sh --cloud azure  # outputs -> group_vars
@@ -192,6 +209,13 @@ cd ansible && ansible-playbook -i inventory/azure.yml playbooks/site.yml
 `ssh_public_key` has no default and Azure will not create a Linux scale
 set without either a key or a password, so this profile cannot produce
 the unreachable cluster its AWS counterpart can.
+
+The bootstrap step is once per account or subscription, not once per
+cluster — one bucket holds every cluster's state, separated by key. Skip
+it and `init` fails naming the bucket that is missing, which is the
+failure you want: the alternative, a backend pointing at nothing that
+quietly creates an empty state, produces a `plan` offering to build a
+cluster you already have.
 
 Terraform brings up infrastructure and cloud-init starts Vault.
 Ansible configures what a running cluster needs: snapshots, audit
@@ -610,6 +634,19 @@ still works.
 
 If you plan to apply the Azure profile repeatedly, know this before the
 first one, not after the fourth.
+
+### The state bucket survives, and should
+
+Tearing down a cluster does not remove the bucket or storage account
+holding its state. That is deliberate: it belongs to the account, not to
+the cluster, it holds the state of every other cluster in the account,
+and it is protected by `prevent_destroy` so a `terraform destroy` in a
+bootstrap directory fails rather than succeeding quietly.
+
+It costs cents a month with nothing in it. Leave it: the next apply in
+this account reuses it, and removing it means editing the configuration
+first, which is the deliberate act it should be. See
+[terraform-state.md](terraform-state.md).
 
 ### Then check the console
 

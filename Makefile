@@ -31,9 +31,10 @@ VAULT_ADDR  ?= https://127.0.0.1:8200
 # omission nobody notices.
 ALL_SUITES  := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard tests/*/run-tests.sh)))))
 
-# integration needs a real cluster; cloud-apply-emulated needs terraform
-# and moto. Everything else is shims and runs in seconds.
-SLOW_SUITES := integration cloud-apply-emulated
+# integration needs a real cluster; cloud-apply-emulated and state-backend
+# each need terraform and moto. Everything else is shims and runs in
+# seconds.
+SLOW_SUITES := integration cloud-apply-emulated state-backend
 FAST_SUITES := $(filter-out $(SLOW_SUITES),$(ALL_SUITES))
 
 .PHONY: help
@@ -157,6 +158,10 @@ preflight-static: ## Cross-layer checks an apply would otherwise discover
 .PHONY: emulated-apply
 emulated-apply: ## Real terraform apply against an emulated AWS API
 	./tests/cloud-apply-emulated/run-tests.sh
+
+.PHONY: state-backend
+state-backend: ## The remote state backend and the ordering it needs
+	./tests/state-backend/run-tests.sh
 
 .PHONY: preflight-cloud
 preflight-cloud: ## Pre-apply checks needing credentials (CLOUD=aws|azure)

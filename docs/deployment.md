@@ -45,11 +45,26 @@ Then read [`cloud-apply.md`](cloud-apply.md), which lists what to verify
 while the cluster is up and how to tear it down afterwards.
 `terraform destroy` alone does not fully work on either profile.
 
+Both profiles keep state in a bucket or storage account that has to
+exist first, created by a separate configuration under
+`terraform/<cloud>/bootstrap`. That is the first command in each section
+below, and it is run once per account rather than once per cluster —
+[terraform-state.md](terraform-state.md) explains why it is separate and
+what happens if you skip it.
+
 ## AWS
 
 ```bash
+# Once per account and region. Creates the bucket the profile keeps its
+# state in — the profile's backend block is empty and cannot initialise
+# until this exists. See terraform-state.md.
+terraform -chdir=terraform/aws/bootstrap init
+terraform -chdir=terraform/aws/bootstrap apply
+terraform -chdir=terraform/aws/bootstrap output -raw backend_config \
+    > terraform/aws/backend.hcl
+
 cd terraform/aws
-terraform init
+terraform init -backend-config=backend.hcl
 terraform plan -out=plan.tfplan
 terraform apply plan.tfplan
 ```
@@ -98,8 +113,14 @@ against AZ independence.
 ## Azure
 
 ```bash
+# Once per subscription and region, for the same reason as AWS.
+terraform -chdir=terraform/azure/bootstrap init
+terraform -chdir=terraform/azure/bootstrap apply
+terraform -chdir=terraform/azure/bootstrap output -raw backend_config \
+    > terraform/azure/backend.hcl
+
 cd terraform/azure
-terraform init
+terraform init -backend-config=backend.hcl
 terraform plan -out=plan.tfplan \
   -var="ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
 terraform apply plan.tfplan
@@ -258,10 +279,11 @@ covers Terraform only — it never reaches the Ansible layer. See
 ## Provider lock files
 
 `terraform/aws` and `terraform/azure` each commit a
-`.terraform.lock.hcl`. It pins the exact provider versions and records
-their checksums, which does two things: an upstream provider release
-can't change what CI builds, and a substituted or tampered provider
-can't install silently.
+`.terraform.lock.hcl`, and so does each `bootstrap` module beside them —
+they are root modules of their own, so nothing else regenerates their
+locks. It pins the exact provider versions and records their checksums,
+which does two things: an upstream provider release can't change what CI
+builds, and a substituted or tampered provider can't install silently.
 
 The lock records checksums **per platform**, and Terraform refuses to
 run on a platform the lock doesn't cover. These are locked for
