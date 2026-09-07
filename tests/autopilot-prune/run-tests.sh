@@ -77,7 +77,16 @@ cleanup() {
         info "Leaving the cluster up (--keep-running)."
     else
         info "Tearing down..."
-        "${COMPOSE[@]}" down -v >/dev/null 2>&1
+        # --profile spare, or vault-3 survives the teardown.
+        #
+        # `docker compose down` only acts on services whose profiles are
+        # active, so a plain down leaves the spare running -- and then
+        # cannot remove the network either, because something is still
+        # attached to it. The suite looked clean and left a container
+        # holding port 8230 until the next reboot.
+        #
+        # Found two hours after a run, by a container still being up.
+        "${COMPOSE[@]}" --profile spare down -v >/dev/null 2>&1
     fi
     rm -rf "$WORK"
     exit "$rc"

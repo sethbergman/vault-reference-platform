@@ -915,11 +915,14 @@ jobs:
       - name: Watch a replaced voter get pruned
         run: ./tests/autopilot-prune/run-tests.sh
 
+      # --profile spare, or the spare node survives and the network with
+      # it. A runner is thrown away either way, but a teardown that does
+      # not tear down is worth not copying into the next job.
       - name: Tear down
         if: always()
         run: |
           cd docker/dev
-          docker compose down -v || true
+          docker compose --profile spare down -v || true
 
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
