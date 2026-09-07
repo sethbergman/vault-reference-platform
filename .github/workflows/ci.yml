@@ -882,6 +882,24 @@ jobs:
       - name: Exercise scripts/configure-autopilot.sh
         run: ./tests/autopilot/run-tests.sh
 
+  autopilot-prune-test:
+    name: Autopilot prunes a replaced voter (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The half of the autopilot claim that neither the shim suite nor
+      # the integration suite reaches: a dead voter actually disappearing.
+      # It cannot happen at three voters with a floor of three, which is
+      # the point of the floor, so this stands up a cluster, destroys a
+      # node, and adds the docker/dev vault-3 spare -- a node_id the
+      # cluster has never seen, which is what an ASG replacement is.
+      #
+      # Bounded by Vault itself: it refuses a dead-server threshold below
+      # 1m, so the wait proving the floor holds cannot be shortened.
+      - name: Watch a replaced voter get pruned
+        run: ./tests/autopilot-prune/run-tests.sh
+
   cloud-preflight-test:
     name: Cloud pre-flight and teardown tests
     runs-on: ubuntu-latest

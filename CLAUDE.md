@@ -43,7 +43,10 @@ docker/
                   Transit token into vault.hcl at start
   vault-unseal/   Single Shamir-unsealed Vault providing Transit
                   auto-unseal for the dev cluster — the root of trust
-  dev/            docker-compose.yml — every local/CI service
+  dev/            docker-compose.yml — every local/CI service. vault-3
+                  is a spare behind a compose profile, not a cluster
+                  member: tests/autopilot-prune uses it as a replacement
+                  with a node_id the cluster has not seen.
   dex/            OIDC identity provider for human-login tests
   vault-agent/    Agent rendering a secret to a file for an app
   audit-collector/  Socket audit sink; hash-chains entries (collect.sh)
@@ -52,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            19 suites; each is a self-contained run-tests.sh
+tests/            20 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -317,10 +320,11 @@ Per-suite requirements:
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
 | autopilot | bash, jq |
+| autopilot-prune | docker compose, vault CLI, jq |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 29 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 30 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -365,7 +369,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-29 jobs means any "list the check runs" call returns 29 records, which
+30 jobs means any "list the check runs" call returns 30 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 
@@ -501,8 +505,12 @@ between here and v1.0:
    Settling it found that Vault's `cleanup_dead_servers = false` default
    leaves replaced nodes as Raft voters, so a three-node refresh loses
    quorum partway through the second node;
-   `scripts/configure-autopilot.sh` fixes it. A real refresh is still
-   unproven.
+   `scripts/configure-autopilot.sh` fixes it, and
+   `tests/autopilot-prune` watches a replaced voter actually get pruned.
+   Note the mechanism: `min_quorum` counts servers, so a replacement
+   joins as a non-voter, the dead voter is pruned, and only then is the
+   replacement promoted — the voter count never rises. A real refresh is
+   still unproven.
 
 Items 4 and 5 were added after the first three and are about operating a
 cluster over time. Item 5 is out of reach of an emulator for that

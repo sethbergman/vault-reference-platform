@@ -36,7 +36,14 @@ FORCE=false
 
 # vault-unseal is included: it holds the Transit key that unseals
 # everything else, so it has the least business speaking plaintext.
-NODES=(vault-0 vault-1 vault-2 vault-unseal)
+#
+# vault-3 is the spare. It is not part of the cluster and is never started
+# by bootstrap-dev-cluster.sh; it exists so tests/autopilot-prune can add
+# a node with a node_id the cluster has not seen before, which is the one
+# thing an ASG instance refresh does that three fixed nodes cannot model.
+# A certificate costs nothing to issue and the alternative is a test that
+# cannot run.
+NODES=(vault-0 vault-1 vault-2 vault-3 vault-unseal)
 
 DAYS_CA=3650
 DAYS_LEAF=825   # the practical browser/tooling ceiling for leaf certs
