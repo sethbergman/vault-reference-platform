@@ -1,0 +1,42 @@
+# gitleaks configuration.
+#
+# Until this file existed gitleaks ran on its defaults, which is what you
+# want almost all of the time — this exists to record one accepted
+# finding, not to relax the ruleset. `useDefault` keeps every default
+# rule; nothing below removes one.
+#
+# The same rule applies here as in .trivyignore.yaml: an allowlist entry
+# states what it permits and why. A suppression without a justification
+# is indistinguishable from never having run the scanner, and gitleaks
+# scans full history, so anything muted here stays muted for every commit
+# that follows.
+
+title = "vault-reference-platform"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+The names of two JSON fields, which are not secrets.
+
+Vault returns key shares under `unseal_keys_b64` (Shamir) or
+`recovery_keys_b64` (auto-unsealed), and scripts/rotate-keys.sh selects
+between them with a variable:
+
+    KEY_FIELD="unseal_keys_b64"
+
+generic-api-key reads that as KEY = <high-entropy value> and reports it,
+with an entropy of 3.5 for a string that is documented API vocabulary and
+appears verbatim in Vault's own documentation.
+
+The allowlist is anchored to those two exact strings rather than to the
+file or the rule, so a real credential on the same line, in the same
+file, or assigned to the same variable is still reported. Shares
+themselves are ~44 characters of base64 and match nothing below.
+"""
+regexTarget = "secret"
+regexes = [
+  '''^unseal_keys_b64$''',
+  '''^recovery_keys_b64$''',
+]

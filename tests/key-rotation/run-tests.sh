@@ -74,7 +74,9 @@ cleanup() {
         info "Tearing down..."
         "${COMPOSE[@]}" --profile spare down -v >/dev/null 2>&1
     fi
-    rm -f "${KEYS_FILE}.superseded" "${KEYS_FILE}.new"
+    rm -f "${KEYS_FILE}.superseded" "${KEYS_FILE}.new" \
+          "${REPO_ROOT}/docker/dev/.unseal-keys.json.superseded" \
+          "${REPO_ROOT}/docker/dev/.unseal-keys.json.new"
     rm -rf "$WORK"
     exit "$rc"
 }
@@ -330,6 +332,203 @@ for f in ".recovery-keys.json" ".recovery-keys.json.superseded" ".recovery-keys.
     else
         bad "docker/dev/${f} is gitignored" \
             "a share in version control is compromised from the moment it lands"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== vault-unseal keeps its own key, and can rekey it ==="
+# ---------------------------------------------------------------------------
+# The cluster above is auto-unsealed, so its shares are recovery keys and
+# everything so far exercised that path only. vault-unseal is the
+# Shamir-sealed Vault underneath it — the root of trust the whole local
+# profile leans on — and it has a different endpoint, different field
+# names and, until this release, no persisted key at all.
+
+UNSEAL_KEYS="${REPO_ROOT}/docker/dev/.unseal-keys.json"
+
+if [[ -f "$UNSEAL_KEYS" ]]; then
+    ok "the bootstrap kept vault-unseal's own keys"
+else
+    bad "the bootstrap kept vault-unseal's own keys" \
+        "without them a restart of vault-unseal is unrecoverable"
+fi
+
+if [[ "$(stat -c '%a' "$UNSEAL_KEYS" 2>/dev/null)" == "600" ]]; then
+    ok "and wrote them 0600"
+else
+    bad "and wrote them 0600" "$(stat -c '%a' "$UNSEAL_KEYS" 2>/dev/null)"
+fi
+
+if [[ "$(jq -r '.unseal_keys_b64 | length' "$UNSEAL_KEYS" 2>/dev/null)" -ge 1 ]] \
+   && [[ "$(jq -r '.root_token // empty' "$UNSEAL_KEYS" 2>/dev/null)" == hvs.* ]]; then
+    ok "and both the shares and its root token are there"
+else
+    bad "and both the shares and its root token are there" \
+        "a share without the token cannot rekey; a token without the share cannot unseal"
+fi
+
+# The failure this fixes, demonstrated rather than described. Before the
+# keys were kept, this restart ended the cluster: vault-unseal came back
+# sealed with nobody holding its key, and a cluster node restarted after
+# it did not come back sealed — it failed to start, with
+# "error parsing Seal configuration: ... 503 Vault is sealed".
+info "  restarting vault-unseal (previously unrecoverable)..."
+"${COMPOSE[@]}" restart vault-unseal >/dev/null 2>&1
+for _ in $(seq 1 30); do
+    curl -sk --cacert "$VAULT_CACERT" --max-time 2 \
+        https://127.0.0.1:8300/v1/sys/seal-status >/dev/null 2>&1 && break
+    sleep 2
+done
+
+UNSEAL_SEALED="$(curl -sk --cacert "$VAULT_CACERT" --max-time 4 \
+    https://127.0.0.1:8300/v1/sys/seal-status 2>/dev/null | jq -r '.sealed')"
+if [[ "$UNSEAL_SEALED" == "true" ]]; then
+    ok "a restarted vault-unseal comes back sealed"
+else
+    bad "a restarted vault-unseal comes back sealed" \
+        "sealed=${UNSEAL_SEALED}; if it never seals, the keys below prove nothing"
+fi
+
+mapfile -t U_KEYS < <(jq -r '.unseal_keys_b64[]' "$UNSEAL_KEYS")
+U_THRESHOLD="$(jq -r '.unseal_threshold // 1' "$UNSEAL_KEYS")"
+for ((i = 0; i < U_THRESHOLD; i++)); do
+    "${COMPOSE[@]}" exec -T vault-unseal vault operator unseal "${U_KEYS[$i]}" >/dev/null 2>&1
+done
+UNSEAL_SEALED="$(curl -sk --cacert "$VAULT_CACERT" --max-time 4 \
+    https://127.0.0.1:8300/v1/sys/seal-status 2>/dev/null | jq -r '.sealed')"
+if [[ "$UNSEAL_SEALED" == "false" ]]; then
+    ok "and the kept keys open it again"
+else
+    bad "and the kept keys open it again" "sealed=${UNSEAL_SEALED}"
+fi
+
+# And the reason it matters: the cluster leans on it.
+info "  restarting vault-0 to prove auto-unseal still works..."
+"${COMPOSE[@]}" restart vault-0 >/dev/null 2>&1
+for _ in $(seq 1 40); do
+    curl -sk --cacert "$VAULT_CACERT" --max-time 2 \
+        "${VAULT_ADDR}/v1/sys/seal-status" >/dev/null 2>&1 && break
+    sleep 2
+done
+sleep 6
+if [[ "$(vault status -format=json 2>/dev/null | jq -r '.sealed')" == "false" ]]; then
+    ok "and a cluster node auto-unseals against it afterwards"
+else
+    bad "and a cluster node auto-unseals against it afterwards" \
+        "this is the failure the kept keys exist to prevent"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Rekeying the unseal shares ==="
+# ---------------------------------------------------------------------------
+# Same ceremony as the recovery rekey above, different endpoint:
+# sys/rekey rather than sys/rekey-recovery-key, unseal_keys_b64 rather
+# than recovery_keys_b64.
+
+U_ROOT="$(jq -r '.root_token' "$UNSEAL_KEYS")"
+GEN1_FIRST="$(jq -r '.unseal_keys_b64[0]' "$UNSEAL_KEYS")"
+
+# The bootstrap makes vault-unseal 1-of-1, which is fine for a dev root of
+# trust and useless for demonstrating a quorum. Rekeying to 5-of-3 is
+# both the realistic operation and what gives the next step enough old
+# shares to form a quorum with.
+RK1="$(VAULT_ADDR="https://127.0.0.1:8300" VAULT_TOKEN="$U_ROOT" \
+    bash "$ROTATE" --unseal-keys --keys-file "$UNSEAL_KEYS" --shares 5 --threshold 3 2>&1)"; RC=$?
+if [[ "$RC" -eq 0 ]]; then
+    ok "rotate-keys.sh --unseal-keys rekeys 1-of-1 to 5-of-3"
+else
+    bad "rotate-keys.sh --unseal-keys rekeys 1-of-1 to 5-of-3" "$(tail -4 <<< "$RK1")"
+fi
+if [[ "$RK1" == *"Verified."* ]]; then
+    ok "and verified the new shares before committing them"
+else
+    bad "and verified the new shares before committing them"
+fi
+if [[ "$(jq -r '.unseal_keys_b64 | length' "$UNSEAL_KEYS" 2>/dev/null)" == "5" ]]; then
+    ok "and the file now holds five shares"
+else
+    bad "and the file now holds five shares" \
+        "$(jq -r '.unseal_keys_b64 | length' "$UNSEAL_KEYS" 2>/dev/null)"
+fi
+if [[ "$(jq -r '.unseal_keys_b64[0]' "$UNSEAL_KEYS")" != "$GEN1_FIRST" ]]; then
+    ok "and they are not the shares it started with"
+else
+    bad "and they are not the shares it started with"
+fi
+
+mapfile -t GEN2 < <(jq -r '.unseal_keys_b64[]' "$UNSEAL_KEYS")
+
+# A second rekey, so there is a full quorum of superseded shares to try.
+# One share proves nothing: Vault accepts shares and only validates the
+# combination once the threshold is reached, so a lone stale share
+# returns success and 1/3 progress.
+RK2="$(VAULT_ADDR="https://127.0.0.1:8300" VAULT_TOKEN="$U_ROOT" \
+    bash "$ROTATE" --unseal-keys --keys-file "$UNSEAL_KEYS" 2>&1)"; RC=$?
+if [[ "$RC" -eq 0 ]]; then
+    ok "a second rekey succeeds, keeping 5-of-3"
+else
+    bad "a second rekey succeeds, keeping 5-of-3" "$(tail -4 <<< "$RK2")"
+fi
+
+mapfile -t GEN3 < <(jq -r '.unseal_keys_b64[]' "$UNSEAL_KEYS")
+
+info "  restarting vault-unseal to test both generations..."
+"${COMPOSE[@]}" restart vault-unseal >/dev/null 2>&1
+for _ in $(seq 1 30); do
+    curl -sk --cacert "$VAULT_CACERT" --max-time 2 \
+        https://127.0.0.1:8300/v1/sys/seal-status >/dev/null 2>&1 && break
+    sleep 2
+done
+
+# A full quorum of the superseded generation, which must not open it.
+"${COMPOSE[@]}" exec -T vault-unseal vault operator unseal -reset >/dev/null 2>&1
+for i in 0 1 2; do
+    "${COMPOSE[@]}" exec -T vault-unseal vault operator unseal "${GEN2[$i]}" >/dev/null 2>&1
+done
+STILL="$(curl -sk --cacert "$VAULT_CACERT" --max-time 4 \
+    https://127.0.0.1:8300/v1/sys/seal-status 2>/dev/null | jq -r '.sealed')"
+if [[ "$STILL" == "true" ]]; then
+    ok "a quorum of superseded shares does not open it"
+else
+    bad "a quorum of superseded shares does not open it" \
+        "the file changed and the barrier did not"
+fi
+
+"${COMPOSE[@]}" exec -T vault-unseal vault operator unseal -reset >/dev/null 2>&1
+for i in 0 1 2; do
+    "${COMPOSE[@]}" exec -T vault-unseal vault operator unseal "${GEN3[$i]}" >/dev/null 2>&1
+done
+NOW="$(curl -sk --cacert "$VAULT_CACERT" --max-time 4 \
+    https://127.0.0.1:8300/v1/sys/seal-status 2>/dev/null | jq -r '.sealed')"
+if [[ "$NOW" == "false" ]]; then
+    ok "and the current ones do"
+else
+    bad "and the current ones do" "sealed=${NOW}"
+fi
+
+# Handing the wrong kind of key file to the wrong mode is the mistake
+# these two paths invite, and the endpoint's own error says nothing about
+# which set of keys it wanted.
+WRONG="$(VAULT_ADDR="https://127.0.0.1:8300" VAULT_TOKEN="$U_ROOT" \
+    bash "$ROTATE" --unseal-keys --keys-file "$KEYS_FILE" 2>&1)"; RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    ok "--unseal-keys against a recovery-key file is refused"
+else
+    bad "--unseal-keys against a recovery-key file is refused"
+fi
+if [[ "$WRONG" == *"unseal_keys_b64"* ]]; then
+    ok "and names the field it wanted"
+else
+    bad "and names the field it wanted" "$(tail -2 <<< "$WRONG")"
+fi
+
+for f in ".unseal-keys.json" ".unseal-keys.json.superseded" ".unseal-keys.json.new"; do
+    if git -C "$REPO_ROOT" check-ignore -q "docker/dev/${f}"; then
+        ok "docker/dev/${f} is gitignored"
+    else
+        bad "docker/dev/${f} is gitignored"
     fi
 done
 

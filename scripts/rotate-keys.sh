@@ -10,12 +10,17 @@
 # Options:
 #   --barrier              Rotate the barrier encryption key. Online, no
 #                          shares needed, no downtime.
-#   --recovery-keys        Re-issue the recovery key shares. Needs a
-#                          quorum of the current ones.
-#   --keys-file <path>     JSON holding recovery_keys_b64. Read for the
-#                          current shares; replaced with the new ones
-#                          once they are verified. The previous file is
-#                          kept as <path>.superseded.
+#   --recovery-keys        Re-issue the recovery key shares of an
+#                          auto-unsealed cluster. Needs a quorum of the
+#                          current ones.
+#   --unseal-keys          Re-issue the unseal key shares of a
+#                          Shamir-sealed Vault. Same ceremony, different
+#                          endpoint; see below.
+#   --keys-file <path>     JSON holding the current shares —
+#                          recovery_keys_b64 with --recovery-keys,
+#                          unseal_keys_b64 with --unseal-keys. Replaced
+#                          with the new ones once they are verified; the
+#                          previous file is kept as <path>.superseded.
 #   --shares <n>           New share count (default: keep the current).
 #   --threshold <n>        New threshold (default: keep the current).
 #   --no-verify            Skip Vault's rekey verification. Refuses
@@ -94,8 +99,23 @@
 #   Shares go to files, never to stdout. A recovery share in a CI log or
 #   a scrollback buffer is a compromised share.
 #
+# RECOVERY KEYS AND UNSEAL KEYS ARE THE SAME CEREMONY
+#
+# Which one a Vault has depends only on how it is sealed. An
+# auto-unsealed cluster has recovery keys; a Shamir-sealed one has unseal
+# keys; scripts/migrate-seal.sh turns each into the other without
+# changing their values. So this runs one ceremony against two endpoints:
+#
+#   --recovery-keys   sys/rekey-recovery-key/*   vault operator rekey -target=recovery
+#   --unseal-keys     sys/rekey/*                vault operator rekey
+#
+# The CLI calls the second one "barrier" and makes it the default target,
+# which is worth knowing because `vault operator rekey` with no arguments
+# on an auto-unsealed cluster addresses a set of keys that cluster does
+# not use.
+#
 # Requirements: vault, jq. VAULT_ADDR and a token with sudo on
-# sys/rekey-recovery-key and sys/rotate.
+# sys/rekey-recovery-key or sys/rekey, and on sys/rotate.
 
 set -euo pipefail
 
@@ -119,6 +139,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --barrier)             MODE="barrier"; shift ;;
         --recovery-keys)       MODE="recovery"; shift ;;
+        --unseal-keys)         MODE="unseal"; shift ;;
         --keys-file)           KEYS_FILE="$2"; shift 2 ;;
         --shares)              SHARES="$2"; shift 2 ;;
         --threshold)           THRESHOLD="$2"; shift 2 ;;
@@ -129,7 +150,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$MODE" ]] || die "one of --barrier or --recovery-keys is required"
+[[ -n "$MODE" ]] \
+    || die "one of --barrier, --recovery-keys or --unseal-keys is required"
 for dep in vault jq; do
     command -v "$dep" >/dev/null 2>&1 || die "${dep} not found on PATH"
 done
@@ -164,7 +186,7 @@ fi
 # The recovery key shares
 # ---------------------------------------------------------------------------
 
-[[ -n "$KEYS_FILE" ]] || die "--recovery-keys needs --keys-file"
+[[ -n "$KEYS_FILE" ]] || die "--${MODE}-keys needs --keys-file"
 [[ -f "$KEYS_FILE" ]] || die "keys file not found: ${KEYS_FILE}"
 
 if [[ "$VERIFY" == false && "$ACKNOWLEDGED" == false ]]; then
@@ -176,14 +198,37 @@ if [[ "$VERIFY" == false && "$ACKNOWLEDGED" == false ]]; then
        well if that is genuinely what you want."
 fi
 
-mapfile -t OLD_KEYS < <(jq -r '.recovery_keys_b64[]? // empty' "$KEYS_FILE")
-[[ ${#OLD_KEYS[@]} -gt 0 ]] || die "no recovery_keys_b64 found in ${KEYS_FILE}"
+# The only differences between the two ceremonies, in one place. Getting
+# these crossed addresses a set of keys the Vault in front of you does
+# not use, and the error it produces says nothing about which set.
+if [[ "$MODE" == "recovery" ]]; then
+    REKEY_PATH="sys/rekey-recovery-key"
+    TARGET_ARGS=(-target=recovery)
+    KEY_FIELD="recovery_keys_b64"
+    SHARES_FIELD="recovery_keys_shares"
+    THRESHOLD_FIELD="recovery_keys_threshold"
+    KIND="recovery"
+else
+    REKEY_PATH="sys/rekey"
+    TARGET_ARGS=()
+    KEY_FIELD="unseal_keys_b64"
+    SHARES_FIELD="unseal_keys_shares"
+    THRESHOLD_FIELD="unseal_threshold"
+    KIND="unseal"
+fi
+
+mapfile -t OLD_KEYS < <(jq -r ".${KEY_FIELD}[]? // empty" "$KEYS_FILE")
+[[ ${#OLD_KEYS[@]} -gt 0 ]] || die "no ${KEY_FIELD} found in ${KEYS_FILE}.
+
+       That file holds the other kind of key. An auto-unsealed cluster
+       has recovery keys and a Shamir-sealed one has unseal keys; check
+       which this Vault is with 'vault status'."
 
 # Default to the shape already in use rather than Vault's defaults.
 # Silently turning a 5-of-3 into Vault's default hands back a different
 # number of shares than the holders expect, and nobody counts them.
-CUR_SHARES="$(jq -r '.recovery_keys_shares // empty' "$KEYS_FILE")"
-CUR_THRESHOLD="$(jq -r '.recovery_keys_threshold // empty' "$KEYS_FILE")"
+CUR_SHARES="$(jq -r ".${SHARES_FIELD} // empty" "$KEYS_FILE")"
+CUR_THRESHOLD="$(jq -r ".${THRESHOLD_FIELD} // empty" "$KEYS_FILE")"
 SHARES="${SHARES:-${CUR_SHARES:-${#OLD_KEYS[@]}}}"
 THRESHOLD="${THRESHOLD:-${CUR_THRESHOLD:-3}}"
 
@@ -194,14 +239,14 @@ THRESHOLD="${THRESHOLD:-${CUR_THRESHOLD:-3}}"
 
 NEW_FILE="${KEYS_FILE}.new"
 
-vault operator rekey -target=recovery -cancel >/dev/null 2>&1 || true
+vault operator rekey "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" -cancel >/dev/null 2>&1 || true
 
 INIT_BODY="$(jq -n --argjson shares "$SHARES" --argjson threshold "$THRESHOLD" \
     --argjson verify "$VERIFY" \
     '{secret_shares: $shares, secret_threshold: $threshold, require_verification: $verify}')"
 
 INIT_JSON="$(printf '%s' "$INIT_BODY" \
-    | vault write -format=json sys/rekey-recovery-key/init - 2>&1)" \
+    | vault write -format=json "${REKEY_PATH}/init" - 2>&1)" \
     || die "could not start a rekey: ${INIT_JSON}"
 
 NONCE="$(jq -r '.data.nonce // .nonce // empty' <<< "$INIT_JSON")"
@@ -216,22 +261,22 @@ if [[ "$VERIFY" == true ]]; then
         || die "asked for verification and Vault did not enable it: ${INIT_JSON}"
 fi
 
-log "Started a recovery rekey (nonce ${NONCE}), ${THRESHOLD} of ${SHARES}."
+log "Started a ${KIND}-key rekey (nonce ${NONCE}), ${THRESHOLD} of ${SHARES}."
 
 OUT=""
 USED=0
 for KEY in "${OLD_KEYS[@]}"; do
     [[ -n "$KEY" ]] || continue
     USED=$((USED + 1))
-    OUT="$(vault operator rekey -target=recovery -nonce="$NONCE" -format=json "$KEY" 2>&1)" || {
-        vault operator rekey -target=recovery -cancel >/dev/null 2>&1 || true
+    OUT="$(vault operator rekey "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" -nonce="$NONCE" -format=json "$KEY" 2>&1)" || {
+        vault operator rekey "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" -cancel >/dev/null 2>&1 || true
         die "share ${USED} was rejected: ${OUT}"
     }
     [[ "$(jq -r '.complete // false' <<< "$OUT" 2>/dev/null)" == "true" ]] && break
 done
 
 if [[ "$(jq -r '.complete // false' <<< "$OUT" 2>/dev/null)" != "true" ]]; then
-    vault operator rekey -target=recovery -cancel >/dev/null 2>&1 || true
+    vault operator rekey "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" -cancel >/dev/null 2>&1 || true
     die "ran out of shares after ${USED} without reaching the threshold"
 fi
 
@@ -246,7 +291,7 @@ mapfile -t NEW_KEYS < <(jq -r '.keys_base64[]? // empty' <<< "$OUT")
 ( umask 077; jq -n \
     --argjson keys "$(jq -n '$ARGS.positional' --args "${NEW_KEYS[@]}")" \
     --argjson shares "$SHARES" --argjson threshold "$THRESHOLD" \
-    '{recovery_keys_b64: $keys, recovery_keys_shares: $shares, recovery_keys_threshold: $threshold}' \
+    --arg kf "$KEY_FIELD" --arg sf "$SHARES_FIELD" --arg tf "$THRESHOLD_FIELD" '{($kf): $keys, ($sf): $shares, ($tf): $threshold}' \
     > "$NEW_FILE" ) || die "could not write the new shares to ${NEW_FILE}"
 chmod 0600 "$NEW_FILE"
 log "New shares written to ${NEW_FILE} (0600), before verification."
@@ -267,7 +312,7 @@ if [[ "$VERIFY" == true ]]; then
         [[ "$V_USED" -ge "$THRESHOLD" ]] && break
         V_USED=$((V_USED + 1))
 
-        V_OUT="$(vault operator rekey -target=recovery -verify -nonce="$V_NONCE" \
+        V_OUT="$(vault operator rekey "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" -verify -nonce="$V_NONCE" \
                  -format=json "$KEY" 2>&1)" || {
             die "the new share ${V_USED} was rejected during verification:
        ${V_OUT}
@@ -300,6 +345,6 @@ mv "$NEW_FILE" "$KEYS_FILE" \
     || die "could not install the new keys file; they are in ${NEW_FILE}"
 chmod 0600 "$KEYS_FILE"
 
-log "Wrote ${SHARES} new shares to ${KEYS_FILE} (0600)."
+log "Wrote ${SHARES} new ${KIND} shares to ${KEYS_FILE} (0600)."
 log "The previous shares are at ${KEYS_FILE}.superseded and no longer work."
 log "Distribute the new shares and delete both copies from this host."

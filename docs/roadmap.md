@@ -373,11 +373,26 @@ not a property the architecture has to have on the day it is stood up.
   will not auto-unseal even with a working seal stanza, which makes the
   obvious way to verify the migration the thing that breaks it.
 
-  What remains needs something this repository does not have. Migrating
-  between two *cloud* KMS providers — the case where an organisation
-  changes cloud — has the same shape and no coverage, and neither does a
-  Shamir **rekey**: the local profile is Transit-sealed, so its shares
-  are recovery keys and `rotate-keys.sh` exercises that path only.
+  The Shamir rekey came off this list too. `rotate-keys.sh
+  --unseal-keys` runs the same ceremony against `sys/rekey` rather than
+  `sys/rekey-recovery-key`, and `tests/key-rotation` exercises it against
+  `vault-unseal` — rekeying it from the 1-of-1 the bootstrap creates to
+  5-of-3, then again, and requiring that a full quorum of the superseded
+  generation no longer opens it. One share proves nothing there: Vault
+  accepts shares and only validates the combination at the threshold, so
+  a lone stale share returns success.
+
+  That work needed a prior fix, the same shape as the recovery keys in
+  v0.15. `vault-unseal` is the root of trust for the whole local profile
+  and its unseal key lived only in a shell variable, so a restart of that
+  one container ended the cluster — it came back sealed with nobody
+  holding the key, and cluster nodes restarted afterwards failed to start
+  rather than coming back sealed. The keys are kept now, and the suite
+  restarts `vault-unseal` on every run to prove it.
+
+  What remains needs something this repository does not have: migrating
+  between two *cloud* KMS providers, the case where an organisation
+  changes cloud, which has the same shape and no coverage.
 - **Restore verification at a real cloud destination.** The mechanism
   came off this list in v0.16. `tests/restore-from-object-store` puts a
   real snapshot of a real cluster through an S3 API, reads the object
