@@ -72,6 +72,16 @@ WORK="$(mktemp -d)"
 MOTO_PID=""
 BUCKET=""
 
+# Set once this run has started writing into the repository. Until then
+# the cleanup below must not touch those paths.
+#
+# The reason is the guard added above. The likeliest cause of an early
+# exit is now "another run already owns this workspace" -- and a cleanup
+# that removed its override files, or destroyed the stack its state file
+# describes, would answer one corruption with a worse one. A run cleans
+# up what it created, and an early exit created nothing.
+CLAIMED=false
+
 PASS=0
 FAIL=0
 
@@ -90,9 +100,11 @@ cleanup() {
     # Nothing to destroy: the emulator holds every resource in memory and
     # dies with the process. What has to go is what was written into the
     # repository.
-    rm -f "${MODULE}/zz_emulated_override.tf"
-    rm -rf "${MODULE}/.terraform" "${MODULE}/terraform.tfstate" \
-           "${MODULE}/terraform.tfstate.backup"
+    if [[ "$CLAIMED" == true ]]; then
+        rm -f "${MODULE}/zz_emulated_override.tf"
+        rm -rf "${MODULE}/.terraform" "${MODULE}/terraform.tfstate" \
+               "${MODULE}/terraform.tfstate.backup"
+    fi
     rm -rf "$WORK"
     exit "$rc"
 }
@@ -288,6 +300,9 @@ if ! kill -0 "$MOTO_PID" 2>/dev/null; then
     tail -3 "${WORK}/moto.log" >&2
     exit 1
 fi
+
+# From here on this run owns the workspace, so cleanup may remove it.
+CLAIMED=true
 
 cp "$OVERRIDE_SRC" "${MODULE}/zz_emulated_override.tf"
 
