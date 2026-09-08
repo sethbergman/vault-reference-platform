@@ -309,6 +309,32 @@ jobs:
       - name: Ship anchors to storage that refuses to delete them
         run: ./tests/audit-anchor-worm/run-tests.sh
 
+  seal-migration-test:
+    name: Seal migration, both directions (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Vault CLI
+        run: |
+          curl -fsSL https://releases.hashicorp.com/vault/1.17.2/vault_1.17.2_linux_amd64.zip -o /tmp/vault.zip
+          unzip -q -o /tmp/vault.zip -d /tmp
+          sudo install -m 755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      # docs/roadmap.md calls changing seal type the operation most likely
+      # to leave a cluster that will not unseal, and nothing exercised it
+      # before this. It cannot be shimmed: the whole question is what the
+      # real barrier does when the thing protecting it changes.
+      #
+      # Two of the assertions are about Vault rather than the script —
+      # that a plain unseal really is refused mid-migration, and that a
+      # config change plus restart really does enter migration mode.
+      # scripts/migrate-seal.sh is shaped around both, so if either stops
+      # being true this job is what says so.
+      - name: Migrate Transit to Shamir and back
+        run: ./tests/seal-migration/run-tests.sh
+
   key-rotation-test:
     name: Key rotation and recovery rekey (real cluster)
     runs-on: ubuntu-latest
