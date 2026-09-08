@@ -81,6 +81,116 @@ ansible-playbook -i inventory/aws playbooks/site.yml
 
 (`vault_nodes_azure.yml.example` for the Azure profile.)
 
+## Changing seal type
+
+Moving a cluster between seal types is the operation most likely to leave
+one that will not unseal, so this is written from what actually happened
+on a three-node cluster rather than from the procedure as documented.
+Four of the steps are not what you would guess.
+
+```bash
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_TOKEN=<root>
+
+# auto-unseal -> manual
+./scripts/migrate-seal.sh --to shamir \
+    --keys-file docker/dev/.recovery-keys.json \
+    --compose-services vault-0,vault-1,vault-2
+
+# and back
+./scripts/migrate-seal.sh --to transit \
+    --keys-file docker/dev/.recovery-keys.json \
+    --compose-services vault-0,vault-1,vault-2
+```
+
+The shares do not change value. They change *kind*: the recovery keys
+that a Transit-sealed cluster holds become the unseal keys of a
+Shamir-sealed one, and back again.
+
+### The sequence
+
+1. Set the seal stanza on **every** node — add `disabled = "true"` to
+   turn an autoseal off, remove it to turn one on.
+2. Restart **every** node. They come up sealed, reporting the new type.
+3. Unseal every node with `vault operator unseal -migrate`.
+4. Wait for a leader to finalise it. `sys/seal-status` reports
+   `migration: false` when it is genuinely done.
+
+### Four things that surprised me
+
+**Do not stop the standbys.** The instinct is to take them down first, as
+you would for any maintenance. On a three-node cluster that leaves one
+node, which is not a quorum, so no leader is elected and the migration
+never finalises. The first attempt at this produced a cluster that was
+unsealed, leaderless and half-migrated — the worst of the available
+states.
+
+**Every node needs `-migrate`, not just the active one.** A plain unseal
+on a standby returns:
+
+```text
+Code: 500. Errors:
+
+* migrate option not provided and seal migration is in progress
+```
+
+which reads like a broken node and is really the node telling you it is
+doing what you asked.
+
+**It is not over when the last node unseals.** `migration` stays `true`
+until a leader finalises it. That gap is short — seconds on a healthy
+cluster — and everything below depends on not acting inside it.
+
+**A node restarted while `migration` is true will not auto-unseal**, even
+with a perfectly good seal stanza. It says so, but only in the logs:
+
+```text
+[WARN] core: entering seal migration mode; Vault will not automatically
+unseal even if using an autoseal
+```
+
+So the obvious way to check a migration to auto-unseal worked — restart a
+node and see whether it comes back on its own — destroys the thing it is
+checking if you do it too early. The node then looks broken rather than
+early, and the fix is another `-migrate` unseal.
+
+### On real nodes
+
+`migrate-seal.sh` drives the compose profile. The same sequence on a real
+node is the same four steps with different mechanics:
+
+| Step | Compose | systemd |
+|---|---|---|
+| Edit the seal stanza | in the container's `/vault/config/vault.hcl` | `/etc/vault.d/vault.hcl`, via the `vault` role |
+| Restart | `docker compose restart` | `systemctl restart vault` |
+| Unseal | `vault operator unseal -migrate` | the same, on each host |
+| Finalise | wait for `migration: false` | the same |
+
+That path is deliberately a runbook rather than a code path in the
+script. For an operation whose failure mode is "nobody can unseal this
+cluster again", shipping SSH orchestration that has never been run is
+worse than shipping the steps and saying they have not been run.
+
+### What is tested
+
+`tests/seal-migration` migrates a real three-node cluster in both
+directions and checks that a secret written beforehand survives, that
+`migration` clears rather than being left in progress, and that a
+restarted node genuinely unseals itself afterwards with no shares
+supplied — which is the difference between reporting `transit` and being
+protected by it.
+
+It also asserts two things about Vault rather than about the script: that
+a plain unseal really is refused mid-migration, and that a config change
+plus a restart really does enter migration mode. The script's shape
+depends on both. If either stops being true, the suite should be what
+tells you.
+
+Not covered: a real node under systemd, and any seal type other than
+Transit and Shamir. Migrating between two *cloud* KMS providers — the
+case where an organisation changes clouds — has the same shape and is
+untested here.
+
 ## Why this isn't fully automated end to end
 
 This is a reference platform, not a one-command production deployer —

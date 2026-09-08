@@ -356,17 +356,28 @@ not a property the architecture has to have on the day it is stood up.
   standard Vault metrics and would port directly; what is missing is
   somewhere to port them to, and a decision about whether this
   repository ships a Prometheus or documents integrating with one.
-- **Seal migration.** Key rotation came off this list in v0.16:
-  `scripts/rotate-keys.sh` rotates the barrier key and re-issues the
-  recovery shares, and `tests/key-rotation` runs both against a real
-  cluster — checking that data written under the previous barrier key is
-  still readable, and that the superseded recovery shares can no longer
-  mint a root token.
-  What remains is migrating a cluster **between seal types** with
-  `-migrate`, which is the operation most likely to produce a cluster
-  that will not unseal, and a Shamir rekey: the local profile uses a
-  Transit seal, so its shares are recovery keys and the unseal-key path
-  has no coverage.
+- **Seal migration between cloud providers, and a Shamir rekey.** The
+  local half of this came off the list after v0.16.
+  `scripts/migrate-seal.sh` moves a cluster between Transit auto-unseal
+  and Shamir in both directions, and `tests/seal-migration` runs both
+  against a real cluster — checking that a secret written beforehand
+  survives, that the migration finalises rather than being left in
+  progress, and that a restarted node genuinely unseals itself
+  afterwards.
+
+  Four things about the procedure turned out not to match the obvious
+  reading of it, and are written up in `docs/auto-unseal.md`: stopping
+  the standbys costs quorum and the migration then never finalises; every
+  node needs `-migrate`, not just the active one; `migration` stays true
+  until a leader finalises it; and a node restarted inside that window
+  will not auto-unseal even with a working seal stanza, which makes the
+  obvious way to verify the migration the thing that breaks it.
+
+  What remains needs something this repository does not have. Migrating
+  between two *cloud* KMS providers — the case where an organisation
+  changes cloud — has the same shape and no coverage, and neither does a
+  Shamir **rekey**: the local profile is Transit-sealed, so its shares
+  are recovery keys and `rotate-keys.sh` exercises that path only.
 - **Restore verification at a real cloud destination.** The mechanism
   came off this list in v0.16. `tests/restore-from-object-store` puts a
   real snapshot of a real cluster through an S3 API, reads the object

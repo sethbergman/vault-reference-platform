@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            26 suites; each is a self-contained run-tests.sh
+tests/            27 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -224,7 +224,9 @@ almost nothing else), `snapshot.sh`,
 failure as data loss), `revoke-root-token.sh` / `generate-root-token.sh`
 (retire the root token, and mint one from recovery keys when a task needs
 it), `vault-upgrade.sh`, `issue-node-cert.sh`,
-`migrate-to-vault-pki.sh`, `verify-audit-chain.sh`,
+`migrate-to-vault-pki.sh`, `migrate-seal.sh` (between seal types, which
+is the operation most likely to leave a cluster nobody can unseal),
+`verify-audit-chain.sh`,
 `preflight-cloud.sh`, `teardown-cloud.sh`, `terraform-to-ansible.sh`,
 `oidc-login-test.sh`, `generate-docs-index.sh`.
 
@@ -338,10 +340,11 @@ Per-suite requirements:
 | recover-quorum-systemd | bash, jq |
 | key-rotation | docker compose, vault CLI, jq |
 | restore-from-object-store | docker compose, vault CLI, jq, aws, python3 with `moto[server]`, curl |
+| seal-migration | docker compose, vault CLI, jq, curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 36 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 37 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`

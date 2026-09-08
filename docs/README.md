@@ -18,7 +18,7 @@ tested.
 | Document | Sections |
 |---|---|
 | [Audit Devices](audit.md) | Why two devices, and why this is the dangerous part · What is in the log, and what is not · Tamper evidence · Shipping the anchors somewhere that cannot delete them · Rotation · Enabling a device is validated · What is tested · What is not covered |
-| [Auto-unseal](auto-unseal.md) | Local: Transit auto-unseal · AWS / Azure: cloud KMS auto-unseal · Why this isn't fully automated end to end |
+| [Auto-unseal](auto-unseal.md) | Local: Transit auto-unseal · AWS / Azure: cloud KMS auto-unseal · Changing seal type · Why this isn't fully automated end to end |
 | [CI authentication (GitHub Actions OIDC)](ci-authentication.md) | Versus AppRole · Setup · Bound claims are the security boundary · Using it in a workflow · Troubleshooting |
 | [The cloud apply](cloud-apply.md) | Which profile this is written for · Before you apply · What it costs · The apply sequence · The verification checklist · Tearing down · After the session |
 | [Deployment](deployment.md) | Local (Docker Compose) · Before either cloud profile · AWS · Azure · Handing off to Ansible · Provider lock files · Post-deployment |
