@@ -122,11 +122,15 @@ Log output goes to stderr; the root token is the only thing on stdout,
 so `ROOT_TOKEN=$(./scripts/bootstrap-dev-cluster.sh)` works. Preserve
 that split when editing.
 
-The recovery keys go to `docker/dev/.recovery-keys.json` (0600,
-gitignored) rather than stdout. With a seal stanza `operator init`
-returns those instead of unseal keys, and they are what `generate-root`
-and `rekey` need — the script used to discard them, which made revoking
-the root token a one-way door.
+Two key files go to `docker/dev/` (0600, gitignored) rather than stdout:
+`.recovery-keys.json` for the cluster, and `.unseal-keys.json` for
+`vault-unseal` itself — that one is the root of trust for the profile,
+and without it a restart of that single container ends the cluster.
+
+With a seal stanza `operator init` returns recovery keys instead of
+unseal keys, and they are what `generate-root` and `rekey` need. The
+script used to discard both sets, which made revoking the root token a
+one-way door and a restart of vault-unseal an unrecoverable one.
 
 ## The four profiles
 

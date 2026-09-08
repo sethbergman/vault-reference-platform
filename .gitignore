@@ -39,6 +39,12 @@ docker/dev/tls/
 # were live minutes ago.
 docker/dev/.recovery-keys.json*
 
+# vault-unseal's own unseal key and root token. It is the root of
+# trust for the local profile — the Transit key every node unseals
+# against — so this file is the most sensitive one the bootstrap
+# writes, and the one whose loss costs the whole cluster.
+docker/dev/.unseal-keys.json*
+
 # Vault Agent credentials, written by scripts/bootstrap-agent.sh.
 # role_id is not a secret; secret_id is, and Agent deletes it after
 # reading it anyway. Neither belongs in the repository.

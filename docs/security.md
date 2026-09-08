@@ -314,6 +314,57 @@ shares are dead, and if the new ones were not captured, nobody can
 generate a root token or unseal by recovery again — discovered in the
 emergency where you needed them.
 
+### Recovery keys and unseal keys are the same ceremony
+
+Which kind a Vault has depends only on how it is sealed. An auto-unsealed
+cluster has recovery keys; a Shamir-sealed one has unseal keys;
+`scripts/migrate-seal.sh` turns each into the other without changing
+their values. So one script covers both, against two endpoints:
+
+| Flag | Endpoint | CLI |
+|---|---|---|
+| `--recovery-keys` | `sys/rekey-recovery-key/*` | `vault operator rekey -target=recovery` |
+| `--unseal-keys` | `sys/rekey/*` | `vault operator rekey` |
+
+The CLI calls the second one *barrier* and makes it the default target,
+which is worth knowing: `vault operator rekey` with no arguments, run
+against an auto-unsealed cluster, addresses a set of keys that cluster
+does not use.
+
+```bash
+export VAULT_ADDR=https://127.0.0.1:8300      # vault-unseal
+export VAULT_TOKEN=$(jq -r .root_token docker/dev/.unseal-keys.json)
+
+./scripts/rotate-keys.sh --unseal-keys \
+    --keys-file docker/dev/.unseal-keys.json --shares 5 --threshold 3
+```
+
+### The local root of trust keeps its own key now
+
+`vault-unseal` is a Shamir-sealed Vault holding the Transit key every
+cluster node auto-unseals against. Its unseal key used to live in a shell
+variable inside `bootstrap-dev-cluster.sh` and nowhere else.
+
+That made a single `docker compose restart vault-unseal` unrecoverable,
+which is not hypothetical — it is what a Docker Desktop restart or a host
+reboot does. And the failure is not graceful. `vault-unseal` comes back
+sealed, and a cluster node restarted after that does not come back
+sealed; it fails to start:
+
+```text
+error parsing Seal configuration: ... 503  * Vault is sealed
+```
+
+with no key anywhere to fix it. The only way back was `make destroy`.
+
+The bootstrap writes `docker/dev/.unseal-keys.json` (0600, gitignored)
+now, holding the shares and the root token, and `tests/key-rotation`
+restarts `vault-unseal` on every run to prove the kept keys open it and
+that a cluster node auto-unseals against it afterwards.
+
+It is also what makes a Shamir rekey testable at all: rekeying needs a
+quorum of the current shares, and there were none.
+
 ### Why the rekey is scripted rather than documented
 
 Vault has a verification phase for exactly this risk: the new shares are

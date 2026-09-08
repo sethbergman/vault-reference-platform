@@ -257,6 +257,34 @@ INIT_JSON="$(compose exec -T vault-unseal vault operator init -key-shares=1 -key
 UNSEAL_KEY="$(jq -r '.unseal_keys_b64[0]' <<< "$INIT_JSON")"
 UNSEAL_ROOT_TOKEN="$(jq -r '.root_token' <<< "$INIT_JSON")"
 
+# Kept, for the same reason the cluster's recovery keys are kept a few
+# hundred lines below, and with more at stake.
+#
+# vault-unseal is the root of trust for the whole local profile: it holds
+# the Transit key every cluster node auto-unseals against. Until now its
+# unseal key lived in this shell variable and nowhere else, which made a
+# single `docker compose restart vault-unseal` unrecoverable — and that
+# is not a hypothetical, it is what a Docker Desktop restart or a host
+# reboot does.
+#
+# The failure is not graceful. vault-unseal comes back sealed, and a
+# cluster node restarted after that does not come back sealed, it fails
+# to start at all:
+#
+#     error parsing Seal configuration: ... 503  * Vault is sealed
+#
+# with no key anywhere to fix it. The only route back was `make destroy`,
+# which is to say: losing everything in the cluster because the container
+# providing its seal was restarted.
+UNSEAL_KEYS_FILE="${COMPOSE_DIR}/.unseal-keys.json"
+rm -f "$UNSEAL_KEYS_FILE"
+( umask 077; jq '{unseal_keys_b64, unseal_keys_shares: .unseal_shares,
+                  unseal_threshold: .unseal_threshold, root_token}' \
+    <<< "$INIT_JSON" > "$UNSEAL_KEYS_FILE" )
+chmod 0600 "$UNSEAL_KEYS_FILE"
+log "vault-unseal keys written to docker/dev/.unseal-keys.json (mode 0600)."
+log "  Without them a restart of vault-unseal takes the cluster with it."
+
 log "Unsealing vault-unseal..."
 compose exec -T vault-unseal vault operator unseal "$UNSEAL_KEY" >/dev/null
 
