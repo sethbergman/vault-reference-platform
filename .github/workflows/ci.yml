@@ -248,6 +248,49 @@ jobs:
       - name: Exercise the state backend and the ordering it depends on
         run: ./tests/state-backend/run-tests.sh
 
+  audit-anchor-worm:
+    name: Audit anchors shipped to locked storage (emulated AWS API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: "1.15.9"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the AWS API emulator
+        run: pip install 'moto[server]'
+
+      # Pinned like every other tool here. The runner image ships an AWS
+      # CLI already, but which one moves without notice, and a shipper
+      # that failed only on the version GitHub happened to roll out is
+      # exactly the failure the pinning convention exists to avoid.
+      - name: Install the AWS CLI
+        run: |
+          curl -fsSL             "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.22.35.zip"             -o /tmp/awscliv2.zip
+          unzip -q -o /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
+          aws --version
+
+      # tests/audit-chain proves the anchors catch a rewritten chain, on
+      # one host. This is the far end: it applies terraform/aws/audit-anchors
+      # against an emulated AWS API, ships real anchors into the bucket that
+      # module builds, and attacks them the ways the shipping credential
+      # actually can -- deleting the version (refused by the lock),
+      # deleting without one (permitted, and it hides every anchor), and
+      # rewriting the chain (reported as a conflict, never overwritten).
+      #
+      # An emulator implements the API, not the service, so this does not
+      # show that S3 enforces COMPLIANCE retention in an account. See
+      # docs/audit.md.
+      - name: Ship anchors to storage that refuses to delete them
+        run: ./tests/audit-anchor-worm/run-tests.sh
+
   smoke-test:
     name: Deploy + smoke test (Docker Compose)
     runs-on: ubuntu-latest

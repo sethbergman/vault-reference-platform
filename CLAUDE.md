@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            23 suites; each is a self-contained run-tests.sh
+tests/            24 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -328,6 +328,7 @@ Per-suite requirements:
 | integration | docker compose, vault CLI, jq, openssl, curl |
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
+| audit-anchor-worm | terraform, python3 with `moto[server]`, curl, aws, sha256sum |
 | autopilot | bash, jq |
 | autopilot-prune | docker compose, vault CLI, jq |
 | quorum-recovery | docker compose, vault CLI, jq, curl |
@@ -336,13 +337,15 @@ Per-suite requirements:
 
 ## CI
 
-`.github/workflows/ci.yml` runs 33 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 34 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
-with gitleaks and Trivy); two run Terraform against an emulated AWS API
+with gitleaks and Trivy); three run Terraform against an emulated AWS API
 (`emulated-apply` applies the whole profile, `state-backend` applies the
-bootstrap module and points the profile's backend at it); the rest each
+bootstrap module and points the profile's backend at it, and
+`audit-anchor-worm` applies the audit-anchor bucket and then attacks the
+anchors it ships there); the rest each
 run one suite from `tests/`, or bring up the compose cluster and
 exercise it live (smoke test, AppRole rotation, GitHub OIDC, human OIDC
 via Dex, DR drill, integration).
