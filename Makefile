@@ -31,11 +31,34 @@ VAULT_ADDR  ?= https://127.0.0.1:8200
 # omission nobody notices.
 ALL_SUITES  := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard tests/*/run-tests.sh)))))
 
-# integration, autopilot-prune, quorum-recovery and root-token need a real
-# cluster; cloud-apply-emulated, state-backend and audit-anchor-worm each need
-# terraform and moto. Everything else is shims and runs in seconds.
-SLOW_SUITES := integration cloud-apply-emulated state-backend autopilot-prune \
-               quorum-recovery root-token audit-anchor-worm
+# The slow suites, discovered rather than listed.
+#
+# A suite is slow if it stands up the real cluster or the AWS API
+# emulator, and both leave a fingerprint in the harness: it calls
+# bootstrap-dev-cluster.sh, or it starts moto.server. Everything else is
+# shims and runs in seconds.
+#
+# This was a hand-maintained list until v0.16, and it went stale exactly
+# the way ALL_SUITES above is written to avoid: two suites were added
+# that bootstrap a three-node cluster, neither was added here, and
+# `make test` — documented as the target that needs no cluster — quietly
+# started running both. Deriving it makes forgetting impossible for the
+# two mechanisms that exist.
+#
+# Those two markers are the whole contract, and it holds because
+# bootstrap-dev-cluster.sh is already the single source of truth for
+# standing a cluster up — make deploy and every CI job go through it, so
+# a suite that brought one up another way would be violating a
+# documented invariant before it got here.
+#
+# A broader static guard was tried and removed: grepping fast suites for
+# "docker" or "terraform" flags four that only mention the words in
+# comments or shim those tools without running anything. A check that
+# fails on correct code gets switched off, which is worse than not
+# having it.
+SLOW_SUITES := $(sort $(notdir $(patsubst %/,%,$(dir \
+    $(shell grep -lE 'bootstrap-dev-cluster\.sh|moto\.server' \
+        tests/*/run-tests.sh 2>/dev/null)))))
 FAST_SUITES := $(filter-out $(SLOW_SUITES),$(ALL_SUITES))
 
 .PHONY: help
