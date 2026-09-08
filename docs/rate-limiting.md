@@ -25,10 +25,12 @@ Vault ships seven exempt paths, among them `sys/health`,
 `sys/quotas/config` empties that list:
 
 ```console
-$ vault read -format=json sys/quotas/config | jq '.data.rate_limit_exempt_paths | length'
+$ vault read -format=json sys/quotas/config \
+    | jq '.data.rate_limit_exempt_paths | length'
 7
 $ vault write sys/quotas/config enable_rate_limit_response_headers=true
-$ vault read -format=json sys/quotas/config | jq '.data.rate_limit_exempt_paths | length'
+$ vault read -format=json sys/quotas/config \
+    | jq '.data.rate_limit_exempt_paths | length'
 0
 ```
 
@@ -45,8 +47,10 @@ time, defaults included.
 does not produce one:
 
 ```console
-$ vault write sys/quotas/config rate_limit_exempt_paths="sys/health,sys/seal-status"
-$ vault read -format=json sys/quotas/config | jq -c '.data.rate_limit_exempt_paths'
+$ vault write sys/quotas/config \
+    rate_limit_exempt_paths="sys/health,sys/seal-status"
+$ vault read -format=json sys/quotas/config \
+    | jq -c '.data.rate_limit_exempt_paths'
 ["sys/health,sys/seal-status"]
 ```
 
