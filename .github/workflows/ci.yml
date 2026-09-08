@@ -44,14 +44,32 @@ jobs:
           terraform init -backend=false
           terraform validate
 
-      # The state bootstrap modules are root modules of their own, so
-      # `fmt -recursive` covers them but nothing else here would. They
-      # deliberately declare no backend — a module that creates the state
-      # bucket cannot store its state in it — so -backend=false changes
-      # nothing for them and is passed only for symmetry with the above.
-      - name: terraform validate (state bootstrap)
+      # Every other root module, discovered rather than listed.
+      #
+      # This used to name terraform/{aws,azure}/bootstrap explicitly, and
+      # by the time there were four more root modules it was validating
+      # two of them. An enumerated list stops covering each new module
+      # silently, which is the failure `make check-ci-coverage` exists to
+      # catch for test suites — the same argument applies here.
+      #
+      # These modules deliberately declare no backend: a module that
+      # creates the state bucket cannot store its state in it. So
+      # -backend=false changes nothing for them and is passed only for
+      # symmetry with the two steps above.
+      - name: terraform validate (every other root module)
         run: |
-          for d in terraform/aws/bootstrap terraform/azure/bootstrap; do
+          # A root module is a directory with .tf files in it.
+          # terraform/modules holds a shared module consumed by the
+          # profiles rather than applied on its own; it is validated
+          # through them.
+          mapfile -t dirs < <(
+            find terraform -name '*.tf' -not -path 'terraform/modules/*' \
+              -printf '%h\n' | sort -u | grep -vx 'terraform/aws' | grep -vx 'terraform/azure'
+          )
+          printf 'Validating %d root module(s)\n' "${#dirs[@]}"
+          [ "${#dirs[@]}" -gt 0 ] || { echo "No root modules found — the find is wrong"; exit 1; }
+          for d in "${dirs[@]}"; do
+            printf '\n=== %s ===\n' "$d"
             terraform -chdir="$d" init -backend=false
             terraform -chdir="$d" validate
           done
@@ -290,6 +308,69 @@ jobs:
       # docs/audit.md.
       - name: Ship anchors to storage that refuses to delete them
         run: ./tests/audit-anchor-worm/run-tests.sh
+
+  key-rotation-test:
+    name: Key rotation and recovery rekey (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Vault CLI
+        run: |
+          curl -fsSL https://releases.hashicorp.com/vault/1.17.2/vault_1.17.2_linux_amd64.zip -o /tmp/vault.zip
+          unzip -q -o /tmp/vault.zip -d /tmp
+          sudo install -m 755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      # Rotating the barrier key and re-issuing the recovery shares are
+      # the two day-2 key operations with no coverage before this, and
+      # docs/roadmap.md calls the second one out as the seam where the
+      # PKI migration path has no counterpart. Both are run against a
+      # real cluster because a shim would agree with the script: only
+      # Vault can say whether the shares it issued replaced the ones it
+      # had, and the suite asserts exactly that by requiring the
+      # superseded shares to stop working.
+      - name: Rotate the barrier key, then the recovery shares
+        run: ./tests/key-rotation/run-tests.sh
+
+  restore-from-object-store-test:
+    name: Restore a snapshot read back from object storage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the AWS API emulator
+        run: pip install 'moto[server]'
+
+      - name: Install the Vault CLI
+        run: |
+          curl -fsSL https://releases.hashicorp.com/vault/1.17.2/vault_1.17.2_linux_amd64.zip -o /tmp/vault.zip
+          unzip -q -o /tmp/vault.zip -d /tmp
+          sudo install -m 755 /tmp/vault /usr/local/bin/vault
+          vault version
+
+      - name: Install the AWS CLI
+        run: |
+          curl -fsSL \
+            "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.22.35.zip" \
+            -o /tmp/awscliv2.zip
+          unzip -q -o /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
+          aws --version
+
+      # snapshot.sh already refuses to upload a snapshot that does not
+      # inspect, and dr-drill.sh already restores one from a local file.
+      # The join between them had never been exercised: on the cloud
+      # profiles the snapshot goes to S3 and nothing reads one back, so a
+      # successful upload proved an object existed at a key and nothing
+      # about whether it was a restorable backup. This puts a real
+      # snapshot through a real S3 API and restores what comes back.
+      - name: Snapshot to object storage, read it back, restore it
+        run: ./tests/restore-from-object-store/run-tests.sh
 
   smoke-test:
     name: Deploy + smoke test (Docker Compose)

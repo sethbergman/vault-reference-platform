@@ -12,6 +12,11 @@
 #                         completion time so that its ABSENCE can be
 #                         alerted on. A freshness alert has nothing to
 #                         evaluate unless something reports success.
+#   --endpoint <url>      S3 endpoint override (AWS only). For pointing
+#                         at an emulator; a real run does not need it and
+#                         should not pass it. tests/restore-from-object-store
+#                         uses it to put a snapshot through the upload and
+#                         read it back.
 #
 # Designed to run from a systemd timer on every node. Only the active
 # node actually takes a snapshot; standbys exit 0 having done nothing, so
@@ -42,6 +47,7 @@
 set -euo pipefail
 
 CLOUD=""
+ENDPOINT=""
 BUCKET=""
 ACCOUNT=""
 CONTAINER=""
@@ -61,6 +67,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cloud)      CLOUD="$2"; shift 2 ;;
+        --endpoint)   ENDPOINT="$2"; shift 2 ;;
         --bucket)     BUCKET="$2"; shift 2 ;;
         --account)    ACCOUNT="$2"; shift 2 ;;
         --container)  CONTAINER="$2"; shift 2 ;;
@@ -256,7 +263,14 @@ case "$CLOUD" in
         # Credentials come from the instance role. Server-side encryption
         # and versioning are enforced on the bucket, not requested here,
         # so a caller cannot opt out of them.
-        aws s3 cp "$SNAPSHOT" "$DEST" --only-show-errors \
+        # Built as an array so an endpoint override cannot be honoured
+        # by one call and forgotten by another -- which would upload to a
+        # real bucket while a test believed it was talking to an
+        # emulator.
+        AWS_ARGS=()
+        [[ -n "$ENDPOINT" ]] && AWS_ARGS+=(--endpoint-url "$ENDPOINT")
+
+        aws "${AWS_ARGS[@]+"${AWS_ARGS[@]}"}" s3 cp "$SNAPSHOT" "$DEST" --only-show-errors \
             || die "Upload to ${DEST} failed"
         log "Uploaded ${DEST}"
         ;;

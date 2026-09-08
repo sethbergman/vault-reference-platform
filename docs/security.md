@@ -290,6 +290,55 @@ Not covered: doing this on a cloud profile, where the seal is KMS rather
 than Transit. The ceremony is the same and the recovery keys come from
 the same place, but no cloud profile has been applied.
 
+## Rotating the keys
+
+Two operations share a name and almost nothing else.
+
+```bash
+export VAULT_ADDR=https://127.0.0.1:8200
+./scripts/rotate-keys.sh --barrier
+./scripts/rotate-keys.sh --recovery-keys --keys-file docker/dev/.recovery-keys.json
+```
+
+**The barrier key** is what Vault encrypts storage with. Rotating it
+creates a new version and uses it for new writes; every previous version
+stays in the keyring, so existing data is still readable. It is online,
+needs no shares, and cannot lock anyone out.
+
+The reason it usually has never been run is that it sounds like the other
+one. `tests/key-rotation` writes a secret, rotates, and reads it back
+specifically to settle that.
+
+**The recovery shares** are the other one. When a rekey completes the old
+shares are dead, and if the new ones were not captured, nobody can
+generate a root token or unseal by recovery again — discovered in the
+emergency where you needed them.
+
+### Why the rekey is scripted rather than documented
+
+Vault has a verification phase for exactly this risk: the new shares are
+issued but do not take effect until a threshold of them is handed back.
+Fail it and the old shares still work.
+
+`vault operator rekey` cannot ask for it. The CLI has `-verify` for the
+second phase and no flag to require it at init — `require_verification`
+is an API field — so the safe form of the ceremony is not reachable from
+the command line. That asymmetry is most of the reason there is a script
+here instead of a runbook.
+
+Two more things the script exists to absorb, both found by running it:
+
+| What Vault does | Why it matters |
+|---|---|
+| Returns the new shares as `keys_base64` | `operator init` calls the same thing `recovery_keys_b64`. Read the wrong name and you get an empty array from a rekey that reported success |
+| Prints English, not JSON, on the final verify | Every share before the threshold returns a JSON progress object; the one that completes ignores `-format=json`. A loop watching `.complete` never sees it, submits again, and gets "no rekey configuration found" — an error that means the operation succeeded |
+
+The second is how a set of recovery keys gets destroyed: the rekey takes
+effect, the script reads failure, and the new shares are discarded. It
+happened here, on a disposable cluster, which is why the new shares are
+now written to `<keys-file>.new` **before** verification rather than held
+in memory until after it.
+
 ## Secret rotation
 
 AppRole `secret_id`s are treated as short-lived credentials, not

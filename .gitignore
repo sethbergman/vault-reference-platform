@@ -33,7 +33,11 @@ docker/dev/tls/
 # `operator init` returns these instead of unseal keys, and they are what
 # `generate-root` and `rekey` need. Dev-only and regenerated on every
 # bootstrap — but a key is a key, and none of them belong in git.
-docker/dev/.recovery-keys.json
+# Every variant, not just the exact name. rotate-keys.sh writes
+# .recovery-keys.json.new before verification and leaves
+# .recovery-keys.json.superseded after it, and both hold shares that
+# were live minutes ago.
+docker/dev/.recovery-keys.json*
 
 # Vault Agent credentials, written by scripts/bootstrap-agent.sh.
 # role_id is not a secret; secret_id is, and Agent deletes it after

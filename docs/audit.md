@@ -217,6 +217,39 @@ in the first place. Neither measure is sufficient alone — a policy can be
 detached, and a fetch that reports a marker is still a fetch somebody has
 to run.
 
+### The Azure side
+
+`terraform/azure/audit-anchors` is the counterpart, and the mapping is
+close enough to be worth stating exactly:
+
+| | AWS | Azure |
+|---|---|---|
+| Mechanism | S3 Object Lock, per object version | Immutability policy, per account |
+| The guarantee | `COMPLIANCE` | `Locked` |
+| The weaker one | `GOVERNANCE` — an admin can lift it | `Unlocked` — same |
+| Credential | IAM policy denying `s3:DeleteObject` | A role definition excluding the blob delete actions |
+
+Both default to the form nobody can lift, for the same reason: the threat
+model is somebody who reached privileged credentials, so a policy those
+credentials can remove protects nothing.
+
+Two differences are real rather than cosmetic. Azure's policy covers the
+whole storage account rather than an object version, which suits an
+account that holds anchors and nothing else and removes the per-object
+retention flag the S3 path has to set correctly. And locking is
+irreversible in a stronger sense: while a locked policy holds, the
+container and the storage account cannot be deleted either, so
+`terraform destroy` of that module fails and no teardown script fixes it.
+
+**Nothing ships anchors there yet.** `scripts/ship-anchors.sh` speaks the
+S3 API; the Azure path would be a blob upload with the same
+one-blob-per-sequence-number layout, and it has not been written. The
+module has also never been applied — there is no Azure emulator, so
+unlike the AWS module, which `tests/audit-anchor-worm` applies and then
+attacks, this has only been parsed and validated. It is configuration
+with reasoning attached, which is what every other Azure resource here
+is.
+
 ### Verifying against what was shipped
 
 ```bash
