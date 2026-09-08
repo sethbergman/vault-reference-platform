@@ -63,6 +63,16 @@ ENDPOINT="http://localhost:5000"
 WORK="$(mktemp -d)"
 MOTO_PID=""
 
+# Set once this run has started writing into the repository. Until then
+# the cleanup below must not touch those paths.
+#
+# The reason is the guard added above. The likeliest cause of an early
+# exit is now "another run already owns this workspace" -- and a cleanup
+# that removed its override files, or destroyed the stack its state file
+# describes, would answer one corruption with a worse one. A run cleans
+# up what it created, and an early exit created nothing.
+CLAIMED=false
+
 PASS=0
 FAIL=0
 
@@ -82,13 +92,15 @@ cleanup() {
     # dies with the process. What has to go is what was written into the
     # repository — an override file, a generated backend.hcl, and the
     # bootstrap module's own local state.
-    rm -f "${AWS_DIR}/zz_emulated_override.tf" \
-          "${AWS_BOOTSTRAP}/zz_emulated_override.tf" \
-          "${AWS_DIR}/backend.hcl"
-    rm -rf "${AWS_DIR}/.terraform" "${AWS_DIR}/terraform.tfstate" \
-           "${AWS_DIR}/terraform.tfstate.backup" \
-           "${AWS_BOOTSTRAP}/.terraform" "${AWS_BOOTSTRAP}/terraform.tfstate" \
-           "${AWS_BOOTSTRAP}/terraform.tfstate.backup"
+    if [[ "$CLAIMED" == true ]]; then
+        rm -f "${AWS_DIR}/zz_emulated_override.tf" \
+              "${AWS_BOOTSTRAP}/zz_emulated_override.tf" \
+              "${AWS_DIR}/backend.hcl"
+        rm -rf "${AWS_DIR}/.terraform" "${AWS_DIR}/terraform.tfstate" \
+               "${AWS_DIR}/terraform.tfstate.backup" \
+               "${AWS_BOOTSTRAP}/.terraform" "${AWS_BOOTSTRAP}/terraform.tfstate" \
+               "${AWS_BOOTSTRAP}/terraform.tfstate.backup"
+    fi
     rm -rf "$WORK"
     exit "$rc"
 }
@@ -183,6 +195,21 @@ done
 info ""
 info "=== Starting the emulated AWS API ==="
 # ---------------------------------------------------------------------------
+# Nothing may already be listening here. The readiness check below asks
+# whether the endpoint answers, and a moto left behind by an earlier run
+# answers exactly like one this run started -- while still holding the
+# buckets from that run. A suite that proceeds there measures state it
+# never created: objects it never shipped, versions it never wrote. The
+# cleanup trap then kills the PID of the server that failed to bind and
+# leaves the real one running, so the next run inherits the same state
+# and the fault outlives the run that caused it.
+if curl -s -o /dev/null "$ENDPOINT" 2>/dev/null; then
+    red "ERROR: something is already listening on ${ENDPOINT}."
+    red "       It holds state this suite did not create. Stop it first:"
+    red "         pkill -f 'moto[.]server'"
+    exit 1
+fi
+
 python3 -m moto.server -p 5000 >"${WORK}/moto.log" 2>&1 &
 MOTO_PID=$!
 
@@ -197,6 +224,18 @@ else
     bad "the emulator is answering on ${ENDPOINT}" "$(tail -5 "${WORK}/moto.log")"
     exit 1
 fi
+
+# An answer on the port is not proof the answer is ours: the server this
+# run started can have exited on a bind error while something else keeps
+# replying. Check the process, not the port.
+if ! kill -0 "$MOTO_PID" 2>/dev/null; then
+    red "ERROR: the emulator exited during startup"
+    tail -3 "${WORK}/moto.log" >&2
+    exit 1
+fi
+
+# From here on this run owns the workspace, so cleanup may remove it.
+CLAIMED=true
 
 cp "$OVERRIDE_SRC" "${AWS_DIR}/zz_emulated_override.tf"
 cp "$OVERRIDE_SRC" "${AWS_BOOTSTRAP}/zz_emulated_override.tf"
