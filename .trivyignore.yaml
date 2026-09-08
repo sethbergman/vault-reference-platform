@@ -44,6 +44,36 @@ misconfigurations:
       revisiting if the snapshot bucket ever holds more than this one
       cluster's backups.
 
+  - id: AVD-AWS-0132
+    paths:
+      - "terraform/aws/audit-anchors/main.tf"
+    statement: >-
+      SSE-S3 rather than a customer managed key on the audit anchor
+      bucket. Deliberate, and the one place in this repository where the
+      generic control would work against the thing being protected.
+
+      An anchor is a sequence number and a SHA-256 hash. It is not
+      secret — anyone holding the audit log can recompute it — so the
+      confidentiality a CMK buys is confidentiality of nothing. What the
+      bucket exists to provide is availability of evidence at the worst
+      moment: after a compromise, to someone proving what was read.
+
+      A CMK is a second thing that has to still exist and still be
+      grantable at that moment, and it is reachable by exactly the
+      attacker this bucket is defending against. COMPLIANCE object lock
+      means they cannot delete an anchor; scheduling the key for deletion
+      would leave every anchor present and undecryptable, which is the
+      same outcome by another route and one the lock cannot refuse.
+      Encrypting evidence under a key the attacker can destroy trades the
+      property this bucket is for against one it does not need.
+
+      This is the same shape as the argument in terraform/aws/bootstrap:
+      state encrypted under the cluster's own auto-unseal key cannot be
+      read without first reading the state. Here the regress is not
+      circular, only fatal in one direction.
+
+      Revisit if anchors ever carry anything but a sequence and a hash.
+
   - id: AVD-AZU-0012
     paths:
       - "terraform/azure/bootstrap/main.tf"
