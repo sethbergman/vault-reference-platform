@@ -59,12 +59,49 @@ Audit logs now survive the loss of the Vault node — the collector writes
 to a volume with its own lifecycle, and the integration suite destroys
 vault-0 outright to prove it.
 
-What remains is that the collector is still on the same host. Anything
-with Docker access can reach it, so a sufficiently privileged compromise
-still reaches the evidence. Moving it is a one-line change to
-`--second-address`; what is missing here is a demonstration of the far
-end, and of the append-only storage that makes the trail tamper-evident
-rather than merely present.
+The far end now exists. `scripts/ship-anchors.sh` writes each anchor to
+an S3 bucket under a COMPLIANCE object-lock retention that nothing can
+shorten or remove, and `terraform/aws/audit-anchors` builds that bucket
+as a root module of its own — for the reason `terraform/aws/bootstrap` is
+one, that a `terraform destroy` of the cluster must not be able to delete
+the record of what the cluster did. `tests/audit-anchor-worm` applies it
+against an emulated AWS API and then attacks the anchors it shipped.
+
+Building it turned up the thing worth reporting here, which is that
+"object lock" covers less than the name suggests:
+
+| Attack | S3 | What stops it |
+|---|---|---|
+| Delete the version | refused | the lock |
+| Overwrite the key | permitted — a new version | `--fetch` reads the version shipped first |
+| Delete with no version id | permitted — a delete marker | the IAM policy, and `--fetch` reading past it |
+
+A delete marker destroys nothing, so the lock permits it, and a marked
+key is absent from `list-objects-v2` and 404s on `head-object`. The
+credential that ships anchors can therefore hide every one of them
+without deleting a byte — and the first draft of the shipper, built on
+those two calls, would have reported *no anchors found*, which reads as
+"nothing was ever anchored" precisely when it means the opposite. Both
+paths list versions now, and the suite asserts that the emulator really
+does permit the marker, so the guard is exercised rather than sitting
+behind a refusal.
+
+Two halves remain, and they are different sizes.
+
+The collector still runs on the Vault host. Shipping moves the evidence
+out of reach, not the collection of it: a compromise there can stop the
+collector, and an entry never collected is never chained and never
+anchored. Nothing about the destination recovers those, so what is
+durable is the trail *up to* the compromise. Moving the collector is
+still the one-line `--second-address` change, and demonstrating it needs
+a second host.
+
+And nothing here has run against a real account. The emulator shows the
+requests are built and answered as the design assumes; it does not show
+that S3 enforces COMPLIANCE retention, that the IAM policy is the one AWS
+evaluates, or that a bucket in a *second account* — the arrangement that
+makes any of this a real separation rather than a careful one — is
+reachable by the credential that would need to reach it.
 
 ### Alert routing
 
@@ -192,15 +229,23 @@ The blockers are, in order:
      against AWS's cancellable 7-day KMS window. Worth knowing before
      the fourth attempt rather than after.
 3. **Off-host audit collection**, so a compromised host cannot reach the
-   evidence. The trail now outlives the node and an edit to it is now
-   detectable — entries are hash-chained as they arrive, and the
-   `audit-anchor` service holds the chain head on a volume the collector
-   cannot write to, which catches even a chain rewritten to be
-   self-consistent.
+   evidence. The trail now outlives the node, an edit to it is
+   detectable, and the anchors that make it detectable now leave the
+   machine: `scripts/ship-anchors.sh` writes each one to an object-lock
+   bucket built by `terraform/aws/audit-anchors`, where a COMPLIANCE
+   retention refuses every credential this repository uses.
+   `tests/audit-anchor-worm` ships real anchors into that bucket and
+   attacks them three ways, including the two the lock does not
+   refuse — an overwrite, and a delete marker that hides every anchor
+   without destroying one.
 
-   Both volumes still live on the same Docker daemon, so what exists is
-   tamper *evidence* rather than tamper proofing, and the trail does not
-   yet leave the machine. That is the remaining half.
+   What is left is not the same shape as what closed. The collector
+   itself still runs on the Vault host, so an attacker there can stop it,
+   and an entry never collected is never anchored — shipping makes the
+   trail durable up to a compromise, not past it. That half needs a
+   second host. And the locked bucket has only ever been built against an
+   emulated AWS API, so the separation that would matter most, a second
+   *account*, is configured and unproven.
 4. **Terraform state that survives a team.** Both profiles now declare a
    `backend`, and the ordering it depends on is a second root module per
    provider — `terraform/{aws,azure}/bootstrap` — which creates the

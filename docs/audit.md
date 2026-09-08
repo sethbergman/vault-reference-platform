@@ -157,10 +157,95 @@ same thing as a separate host. Anything with access to the Docker daemon
 can reach both volumes, so the local profile demonstrates the mechanism
 rather than providing the guarantee.
 
-A production anchor belongs somewhere the Vault host cannot write at all:
-object-lock storage with a retention policy, a different cloud account,
-or an external timestamping service. The anchor format is three fields of
-text precisely so that shipping it somewhere else is not a redesign.
+The anchor format is three fields of text precisely so that shipping it
+somewhere else is not a redesign. That is the next section.
+
+## Shipping the anchors somewhere that cannot delete them
+
+An anchor on the same host is a copy an attacker who reached the host can
+edit. `scripts/ship-anchors.sh` writes each one to an S3 bucket under a
+COMPLIANCE object-lock retention, which nothing can shorten or remove —
+not the operator who wrote it, not the account root, not whoever holds
+the credential the shipper runs with.
+
+```bash
+terraform -chdir=terraform/aws/audit-anchors apply
+./scripts/ship-anchors.sh --bucket <name> --cluster prod-1
+```
+
+`terraform/aws/audit-anchors` is a root module of its own, for the reason
+`terraform/aws/bootstrap` is: a `terraform destroy` of the cluster must
+not be able to delete the record of what that cluster did.
+
+Each anchor is a separate object, keyed by sequence number. That is not
+tidiness. Object lock protects an *object*, so a single file holding
+every anchor is rewritten by one PUT — the exact operation the lock has
+to prevent.
+
+Shipping into a bucket without object lock is refused rather than warned
+about. Object lock can only be enabled at bucket creation, so by the time
+anchors are landing in an ordinary bucket the fix is a new bucket and a
+re-ship, and everything written in between was never protected.
+`--allow-unlocked` exists for reading along without provisioning one, and
+it says what it gave up.
+
+### Three ways to erase an anchor, and what stops each
+
+| Attack | S3 | What stops it |
+|---|---|---|
+| Delete the version | refused by the lock | COMPLIANCE retention |
+| Overwrite the key | **permitted** — writes a new version | `--fetch` reads the version shipped first |
+| Delete without a version id | **permitted** — writes a delete marker | the IAM policy; `--fetch` reads past it and reports it |
+
+The second and third rows are the ones worth knowing before trusting any
+of this, because "object lock" sounds like it covers them and does not.
+
+A **delete marker** destroys nothing, which is exactly why the lock
+permits it — and a marked key is absent from `list-objects-v2` and 404s
+on `head-object`. The credential that ships anchors can therefore make
+every one of them invisible without deleting a byte, and a shipper built
+on the object APIs reports *no anchors found*: indistinguishable from
+"nothing was ever anchored", at the moment the distinction matters most.
+
+So `ship-anchors.sh` lists versions rather than objects, on both paths.
+`--fetch` recovers the anchors from underneath the markers and reports
+the markers as the attack they are; the conflict check reads versions too,
+because a marked key that looked unshipped would let a rewritten chain
+arrive as a fresh anchor with no conflict raised at all. The IAM policy
+the module emits denies `s3:DeleteObject` so the marker cannot be written
+in the first place. Neither measure is sufficient alone — a policy can be
+detached, and a fetch that reports a marker is still a fetch somebody has
+to run.
+
+### Verifying against what was shipped
+
+```bash
+./scripts/ship-anchors.sh --bucket <name> --cluster prod-1 \
+    --fetch /tmp/shipped-anchors
+./scripts/verify-audit-chain.sh --anchors /tmp/shipped-anchors
+```
+
+Fetching is separate from shipping because it is the half you run during
+an incident, on a machine that is not the compromised one, with a
+credential that only reads. Bundling them would mean verifying with the
+same key that writes.
+
+`--fetch` exits non-zero if any anchor has a delete marker over it, and
+writes the file anyway — the anchors are intact underneath, and you want
+both the evidence and the alarm. Reporting the attempt only on stderr
+would let a scheduled verification record a success on the one event
+these anchors exist to surface.
+
+Re-shipping a chain that has been rewritten does not overwrite what is
+already there. It reports a conflict, names the sequence, and exits
+non-zero — the finding this whole arrangement exists to produce.
+
+### What shipping does not fix
+
+The collector still runs beside Vault. This moves the evidence out of
+reach, not the collection of it: an attacker on the host can stop the
+collector, and an entry never collected is never anchored. What they
+cannot do is edit or quietly remove what already left.
 
 ## Rotation
 
@@ -217,6 +302,15 @@ two devices by default, `--no-second` warning about what it costs,
 success without enabling anything being treated as failure rather than
 reported as success.
 
+`tests/audit-anchor-worm/run-tests.sh` covers the far end: it applies
+`terraform/aws/audit-anchors` against an emulated AWS API, ships anchors
+the real collector and anchor service produced, and then attacks them —
+deleting the version, overwriting the key, writing a delete marker, and
+re-shipping a rewritten chain. It also checks the two cases where a
+green run would otherwise mean nothing: that the emulator really does
+permit the overwrite and the marker, so the guards against them are
+being exercised rather than sitting behind a refusal.
+
 `tests/integration/run-tests.sh` covers whether any of it works, against
 a real cluster:
 
@@ -251,12 +345,26 @@ volume. That is enough to outlive the Vault node — which is the property
 that matters and the one the tests prove — and it is *not* off-host:
 anything with access to the Docker daemon can still reach it.
 
-The hash chain and anchors narrow this without closing it. An edit to the
-trail is now detectable, and the anchors make it detectable even against
-someone who recomputes the chain — but both volumes live on the same
-Docker host, so a sufficiently privileged compromise reaches the anchors
-too. Tamper *evidence* is a weaker and more achievable property than
-tamper *proofing*, and only the first is claimed here.
+`ship-anchors.sh` closes the half of this that is about the evidence.
+Once an anchor is in a locked bucket, an attacker holding every
+credential this repository uses cannot edit or remove it, and
+`tests/audit-anchor-worm` demonstrates each of the three attacks above
+against a bucket Terraform built.
+
+It does not close the half about collection. The collector still runs on
+the Vault host, so a compromise there can stop it, and entries that never
+reach the collector are never chained and never anchored — no property of
+the destination recovers those. Shipping makes the trail *up to the
+compromise* durable and tamper-evident; it does not extend the trail past
+it.
+
+And the demonstration is against an emulated AWS API, not an account. It
+shows that the requests are built and answered as the design assumes. It
+does not show that S3 enforces COMPLIANCE retention for real, that the
+IAM policy is the one AWS evaluates, or that a bucket in a second account
+is reachable by the credential that would need to reach it — the second
+account being the arrangement that makes any of this a genuine
+separation. See `docs/roadmap.md`.
 
 A real deployment points the socket device at a collector somewhere else
 entirely. The device configuration does not change; only the address
@@ -270,14 +378,20 @@ What sits behind that address is the deployment's choice. Anything
 speaking a TCP stream works — Vector, Fluent Bit, rsyslog, a managed
 collector. The properties worth insisting on, in rough order:
 
-| Property | Why |
-|---|---|
-| Different host | A compromise of the Vault node cannot reach it |
-| Append-only or object-locked | Nor can a compromise of the collector rewrite history |
-| Different credentials | Vault's identity should not grant deletion of its own audit trail |
+| Property | Why | Here |
+|---|---|---|
+| Different host | A compromise of the Vault node cannot reach it | not demonstrated — needs a second host |
+| Append-only or object-locked | Nor can a compromise of the collector rewrite history | `terraform/aws/audit-anchors`, against an emulated API |
+| Different credentials | Vault's identity should not grant deletion of its own audit trail | the IAM policy that module emits, statically |
 
 The last two are the ones people skip. Shipping a log to a place the
 same attacker can edit is a change of address, not of risk.
+
+They are also the two that turn out to be reachable without a second
+machine, which is why the anchors were shipped before the collector was
+moved. Ordering them the other way round — a collector on a second host,
+writing to storage the same credential can empty — buys the property that
+is easiest to see and the weaker of the two.
 
 **Nothing enables audit devices by default.** The `vault_audit` role
 exists and is wired into `playbooks/site.yml`, but

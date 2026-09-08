@@ -211,6 +211,13 @@ cd ansible && ansible-playbook -i inventory/azure.yml playbooks/site.yml
 set without either a key or a password, so this profile cannot produce
 the unreachable cluster its AWS counterpart can.
 
+`terraform/aws/audit-anchors` is a third root module, applied the same
+way and equally once — but only if you want the audit anchors shipped off
+the box. It is deliberately not part of either sequence above: it belongs
+in a different account from the cluster if you can manage one, and
+read **AWS: the audit anchor bucket cannot be emptied at all** under
+Tearing down before applying it. See [audit.md](audit.md).
+
 The bootstrap step is once per account or subscription, not once per
 cluster — one bucket holds every cluster's state, separated by key. Skip
 it and `init` fails naming the bucket that is missing, which is the
@@ -680,6 +687,29 @@ still works.
 
 If you plan to apply the Azure profile repeatedly, know this before the
 first one, not after the fourth.
+
+### AWS: the audit anchor bucket cannot be emptied at all
+
+`terraform/aws/audit-anchors` is optional — nothing applies it unless you
+do — and it is the one piece here whose teardown cost is permanent rather
+than merely awkward.
+
+Every anchor is written under a COMPLIANCE object-lock retention, which
+**cannot be shortened, overridden or deleted by anyone, including the
+account root**, until it expires. The default is 365 days. So the bucket
+cannot be emptied, `force_destroy` would not help, and the teardown
+script does not try: there is no sequence of API calls that removes those
+objects.
+
+That is the property being bought, not a defect — an attacker holding
+every credential in this repository cannot erase an anchor either. But it
+means applying this module to an account is a decision with a one-year
+tail, so apply it with a retention you are willing to pay for. Anchors
+are three fields of text and the bill is small; "small" is why it is
+affordable, not a reason to skip choosing.
+
+`--retention-days` on `scripts/ship-anchors.sh` sets it per object at
+write time. Use a short one the first time you try this.
 
 ### The state bucket survives, and should
 

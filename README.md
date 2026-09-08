@@ -466,14 +466,19 @@ What stands between here and v1.0, in order:
    real bug. [`docs/cloud-apply.md`](docs/cloud-apply.md) lists what each
    apply would settle.
 3. **Off-host audit shipping.** The audit trail now outlives the node,
-   and an edit to it is now detectable: entries are hash-chained as they
-   arrive, and a separate `audit-anchor` service holds the chain head
-   where the collector cannot write, which catches even a chain rewritten
-   to be self-consistent over an edited log.
+   an edit to it is detectable, and the anchors that make it detectable
+   now leave the machine. `scripts/ship-anchors.sh` writes each one to an
+   object-lock bucket built by `terraform/aws/audit-anchors`, under a
+   COMPLIANCE retention no credential here can shorten or remove.
+   `tests/audit-anchor-worm` attacks them three ways — including the two
+   object lock does *not* refuse, an overwrite and a delete marker that
+   hides every anchor without destroying one.
 
-   Both volumes still sit on the same Docker daemon, so this is tamper
-   *evidence*, not tamper proofing, and the trail does not yet leave the
-   machine. Shipping it somewhere else is the remaining half.
+   The collector still runs on the Vault host, so an attacker there can
+   stop it and an entry never collected is never anchored: shipping makes
+   the trail durable up to a compromise, not past it. That half needs a
+   second host, and the locked bucket has only been built against an
+   emulated AWS API.
 4. **Terraform state that survives a team.** Both profiles now declare a
    `backend`, with the ordering it depends on in a second root module
    per provider that creates the bucket or storage account and emits the
