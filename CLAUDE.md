@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            27 suites; each is a self-contained run-tests.sh
+tests/            28 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -219,8 +219,10 @@ All of `scripts/*.sh` follow one shape. Match it when adding a script:
 
 Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 `bootstrap-{approle,jwt-github,oidc,audit,pki,agent,database-secrets}.sh`
-(one auth or secrets path each), `configure-autopilot.sh` (the Raft
-setting that makes a replaced node stop counting as a voter),
+(one auth or secrets path each), `bootstrap-quotas.sh` (rate limits, and
+the two ways of setting them that quietly do nothing),
+`configure-autopilot.sh` (the Raft setting that makes a replaced node
+stop counting as a voter),
 `rotate-secret-id.sh`, `rotate-keys.sh` (the barrier key, and
 re-issuing the recovery shares — two operations that share a name and
 almost nothing else), `snapshot.sh`,
@@ -345,10 +347,11 @@ Per-suite requirements:
 | key-rotation | docker compose, vault CLI, jq |
 | restore-from-object-store | docker compose, vault CLI, jq, aws, python3 with `moto[server]`, curl |
 | seal-migration | docker compose, vault CLI, jq, curl |
+| quotas | docker compose, vault CLI, jq, curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 37 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 38 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
