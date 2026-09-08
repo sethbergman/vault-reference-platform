@@ -140,6 +140,35 @@ resource "azurerm_storage_account" "anchors" {
     period_since_creation_in_days = var.anchor_retention_days
   }
 
+  # Allow by default, and Deny the moment anyone says what to allow —
+  # the same shape, and mostly the same argument, as
+  # ../bootstrap/main.tf.
+  #
+  # The twist here is which direction the traffic goes. Writes have a
+  # network to come from: whatever ships anchors runs beside the audit
+  # collector, inside the VNet, so a rule could name it. Reads do not.
+  # Fetching anchors is what you do during an incident, from a machine
+  # that is deliberately not the compromised one — a laptop, an on-call
+  # engineer somewhere else — and an account that denies by default with
+  # no ip_rules is an account nobody can read at exactly the moment it
+  # exists to be read. Evidence nobody can reach is not evidence.
+  #
+  # Azure also rejects 0.0.0.0/0 in ip_rules, so "deny by default and
+  # allow everything explicitly" is not available as an escape hatch.
+  #
+  # The control that is not optional either way is above:
+  # shared_access_key_enabled = false. Reaching the account is not the
+  # same as being able to read it, because there is no account key and
+  # access needs an Entra principal holding a role.
+  #
+  # Set allowed_ip_ranges once the set of places that fetch anchors is
+  # known and stable, and this becomes Deny.
+  network_rules {
+    default_action = length(var.allowed_ip_ranges) > 0 ? "Deny" : "Allow"
+    ip_rules       = var.allowed_ip_ranges
+    bypass         = ["AzureServices"]
+  }
+
   tags = var.tags
 }
 

@@ -97,6 +97,35 @@ misconfigurations:
       is known and stable, and this becomes Deny. See
       docs/terraform-state.md.
 
+  - id: AVD-AZU-0012
+    paths:
+      - "terraform/azure/audit-anchors/main.tf"
+    statement: >-
+      Network default_action on the audit anchor account. Allow until
+      allowed_ip_ranges is set, the same arrangement as the Terraform
+      state account and for a related but not identical reason.
+
+      For state, the argument is that whoever runs terraform has no fixed
+      address. Here it is narrower and stronger: the account exists to be
+      readable during an incident, by somebody working from a machine
+      that is deliberately not the compromised one. Writes have a network
+      to come from and could be pinned; reads are the whole point and
+      cannot be. An anchor bucket that denies by default with no ip_rules
+      is evidence nobody can reach, which is the failure it was created
+      to prevent, arriving by a different route.
+
+      Azure rejects 0.0.0.0/0 in ip_rules, so "deny by default and allow
+      everything explicitly" is not available as an escape hatch.
+
+      What is not optional either way, and is set: shared_access_key_enabled
+      = false, so reaching the account is not the same as reading it —
+      there is no account key and access needs an Entra principal holding
+      a role. The role this module defines cannot delete a blob, and the
+      immutability policy refuses deletion regardless.
+
+      Set allowed_ip_ranges where the set of places that fetch anchors is
+      known and stable, and this becomes Deny. See docs/audit.md.
+
   - id: AVD-DS-0026
     paths:
       - "docker/vault/Dockerfile"

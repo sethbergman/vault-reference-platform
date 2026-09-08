@@ -61,6 +61,16 @@ variable "anchor_immutability_state" {
   }
 }
 
+# CIDRs allowed to reach the anchor account. Empty leaves the network
+# default at Allow, which is what makes the account readable from
+# wherever an incident is being worked. Naming any range flips the
+# default to Deny.
+variable "allowed_ip_ranges" {
+  type        = list(string)
+  default     = []
+  description = "CIDRs allowed to reach the anchor account. Empty leaves the network default at Allow."
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
