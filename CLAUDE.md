@@ -55,7 +55,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            24 suites; each is a self-contained run-tests.sh
+tests/            26 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -217,7 +217,9 @@ Notable scripts: `bootstrap-dev-cluster.sh` (cluster up),
 `bootstrap-{approle,jwt-github,oidc,audit,pki,agent,database-secrets}.sh`
 (one auth or secrets path each), `configure-autopilot.sh` (the Raft
 setting that makes a replaced node stop counting as a voter),
-`rotate-secret-id.sh`, `snapshot.sh`,
+`rotate-secret-id.sh`, `rotate-keys.sh` (the barrier key, and
+re-issuing the recovery shares — two operations that share a name and
+almost nothing else), `snapshot.sh`,
 `dr-drill.sh`, `recover-quorum.sh` (quorum loss, which is not the same
 failure as data loss), `revoke-root-token.sh` / `generate-root-token.sh`
 (retire the root token, and mint one from recovery keys when a task needs
@@ -334,10 +336,12 @@ Per-suite requirements:
 | quorum-recovery | docker compose, vault CLI, jq, curl |
 | root-token | docker compose, vault CLI, jq |
 | recover-quorum-systemd | bash, jq |
+| key-rotation | docker compose, vault CLI, jq |
+| restore-from-object-store | docker compose, vault CLI, jq, aws, python3 with `moto[server]`, curl |
 
 ## CI
 
-`.github/workflows/ci.yml` runs 34 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 36 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -427,10 +431,14 @@ PLATFORMS="$PLATFORMS -platform=windows_amd64"
 terraform -chdir=terraform/aws   providers lock $PLATFORMS
 terraform -chdir=terraform/azure providers lock $PLATFORMS
 
-# The state bootstrap modules are root modules too, with lock files of
-# their own that nothing else regenerates.
-terraform -chdir=terraform/aws/bootstrap   providers lock $PLATFORMS
-terraform -chdir=terraform/azure/bootstrap providers lock $PLATFORMS
+# Every root module has a lock file of its own that nothing else
+# regenerates. There are now six: the two profiles, the two state
+# bootstraps, and the two audit-anchor modules. CI validates all of them
+# by discovery rather than by a list.
+terraform -chdir=terraform/aws/bootstrap      providers lock $PLATFORMS
+terraform -chdir=terraform/azure/bootstrap    providers lock $PLATFORMS
+terraform -chdir=terraform/aws/audit-anchors   providers lock $PLATFORMS
+terraform -chdir=terraform/azure/audit-anchors providers lock $PLATFORMS
 ```
 
 Not `windows_arm64`. Neither `hashicorp/aws` nor `hashicorp/random`

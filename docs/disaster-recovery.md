@@ -164,6 +164,41 @@ In practice that means:
 - Key rotation is fine — AWS KMS and Azure Key Vault keep old key
   versions, so older snapshots stay readable. Key *deletion* is not.
 
+## Reading the backup back out
+
+`snapshot.sh` inspects a snapshot before uploading it, so a truncated or
+empty file is refused rather than shipped. `dr-drill.sh` proves a
+snapshot restores. Between them sat the step nobody had run: on the cloud
+profiles the snapshot goes to S3 and **nothing ever reads one back**.
+
+A successful upload proves an object exists at a key. It does not prove
+the object is a snapshot, that it survived the round trip, or that
+restoring it produces the cluster you had. Only the last is a backup, and
+the distinction is the whole failure this repository was built around.
+
+`tests/restore-from-object-store` closes it against an emulated S3 API:
+
+```bash
+./tests/restore-from-object-store/run-tests.sh
+```
+
+It writes a secret, snapshots a real cluster, uploads through
+`snapshot.sh --cloud aws --endpoint <emulator>`, downloads the object,
+inspects it, restores it, and then checks two things rather than one —
+that the secret written **before** the snapshot is back, and that the one
+written **after** it is gone. The second is what distinguishes a restore
+from a no-op, because a restore that silently did nothing leaves a
+healthy cluster that still has both.
+
+It also corrupts a byte of the downloaded copy and requires `snapshot
+inspect` to refuse it. A guard that accepts damaged input would have
+accepted the good input for no reason.
+
+What this does not settle is anything about a real account: that the
+instance role can reach the bucket, that server-side encryption leaves
+the object restorable, or that a multipart upload of a much larger
+snapshot behaves the same. See [cloud-apply.md](cloud-apply.md).
+
 ## Testing
 
 `scripts/dr-drill.sh` runs the whole cycle against the local Docker

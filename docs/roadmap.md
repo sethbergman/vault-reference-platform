@@ -25,6 +25,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.13 | Alert routing by severity; MySQL as a second database engine |
 | v0.14 | Five cloud defects found and fixed without an apply: static pre-flight, and a real apply against an emulated AWS API |
 | v0.15 | Remote, locked Terraform state; the autopilot default that walks an instance refresh out of quorum; quorum recovery and the root token, both closed without a cloud account |
+| v0.16 | Audit anchors shipped to storage that refuses to delete them, on both clouds; key rotation and recovery rekey; a snapshot read back out of object storage and restored |
 
 ## The honest gap
 
@@ -85,6 +86,15 @@ those two calls, would have reported *no anchors found*, which reads as
 paths list versions now, and the suite asserts that the emulator really
 does permit the marker, so the guard is exercised rather than sitting
 behind a refusal.
+
+`terraform/azure/audit-anchors` is the counterpart, added in v0.16 so
+the anchor story is not AWS-only: an immutability policy in `Locked`
+state is Azure's `COMPLIANCE`, and the role definition excludes the blob
+delete actions the way the IAM policy denies `s3:DeleteObject`. Nothing
+ships anchors there yet — `ship-anchors.sh` speaks the S3 API — and there
+is no Azure emulator, so it has been validated and never applied. It is
+configuration with reasoning attached, like every other Azure resource
+here.
 
 Two halves remain, and they are different sizes.
 
@@ -346,20 +356,28 @@ not a property the architecture has to have on the day it is stood up.
   standard Vault metrics and would port directly; what is missing is
   somewhere to port them to, and a decision about whether this
   repository ships a Prometheus or documents integrating with one.
-- **Seal migration and key rotation.** No coverage of `vault operator
-  rotate` for the barrier key, of a Shamir rekey, or of migrating an
-  existing cluster between seal types with `-migrate`. Rotating a KMS
-  key or changing seals can leave a cluster that will not unseal, which
-  is the failure this whole architecture is arranged to avoid, and it is
-  the one seam where the PKI migration path — scripted, sequenced and
-  tested end to end — has no counterpart.
-- **Restore verification at the cloud destination.** `dr-drill.sh`
-  proves a snapshot restores, against a local cluster. Snapshots in the
-  cloud profiles are uploaded to S3 or blob storage, and nothing reads
-  one back from there and restores it. That is the cloud half of the
-  failure this repository was built around: the timer was green and the
-  backups were not there. Proving the upload succeeded is not proving
-  the object is a restorable snapshot.
+- **Seal migration.** Key rotation came off this list in v0.16:
+  `scripts/rotate-keys.sh` rotates the barrier key and re-issues the
+  recovery shares, and `tests/key-rotation` runs both against a real
+  cluster — checking that data written under the previous barrier key is
+  still readable, and that the superseded recovery shares can no longer
+  mint a root token.
+  What remains is migrating a cluster **between seal types** with
+  `-migrate`, which is the operation most likely to produce a cluster
+  that will not unseal, and a Shamir rekey: the local profile uses a
+  Transit seal, so its shares are recovery keys and the unseal-key path
+  has no coverage.
+- **Restore verification at a real cloud destination.** The mechanism
+  came off this list in v0.16. `tests/restore-from-object-store` puts a
+  real snapshot of a real cluster through an S3 API, reads the object
+  back, inspects it, restores it, and then checks both halves — that
+  what was written before the snapshot returns, and that what was
+  written after it is gone, which is what separates a restore from a
+  no-op.
+  The API is an emulator, so what is still unproven is everything about
+  an account: that the instance role reaches the bucket, that
+  server-side encryption leaves the object restorable, and that a
+  multipart upload of a much larger snapshot behaves the same.
 - **Rate limit quotas**, login MFA, an application-facing transit
   engine, further database engines, and a cloud-provisioned database
   for the secrets engine to point at. Feature breadth rather than
