@@ -405,10 +405,25 @@ not a property the architecture has to have on the day it is stood up.
   an account: that the instance role reaches the bucket, that
   server-side encryption leaves the object restorable, and that a
   multipart upload of a much larger snapshot behaves the same.
-- **Rate limit quotas**, login MFA, an application-facing transit
-  engine, further database engines, and a cloud-provisioned database
-  for the secrets engine to point at. Feature breadth rather than
-  operational risk, which is why they are last.
+- **Login MFA**, an application-facing transit engine, further database
+  engines, and a cloud-provisioned database for the secrets engine to
+  point at. Feature breadth rather than operational risk, which is why
+  they are last.
+
+Rate limit quotas came off that list. `scripts/bootstrap-quotas.sh`
+configures them and `tests/quotas` exercises the result against a real
+cluster, which turned out to matter more than the feature: two of the
+three ways to configure a quota look like they worked and did not, and
+one of them locks you out of undoing it.
+
+`sys/quotas/config` replaces rather than merges, so writing any single
+field silently empties the seven exempt paths Vault ships — `sys/health`
+among them. `rate_limit_exempt_paths` is a list, and the CLI's `k=v` form
+turns `"a,b"` into one element containing a comma, which matches nothing
+and writes successfully. And `sys/quotas/*` is not exempt by default, so
+a quota set too low answers 429 to the DELETE that would remove it; the
+way out is to send nothing for a full interval and spend the first
+request of the new window on the delete. See `docs/rate-limiting.md`.
 
 Two items came off this list without spending anything, which is worth
 noting because the list was written as though a cloud account were the
