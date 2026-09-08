@@ -27,6 +27,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.15 | Remote, locked Terraform state; the autopilot default that walks an instance refresh out of quorum; quorum recovery and the root token, both closed without a cloud account |
 | v0.16 | Audit anchors shipped to storage that refuses to delete them, on both clouds; key rotation and recovery rekey; a snapshot read back out of object storage and restored |
 | v0.17 | Seal migration in both directions, and the unseal-key rekey — plus the key the local root of trust had been discarding, which made restarting one container unrecoverable |
+| v0.18 | Rate limit quotas, and the three ways of setting one that write successfully and protect nothing — including the quota that refuses its own deletion |
 
 ## The honest gap
 
