@@ -554,5 +554,40 @@ refused. The assertion failed, correctly, because it greps the specific
 refusal rather than checking the exit code. Had it only checked that the
 script exited non-zero, it would have gone green while testing nothing.
 
+A fifth is not about an assertion at all, which is why it survived four
+releases.
+
+The Roadmap section of the README opened "Everything through v0.14 has
+shipped". v0.18 had. Four PRs each added a row to the Shipped table at
+the top of this file and left that sentence alone — and it is the first
+claim a reader meets, in the one section whose entire purpose is to say
+what is done and what is not.
+
+Nothing caught it because nothing was looking. `tests/docs-index` checks
+that every file in `docs/` is linked from the generated index and skips
+`README.md` by name; markdownlint has opinions about the line and none
+about the fact on it. The question above still finds it, but only when
+asked of the claim rather than of the test: what would have to break for
+that sentence to fail? Nothing could. There was no weak assertion here —
+there was no assertion.
+
+So this is the argument for generating `docs/README.md`, arriving a
+second time somewhere too small to generate. One sentence does not earn a
+generator, so it is asserted instead.
+[`tests/lint/check_version_claim.py`](../tests/lint/check_version_claim.py)
+requires the README to name the newest row of the table above, and
+requires that row to be no older than the newest git tag. The tag half is
+one-directional on purpose: a release lands its roadmap row in a PR and
+is tagged after that merges, so gating the README on tags would fail the
+PR for being correct, while a table *behind* the tags is a release nobody
+wrote down. Six mutations were watched to fail, including the one the
+README half cannot see — deleting the v0.18 row while v0.18 is tagged.
+
+The four earlier entries share a shape: a test existed and was weaker
+than it looked. This one is different in a way worth separating, because
+the fix is different. The table above was right the whole time; what
+drifted was a hand-written summary of it. A weak assertion gets widened.
+An unchecked claim gets tied to whatever is already correct.
+
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.

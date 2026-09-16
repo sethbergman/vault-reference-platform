@@ -327,7 +327,7 @@ Per-suite requirements:
 | audit-chain | bash, sha256sum |
 | docs-index | bash, awk, diff |
 | cloud-preflight | bash |
-| lint | bash, python3 |
+| lint | bash, python3; a checkout carrying its tags |
 | preflight-static | bash, python3; shellcheck if present |
 | pki | bash, jq, openssl |
 | pki-migration | bash, jq, python3, openssl |
@@ -386,6 +386,14 @@ CI enforces several invariants worth knowing before you push:
   -rf "$D"; }` returns 1 when the test is false, and bash applies that
   to the script's exit status from an `EXIT` trap — a successful run
   reports failure, and an explicit `exit 0` does not save it.
+- **The README's version claim must match the roadmap's Shipped table**
+  (`tests/lint/check_version_claim.py`), and that table must be no older
+  than the newest git tag. The table is the authority rather than the
+  tags because a release lands its roadmap row in a PR and is tagged
+  after it merges — gating on tags would fail that PR for being correct.
+  The tag half is one-directional for the same reason: ahead is fine,
+  behind is a release nobody wrote down. This is why the lint job checks
+  out with `fetch-depth: 0`.
 - **Trivy findings at HIGH or above fail the build.** Accepted findings
   go in `.trivyignore.yaml` *with the reason* — an unjustified
   suppression is indistinguishable from never having run the scanner.
