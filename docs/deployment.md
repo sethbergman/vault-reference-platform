@@ -212,6 +212,26 @@ healthy cluster is no evidence the inventory works.
 Nodes sit in private subnets with no public address, so reaching them
 needs SSM, a bastion, or a VPN.
 
+**What a host is called matters as much as which hosts are found.** An
+Ansible inventory is keyed by host name, so two hosts with one name are
+one host. `aws_ec2`'s `hostnames` is a list of preferences and it stops
+at the first that resolves — and an autoscaling group tags every instance
+it launches identically, because a launch template has no per-instance
+interpolation. So preferring `tag:Name`, which this file did, named all
+three nodes `<cluster>-vault`: they collapsed into whichever instance the
+paginator returned last, and `site.yml` configured one node out of three
+and exited 0.
+
+It names them by instance id now, which is unique and is also what
+`user-data.sh.tftpl` gives Raft as `node_id` — so a host here and a voter
+in `vault operator raft list-peers` carry the same name. Azure needed no
+change: `azure_rm` defaults to the VM name, which is per instance and is
+what its cloud-init uses for `node_id` too.
+
+`tests/preflight-static` asserts both halves, because this is a string
+one layer produces and another consumes with nothing validating it in
+between — the seam that suite exists for.
+
 ### Certificates
 
 The role expects to find certificates on the control machine and copies

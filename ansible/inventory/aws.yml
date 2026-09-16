@@ -46,9 +46,29 @@ groups:
 # Nodes sit in private subnets with no public address, so connections go
 # to the private IP. Reaching them needs SSM, a bastion, or a VPN — see
 # docs/deployment.md.
+#
+# The instance id, and deliberately not tag:Name.
+#
+# An autoscaling group tags every instance it launches identically —
+# there is no per-instance interpolation in a launch template — so
+# compute.tf gives all three nodes Name=<cluster>-vault. This list is an
+# order of *preference*: aws_ec2 takes the first entry that resolves and
+# stops, so tag:Name here named all three the same thing, and an Ansible
+# inventory is keyed by host name. add_host() returns the existing host,
+# set_variable() overwrites its vars, and three nodes collapsed into one
+# — the last instance the paginator returned. site.yml then configured a
+# single node and exited 0, which is the shape of failure this repository
+# exists to refuse: snapshots, audit devices and PKI certificates landing
+# on one machine out of three, reported as success.
+#
+# instance-id rather than private-ip-address because it is the identity
+# the node already has: user-data.sh.tftpl derives Raft's node_id from
+# the same value, so a host in this inventory and a voter in `vault
+# operator raft list-peers` carry one name between them. Azure needs no
+# equivalent line — azure_rm defaults to the VM name, which is per
+# instance and is also what its cloud-init uses for node_id.
 hostnames:
-  - tag:Name
-  - private-ip-address
+  - instance-id
 
 compose:
   ansible_host: private_ip_address
