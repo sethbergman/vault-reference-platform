@@ -26,7 +26,8 @@ anything, and KMS returns plausible answers without performing
 cryptography. Every item in the [verification
 checklist](#the-verification-checklist) is a question about behaviour at
 runtime, which is exactly what an emulator does not have. Azure has no
-equivalent run at all.
+equivalent run at all, for the reasons
+[below](#why-azure-has-no-emulated-apply).
 
 The first person to apply one of these profiles is spending money to find
 out what is wrong. This is about making that session produce the maximum
@@ -62,6 +63,61 @@ there.
 Every Azure command below is written from `terraform/azure` and its
 outputs. **None has been run against a live subscription** — that is the
 blocker, and it applies to this document as much as to the profile.
+
+---
+
+## Why Azure has no emulated apply
+
+Not because no Azure emulator exists. One does, and it was tried on
+2026-09-16 before being turned down, so that the next person to find it
+does not have to repeat the exercise to learn why this repository does
+not use it.
+
+**What was checked.** LocalStack for Azure ships as a public image,
+`localstack/localstack-azure`, described as a preview and tagged only
+`latest` and `dev`. Started without a `LOCALSTACK_AUTH_TOKEN`, it exits
+within seconds with status 55 and `License activation failed!`, before
+its health endpoint ever answers. LocalStack's pricing page listed no
+plan that included Azure at all, the free licence for open-source
+projects among them, and offered a waitlist instead. The other
+candidate, azemu, was at v0.3 and covered resource groups, virtual
+networks, storage and Key Vault.
+
+**Why a token would not have changed the answer.** Three reasons, and
+the last is the one that would survive LocalStack making it free:
+
+- **The licence is checked at start, against LocalStack's service.**
+  Every version here is pinned so that a red `main` points at a change
+  in this repository. A job that cannot start without reaching a vendor
+  turns their outage into our failure, and with no version tags the image
+  can only be pinned by digest — which pins the code, not the licence.
+- **A job that needs a secret cannot run on a pull request from a
+  fork.** It would have to skip there, and a skipped job fails nothing.
+  That is the quiet failure this repository exists to refuse.
+- **It does not implement what makes Azure different.** Its service list
+  has no virtual machine scale sets, no load balancer, no network
+  security groups and no Network Watcher. Those carry peer discovery, the
+  health probe and instance reconciliation — the three mechanisms with no
+  AWS counterpart, and the reason the Azure apply is a blocker of its own.
+  An emulated apply of `terraform/azure` would have to exclude exactly
+  the resources most likely to be wrong, and could not claim what
+  `tests/cloud-apply-emulated` claims: that the profile applies in one
+  pass.
+
+**What would reopen it.** An Azure emulator that starts without a
+licence check, or one whose service list gains scale sets and load
+balancers. The place to start would be `terraform/azure/bootstrap`,
+not the profile: a resource group, a storage account, a container and a
+role assignment, all four of which LocalStack listed. Two things are
+unverified even there. The module pins `azurerm ~> 3.0`, and LocalStack
+documents its `metadata_host` setup without saying which major version it
+was tested against. And a storage account that refuses shared keys has
+to authenticate through an emulated Entra ID, which nothing here has
+tried.
+
+Until then, the Azure side of this document is what it has always been:
+the pre-flight, the checklist and the teardown, with nothing applied
+beforehand.
 
 ---
 

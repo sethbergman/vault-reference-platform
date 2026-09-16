@@ -38,7 +38,9 @@
 # bucket are the ones granted, or that a real concurrent apply from two
 # machines races the way one process planting a lock file does.
 #
-# And Azure gets no emulator at all: moto is an AWS API. The Azure
+# And Azure gets no emulator at all: moto is an AWS API, and the Azure
+# emulator that does exist needs a licence (docs/cloud-apply.md, "Why
+# Azure has no emulated apply"). The Azure
 # assertions below are static reads of the configuration, and they are
 # labelled as such. terraform/azure/bootstrap has never been applied to
 # anything. See docs/terraform-state.md and docs/roadmap.md.
