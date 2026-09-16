@@ -124,4 +124,12 @@ compose:
   # It is still trust-on-first-use. Verifying properly means reading the
   # key out of `aws ec2 get-console-output` before the first connection;
   # see docs/deployment.md.
-  ansible_ssh_common_args: "'-o StrictHostKeyChecking=accept-new -o ProxyCommand=\"aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p\"'"
+  #
+  # Folded across lines for ansible-lint's 160-column limit. Jinja
+  # concatenates adjacent string literals the way Python does, and `>-`
+  # folds each newline to a space *between* them — so every space that
+  # has to survive is inside the quotes.
+  ansible_ssh_common_args: >-
+    '-o StrictHostKeyChecking=accept-new '
+    '-o ProxyCommand="aws ssm start-session --target %h '
+    '--document-name AWS-StartSSHSession --parameters portNumber=%p"'
