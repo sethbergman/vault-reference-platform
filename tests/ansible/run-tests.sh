@@ -50,6 +50,14 @@ assert_not_contains() {
     if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "expected NOT to find: $3"; fi
 }
 
+# assert_eq <label> <actual> <expected>
+# For values worth pinning whole. An empty actual is the common failure
+# here -- an undefined Jinja name composes to nothing -- and it reports as
+# a mismatch rather than as a substring that happened not to be there.
+assert_eq() {
+    if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected '$3', got '${2:-<empty>}'"; fi
+}
+
 # generate <label> <cloud> <fixture> <output> [extra args...]
 # Runs the handoff script expecting success. Reports a failure rather
 # than letting set -e abort the whole suite, so a break here still prints
@@ -328,6 +336,72 @@ for cloud in aws azure; do
     fi
     assert_contains "${cloud} inventory filters on VaultCluster" "$(cat "$inv")" "VaultCluster"
 done
+
+# The AWS inventory's compose block is what makes a node reachable, and
+# every value in it is a Jinja expression rather than a string. A literal
+# written bare -- ansible_user: ec2-user -- is an undefined variable,
+# which composes to nothing instead of erroring: the setting silently
+# does not exist and Ansible connects as the local user. Valid YAML
+# either way, so the check above cannot see it.
+#
+# Render them the way aws_ec2 would and assert the values.
+COMPOSE="$(python3 "${SCRIPT_DIR}/eval-compose.py" \
+    "${REPO_ROOT}/ansible/inventory/aws.yml" 2>&1)" || COMPOSE="EVAL FAILED: ${COMPOSE}"
+
+compose_value() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' <<< "$COMPOSE"; }
+
+if [[ "$COMPOSE" != EVAL* ]]; then
+    ok "aws inventory: every compose expression evaluates"
+else
+    bad "aws inventory: every compose expression evaluates" "$COMPOSE"
+fi
+
+# SSM names an instance, and ProxyCommand's %h is whatever ansible_host
+# holds. The private IP is not routable from where the playbook runs, so
+# using it here would look correct and connect to nothing.
+assert_eq "aws inventory: ansible_host is the SSM target, not the private IP" \
+    "$(compose_value ansible_host)" "i-0123456789abcdef0"
+
+# AL2023's default user. Empty here is the undefined-variable failure.
+assert_eq "aws inventory: ansible_user is AL2023's default user" \
+    "$(compose_value ansible_user)" "ec2-user"
+
+SSH_ARGS="$(compose_value ansible_ssh_common_args)"
+
+assert_contains "aws inventory: SSH is tunnelled through Session Manager" \
+    "$SSH_ARGS" 'ProxyCommand="aws ssm start-session'
+
+assert_contains "aws inventory: the tunnel targets the host Ansible connects to" \
+    "$SSH_ARGS" '--target %h'
+
+# AWS-StartSSHSession is the document that carries SSH. Plain
+# start-session opens an interactive shell instead, which ProxyCommand
+# cannot speak to and which fails as a hang rather than an error.
+assert_contains "aws inventory: it asks for the SSH document, not a shell" \
+    "$SSH_ARGS" '--document-name AWS-StartSSHSession'
+
+# accept-new refuses a changed key for a host already known; `no` accepts
+# it, and UserKnownHostsFile=/dev/null makes either meaningless. The
+# positive assertion is paired so a reworded value cannot pass both.
+assert_contains "aws inventory: host keys are checked on first use" \
+    "$SSH_ARGS" "StrictHostKeyChecking=accept-new"
+
+if [[ "$SSH_ARGS" != *"StrictHostKeyChecking=no"* \
+   && "$SSH_ARGS" != *"UserKnownHostsFile"* ]]; then
+    ok "aws inventory: and nothing throws that check away again"
+else
+    bad "aws inventory: and nothing throws that check away again" \
+        "a changed host key would be accepted: ${SSH_ARGS}"
+fi
+
+# Azure's nodes are equally private, but its inventory has no compose
+# connection settings -- so if one profile grows a tunnel the other must
+# say why it has not. This assertion is here to be noticed.
+if grep -q "ProxyCommand" "${REPO_ROOT}/ansible/inventory/azure.yml"; then
+    ok "azure inventory: also tunnels (update this assertion)"
+else
+    ok "azure inventory: does not tunnel, and its apply is still unproven"
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
