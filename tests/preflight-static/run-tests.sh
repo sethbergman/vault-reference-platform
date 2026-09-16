@@ -368,6 +368,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== The inventory can tell the nodes apart ===\n'
+# ---------------------------------------------------------------------------
+# An Ansible inventory is keyed by host name, so two hosts with one name
+# are one host. aws_ec2's `hostnames` is a list of *preferences*: it takes
+# the first entry that resolves and stops.
+#
+# This profile is an autoscaling group, and a launch template has no
+# per-instance interpolation — every instance it launches carries the same
+# tags. So any `tag:` entry names every node identically, add_host()
+# returns the host that already exists, and three instances collapse into
+# the last one the paginator returned. site.yml then configures one node
+# and exits 0, with snapshots, audit devices and PKI certificates on one
+# machine out of three.
+#
+# Nothing else here can see it. terraform validate reads one file, the
+# mocks read the configuration's shape, and tests/ansible checks this file
+# parses as YAML. It is the Terraform/Ansible seam this suite is for.
+INV="${REPO_ROOT}/ansible/inventory/aws.yml"
+HOSTNAMES="$(python3 -c '
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+for entry in doc.get("hostnames") or []:
+    print(entry if isinstance(entry, str) else entry.get("name", ""))
+' "$INV" 2>/dev/null)"
+
+if [[ -n "$HOSTNAMES" ]]; then
+    ok "aws: the inventory declares how it names a host"
+else
+    bad "aws: the inventory declares how it names a host" \
+        "no hostnames list — aws_ec2 then defaults to dns-name, which a private instance does not have"
+fi
+
+# Pin the values rather than forbidding the one spelling that bit us.
+# tag:Name is not the only constant an ASG propagates; VaultCluster is
+# another, and it is in this very file. The question is whether a value
+# distinguishes instances at all, so allow only the ones that do.
+UNIQUE_PER_INSTANCE=" instance-id private-ip-address private-dns-name network-interface.addresses.private-ip-address "
+NOT_UNIQUE=""
+while IFS= read -r pref; do
+    [[ -z "$pref" ]] && continue
+    [[ "$UNIQUE_PER_INSTANCE" == *" ${pref} "* ]] && continue
+    NOT_UNIQUE="${NOT_UNIQUE}${pref} "
+done <<< "$HOSTNAMES"
+
+if [[ -z "$NOT_UNIQUE" ]]; then
+    ok "aws: every hostname preference is unique per instance"
+else
+    bad "aws: every hostname preference is unique per instance" \
+        "'${NOT_UNIQUE% }' is the same on every instance the ASG launches; the nodes merge into one host"
+fi
+
+# And the name it picks should be the name the cluster already uses, so an
+# inventory host and a Raft voter can be matched up by eye. Both sides of
+# the seam, each read from the file that owns it.
+FIRST_PREF="$(head -1 <<< "$HOSTNAMES")"
+NODE_ID_SRC="$(grep -oE 'INSTANCE_ID="\$\(imds [a-z-]+\)"' "$AWS_TPL" \
+    | grep -oE 'imds [a-z-]+' | cut -d' ' -f2)"
+
+if [[ -n "$NODE_ID_SRC" ]] && grep -qE 'node_id *= *"\$+\{INSTANCE_ID\}"' "$AWS_TPL"; then
+    ok "aws: user-data derives Raft's node_id from ${NODE_ID_SRC}"
+else
+    bad "aws: user-data derives Raft's node_id from the instance id" \
+        "the pattern stopped matching in $(basename "$AWS_TPL") — this assertion is no longer reading anything"
+fi
+
+if [[ "$FIRST_PREF" == "$NODE_ID_SRC" ]]; then
+    ok "and the inventory names hosts by the same value (${FIRST_PREF})"
+else
+    bad "and the inventory names hosts by the same value" \
+        "inventory prefers '${FIRST_PREF:-<none>}', node_id is '${NODE_ID_SRC:-<none>}'"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"
