@@ -589,5 +589,63 @@ the fix is different. The table above was right the whole time; what
 drifted was a hand-written summary of it. A weak assertion gets widened.
 An unchecked claim gets tied to whatever is already correct.
 
+A sixth came from none of the above. Nothing was asserted weakly and
+nothing had drifted; three defects were found by writing down the
+sequence someone would actually run, in order, and asking of each step
+what it needed that nothing provided.
+
+The occasion was staging the first real AWS apply — the preparation for
+blocker 1, which is meant to be so complete that the session spends its
+money on questions only a real account can answer. All the preparation
+described above already existed: `preflight-cloud.sh`, `teardown-cloud.sh`
+and a ten-item verification checklist in
+[cloud-apply.md](cloud-apply.md). None of it caught these, because all of
+it is about what to check once a cluster is up. None of it asks whether
+the path to getting there is continuous.
+
+| What | Why nothing saw it |
+|---|---|
+| An autoscaling group tags every instance identically, and `inventory/aws.yml` preferred `tag:Name`. An Ansible inventory is keyed by host name, so three nodes collapsed into one and `site.yml` configured a single node and exited 0 | Terraform sets the tags and is tested; the inventory filters on them and was tested as valid YAML. Neither asks whether the inventory can tell two instances apart |
+| Nothing could reach the nodes at all. Private subnets, no inbound 22, and the documented sequence ends in `ansible-playbook`. `docs/deployment.md` said reaching them "needs SSM, a bastion, or a VPN" and the repository shipped none of the three. `ansible_user` was never set either | Both sides were tested. `security.tf` was tested for what it refuses, the playbook for what it renders, and nothing tested that one could reach the other |
+| The vault role verified a delivered certificate with `openssl -checkhost` against an IP address, which reports "does NOT match" for every certificate this repository issues — `issue-node-cert.sh` and the `vault_pki` role both put the address in `--ip-sans`. A correct certificate failed; only a wrong one passed | It had never executed. The local profile is Docker Compose and does not use this role, and neither cloud profile has been applied |
+
+The first is the one worth dwelling on, because
+[`tests/preflight-static`](../tests/preflight-static/run-tests.sh) exists
+for precisely this seam and did not catch it. That suite was written
+around two strings produced by one layer and consumed strictly by
+another — an `auto_join` selector and a `leader_tls_servername` — and it
+checks those two. Host naming is the same shape and nobody had thought of
+it. A suite aimed at a class of defect still only covers the instances
+someone wrote down.
+
+It was also invisible to `tests/cloud-apply-emulated`, which applies the
+whole AWS profile against a real implementation of the AWS API. The
+emulator has no Ansible in it. That is the distinction that section
+already draws, arriving as a concrete example: a profile that applies is
+not a cluster that configures.
+
+All three now have assertions, and the second and third needed code
+before they could have any — `ansible/inventory/aws.yml` tunnels SSH
+through Session Manager, and `scripts/generate-cloud-certs.sh` issues the
+bootstrap material after the apply, because the filenames follow
+instance ids that do not exist until then.
+
+Two things this does not mean. It does not mean the profile works: three
+known defects became zero known defects, which is a statement about what
+has been looked at and not about what is there. And it does not mean the
+apply is cheaper than the blocker list claims — every item on that list
+is still a question about runtime behaviour, and none of these three was.
+What it means is that the session will now fail on those questions rather
+than on a missing SSH key, which is the entire purpose of the
+preparation.
+
+The cost asymmetry is the part worth keeping. Finding these took an
+afternoon and no money. Two of the three would have surfaced during the
+apply disguised as something else: a cluster that came up healthy and was
+one-third configured, and a Raft join failure that reads like a network
+problem. The question that found them is a variant of the one above,
+asked of a procedure instead of an assertion: **what does this step need
+that nothing here provides?**
+
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.
