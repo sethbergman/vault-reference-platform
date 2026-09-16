@@ -194,6 +194,11 @@ terraform -chdir=terraform/aws init -backend-config=backend.hcl
 terraform -chdir=terraform/aws apply \
     -var 'az_count=2' -var 'ssh_key_name=your-key'
 ./scripts/terraform-to-ansible.sh --cloud aws   # outputs -> group_vars
+
+# Issued now, not before: the filenames follow inventory_hostname, which
+# is an instance id. See deployment.md#certificates.
+./scripts/generate-cloud-certs.sh --cluster-name vault-reference
+
 cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
 ```
 

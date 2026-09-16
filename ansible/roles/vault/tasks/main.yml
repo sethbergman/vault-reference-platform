@@ -60,17 +60,30 @@
 # Catches the case where a certificate is delivered for the wrong host —
 # the node starts, serves TLS, and its peers reject it during the Raft
 # join with an error that points at the network rather than the cert.
+#
+# -checkip, not -checkhost.
+#
+# The address is an IP, and -checkhost does hostname matching: against a
+# certificate carrying IP:10.0.2.15 it reports "does NOT match", because
+# it is looking for a DNS SAN spelled like an address. So this demanded a
+# certificate nothing here issues — scripts/issue-node-cert.sh and the
+# vault_pki role both put the address in --ip-sans, which is what
+# -checkip reads. A correctly issued certificate failed it and the only
+# way to pass was to issue a wrong one.
+#
+# It had never run: the local profile is Docker Compose and does not use
+# this role, and neither cloud profile has been applied.
 - name: Verify the certificate matches this host
   ansible.builtin.command:
     cmd: >-
-      openssl x509 -in {{ vault_tls_dir }}/vault.crt -noout -checkhost
+      openssl x509 -in {{ vault_tls_dir }}/vault.crt -noout -checkip
       {{ ansible_default_ipv4.address }}
   register: vault_cert_check
   changed_when: false
-  # Matched on the output, not the return code. `openssl x509 -checkhost`
-  # exits 1 on a mismatch in OpenSSL 3.5 but exits 0 in the 3.0 that
-  # Ubuntu ships, so `rc != 0` accepted any certificate at all on exactly
-  # the distribution these nodes run — this check never fired.
+  # Matched on the output, not the return code. `openssl x509` exits 1 on
+  # a mismatch in OpenSSL 3.5 but exits 0 in the 3.0 that Ubuntu ships, so
+  # `rc != 0` accepted any certificate at all on exactly the distribution
+  # these nodes run — this check never fired.
   failed_when: "'does match' not in vault_cert_check.stdout or 'NOT match' in vault_cert_check.stdout"
 
 # ---------------------------------------------------------------------------
