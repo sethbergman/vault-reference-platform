@@ -209,8 +209,64 @@ set by resource group and name and never looks at tags. An empty
 inventory there says nothing about whether the cluster formed, and a
 healthy cluster is no evidence the inventory works.
 
-Nodes sit in private subnets with no public address, so reaching them
-needs SSM, a bastion, or a VPN.
+### Reaching the nodes
+
+Nodes sit in private subnets with no public address, and `security.tf`
+opens port 22 from nowhere. There is nothing outside the VPC to SSH *to*.
+
+On AWS the inventory resolves that by tunnelling SSH through SSM Session
+Manager, which changes neither fact: the agent on the instance holds an
+outbound connection to the SSM service, and the `AWS-StartSSHSession`
+document carries an ordinary SSH session back down it. No inbound rule,
+no public address, no bastion to patch and pay for, and the session is
+recorded against the caller's IAM identity rather than against whoever
+holds a key.
+
+It is configured in `ansible/inventory/aws.yml` and needs nothing from
+the playbook. Three things it does need, none of which Terraform can
+supply:
+
+| Requirement | Where it comes from |
+|---|---|
+| `session-manager-plugin` on the control machine | Installed separately; the AWS CLI execs it. `scripts/preflight-cloud.sh` warns when it is missing |
+| `ssm:StartSession` on *your* identity | Your own IAM. The instance side is already covered — `iam.tf` attaches `AmazonSSMManagedInstanceCore` |
+| `ssh_key_name` set on the profile | EC2 puts the public key in `ec2-user`'s `authorized_keys` at boot |
+
+**The third is the one that surprises people.** Session Manager replaces
+the network path, not the authentication: what answers at the far end of
+the tunnel is still `sshd`, still reading `authorized_keys`. An empty
+`ssh_key_name` leaves `aws ssm start-session` — a shell, enough to
+inspect a node — and no way to run the playbooks at all.
+
+The tunnel also decides what a host is *called*. `--target` names an
+instance to SSM and `ProxyCommand`'s `%h` is whatever `ansible_host`
+holds, so `ansible_host` is the instance id. The private IP is not
+routable from where the playbook runs; using it would only look correct.
+
+Host keys are `accept-new`, which accepts an unseen key and refuses a
+changed one. That reads as weak until you notice what a host is here: the
+id is per instance, so a replaced node is a new name with a new key and
+is correctly unknown, while a changed key under an id already seen is the
+case worth refusing. `StrictHostKeyChecking=no` would accept that too.
+It is still trust-on-first-use — verifying properly means reading the key
+out of `aws ec2 get-console-output` before the first connection, which
+this repository does not automate.
+
+Running from *inside* the VPC — a bastion, a VPN, a CI runner in a
+private subnet — wants none of it: set `ansible_host` back to
+`private_ip_address` and drop `ansible_ssh_common_args`.
+
+**Azure has no equivalent here.** Its nodes are equally private and its
+inventory sets no connection arguments, so reaching them is still the
+reader's problem. That is not an oversight being deferred quietly: the
+Azure profile has never been applied, and adding an untested tunnel to an
+untested profile would make the gap harder to see rather than smaller.
+
+None of this has run against a real account either. It is configuration
+with reasoning attached, and `tests/ansible` asserts the values it
+produces — that the expressions evaluate at all, that the target is the
+instance id, that the document is `AWS-StartSSHSession` and not a plain
+shell. What no test here can show is that the tunnel opens.
 
 **What a host is called matters as much as which hosts are found.** An
 Ansible inventory is keyed by host name, so two hosts with one name are

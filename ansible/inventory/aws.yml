@@ -70,5 +70,58 @@ groups:
 hostnames:
   - instance-id
 
+# Reaching a node: SSH tunnelled through SSM Session Manager.
+#
+# Nodes have no public address and security.tf opens no port 22 from
+# anywhere, so there is nothing to SSH *to* from outside the VPC. Session
+# Manager solves that without changing either fact: the agent on the
+# instance holds an outbound connection to the SSM service, and
+# AWS-StartSSHSession carries an ordinary SSH session back down it. No
+# inbound rule, no public IP, no bastion to patch, and the session is
+# recorded against the caller's IAM identity rather than against whoever
+# holds a key.
+#
+# `ansible_host` is therefore the instance id and not the private IP:
+# `--target` names an instance to SSM, and ProxyCommand's %h is whatever
+# Ansible puts in ansible_host. The private IP is no longer routable from
+# where the playbook runs, so it would only look correct.
+#
+# THREE THINGS THIS STILL NEEDS, none of which Terraform can supply:
+#
+#   - session-manager-plugin on the control machine. The AWS CLI shells
+#     out to it and fails with a message about the plugin, not about
+#     permissions, which is a confusing way to learn this at apply time.
+#     scripts/preflight-cloud.sh checks for it.
+#   - ssm:StartSession on YOUR identity, for the AWS-StartSSHSession
+#     document. The instance side is already covered — iam.tf attaches
+#     AmazonSSMManagedInstanceCore to the node role.
+#   - ssh_key_name set on the profile, so EC2 puts your public key in
+#     ec2-user's authorized_keys at boot. SSM carries the session; it does
+#     not authenticate you to sshd. An empty ssh_key_name still produces a
+#     cluster nobody can log into.
+#
+# Running from *inside* the VPC — a bastion, a VPN, a CI runner in a
+# private subnet — wants neither of these: set ansible_host back to
+# private_ip_address and drop ansible_ssh_common_args.
 compose:
-  ansible_host: private_ip_address
+  ansible_host: instance_id
+
+  # AL2023's default user (compute.tf pins the AMI filter to al2023-*).
+  # Quoted twice deliberately: compose values are Jinja expressions, so a
+  # bare ec2-user would be read as an undefined variable.
+  ansible_user: "'ec2-user'"
+
+  # accept-new, not no.
+  #
+  # It accepts a host key it has not seen and refuses one that changed.
+  # That reads as weak until you notice what a host is here: the id is
+  # per instance, so a replaced node is a new name with a new key and is
+  # correctly unknown, while a *changed* key under an id we have already
+  # seen is the case worth refusing. StrictHostKeyChecking=no would
+  # accept that too, and pairing accept-new with UserKnownHostsFile
+  # /dev/null would throw the refusal away just as thoroughly.
+  #
+  # It is still trust-on-first-use. Verifying properly means reading the
+  # key out of `aws ec2 get-console-output` before the first connection;
+  # see docs/deployment.md.
+  ansible_ssh_common_args: "'-o StrictHostKeyChecking=accept-new -o ProxyCommand=\"aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p\"'"

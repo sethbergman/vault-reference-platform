@@ -120,6 +120,23 @@ else
     bad "${CLI} CLI is not on PATH" "needed to check identity and quota, and by teardown-cloud.sh"
 fi
 
+# The nodes have no public address and no inbound port 22, so Ansible
+# reaches them by tunnelling SSH through SSM Session Manager -- see
+# ansible/inventory/aws.yml. The AWS CLI does not implement that itself;
+# it shells out to session-manager-plugin, and without it every
+# connection fails naming the plugin rather than the thing you were
+# doing, which is a slow way to learn this with the meter running.
+#
+# A warning rather than a failure: running the playbook from inside the
+# VPC is a legitimate arrangement and needs none of this.
+if [[ "$CLOUD" == "aws" ]]; then
+    if command -v session-manager-plugin >/dev/null 2>&1; then
+        ok "session-manager-plugin"
+    else
+        warn "session-manager-plugin is not on PATH"             "ansible-playbook cannot reach the nodes without it, unless you are running from inside the VPC"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== Credentials ==="

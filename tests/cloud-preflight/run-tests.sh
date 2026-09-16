@@ -186,6 +186,73 @@ else
     bad "warnings alone exit 0" "exit ${RC}; warnings are things to have read, not blockers"
 fi
 
+printf '\n=== Pre-flight: the tunnel Ansible needs ===\n'
+
+# The nodes have no public address and no inbound 22, so the playbook
+# reaches them by tunnelling SSH through SSM. The AWS CLI does not
+# implement that itself -- it execs session-manager-plugin -- and without
+# it every connection fails naming the plugin rather than the thing you
+# were doing.
+#
+# Both directions are exercised, and neither depends on what happens to
+# be installed on the machine running the tests: the present case puts a
+# stub on PATH, and the absent case strips out any real one first.
+SM_SHIM="${WORK}/sm-present"
+mkdir -p "$SM_SHIM"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${SM_SHIM}/session-manager-plugin"
+chmod +x "${SM_SHIM}/session-manager-plugin"
+
+# PATH with every directory holding a real session-manager-plugin removed.
+PATH_NO_SM="$PATH"
+while real_sm="$(PATH="$PATH_NO_SM" command -v session-manager-plugin 2>/dev/null)"; do
+    [[ -n "$real_sm" ]] || break
+    sm_dir="$(dirname "$real_sm")"
+    PATH_NO_SM="$(tr ':' '\n' <<< "$PATH_NO_SM" | grep -vxF "$sm_dir" | paste -sd: -)"
+done
+
+reset_scenario
+RC=0
+OUT="$(PATH="${FAKE_BIN}:${SM_SHIM}:${PATH_NO_SM}" "$PREFLIGHT" --cloud aws 2>&1)" || RC=$?
+if grep -qE '  ok +session-manager-plugin' <<< "$OUT"; then
+    ok "session-manager-plugin on PATH is reported present"
+else
+    bad "session-manager-plugin on PATH is reported present" "not found in the tooling section"
+fi
+
+reset_scenario
+RC=0
+OUT="$(PATH="${FAKE_BIN}:${PATH_NO_SM}" "$PREFLIGHT" --cloud aws 2>&1)" || RC=$?
+if grep -q "session-manager-plugin is not on PATH" <<< "$OUT"; then
+    ok "and its absence is called out"
+else
+    bad "and its absence is called out" "the apply succeeds and the playbook cannot connect"
+fi
+
+if grep -q "cannot reach the nodes" <<< "$OUT"; then
+    ok "and it says what stops working"
+else
+    bad "and it says what stops working" "a warning without a consequence gets skipped"
+fi
+
+# A warning, not a failure: running the playbook from inside the VPC is a
+# legitimate arrangement that needs no tunnel at all.
+if [[ "$RC" == "0" ]]; then
+    ok "a missing plugin is a warning, not a failure"
+else
+    bad "a missing plugin is a warning, not a failure" "exit ${RC}"
+fi
+
+# Azure reaches its nodes differently and has no such dependency, so the
+# check must not fire there.
+reset_scenario
+RC=0
+OUT="$(PATH="${FAKE_BIN}:${PATH_NO_SM}" "$PREFLIGHT" --cloud azure 2>&1)" || RC=$?
+if ! grep -q "session-manager-plugin" <<< "$OUT"; then
+    ok "Azure is not asked for an AWS-only plugin"
+else
+    bad "Azure is not asked for an AWS-only plugin" "the check is not gated on --cloud"
+fi
+
 printf '\n=== Pre-flight: the inputs that fail late ===\n'
 
 reset_scenario

@@ -66,9 +66,24 @@ variable "instance_type" {
   default     = "t3.small"
 }
 
+# SSM carries the session; it does not authenticate you to sshd.
+#
+# This said that leaving it empty "disables SSH entirely and uses SSM
+# Session Manager instead", which read as a supported arrangement and was
+# not one. Session Manager replaces the *network path* -- no public
+# address, no inbound 22 -- and ansible/inventory/aws.yml tunnels SSH
+# through it on that basis. What reaches the node at the far end is still
+# sshd, still checking authorized_keys, which EC2 populates from this key
+# pair at boot. Empty means no key, so nothing authenticates, and the
+# apply succeeds into a cluster nobody can log into.
+#
+# Kept optional rather than made required: `aws ssm start-session` with no
+# document gives a shell without SSH at all, which is enough to inspect a
+# node and is the one case where empty is deliberate. It is not enough for
+# Ansible. scripts/preflight-cloud.sh warns when it is empty.
 variable "ssh_key_name" {
   type        = string
-  description = "Optional EC2 key pair for SSH. Leave empty to disable SSH entirely and use SSM Session Manager instead, which leaves an auditable trail and needs no open port 22."
+  description = "EC2 key pair whose public key EC2 puts in ec2-user's authorized_keys. Required for the Ansible layer, which tunnels SSH over SSM. Empty leaves only `aws ssm start-session` shell access, and no way to run the playbooks."
   default     = ""
 }
 

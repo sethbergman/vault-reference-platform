@@ -82,13 +82,21 @@ otherwise:
 
 | Check | Why it is worth catching early |
 |---|---|
-| `ssh_key_name` is empty | **The apply succeeds** and produces instances nobody can log into. Every item in the checklist below needs a shell on a node. |
+| `ssh_key_name` is empty | **The apply succeeds** and produces instances nobody can log into. Every item in the checklist below needs a shell on a node, and the Ansible layer needs SSH specifically — the tunnel carries it, it does not replace it. |
+| `session-manager-plugin` is missing | The AWS CLI execs it to open a Session Manager tunnel, which is how the playbook reaches a node with no public address. Every connection fails naming the plugin rather than the thing you were doing. |
 | The key pair does not exist in this region | The apply fails at instance launch — after the VPC and NAT gateways are already billing. |
 | Elastic IP quota | One EIP per NAT gateway, one NAT gateway per AZ, default limit 5. Three zones plus anything already in the account can exceed it. |
 | Azure role assignment permission | The profile creates a role assignment, which needs Owner or User Access Administrator. Contributor applies most of the profile and *then* fails. |
 
 The `ssh_key_name` one is not hypothetical: `terraform/aws/variables.tf`
 ships it empty, so the default AWS apply produces an unreachable cluster.
+
+Reaching the nodes at all is worth reading before the session rather than
+during it — the nodes are in private subnets with no inbound 22, and the
+AWS inventory tunnels SSH through Session Manager to get to them. See
+[deployment.md](deployment.md#reaching-the-nodes) for what that needs.
+Azure's inventory does not tunnel, so reaching those nodes is still
+unsolved.
 
 ---
 

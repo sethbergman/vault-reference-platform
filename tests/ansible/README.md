@@ -85,3 +85,29 @@ the Ansible and cloud-init paths, renaming a Terraform output, and
 removing `tls_client_ca_file`. Each turned exactly one assertion red.
 Restore the file afterwards; a mutation left in the working tree is
 indistinguishable from a real regression.
+
+### The inventory's compose block
+
+`eval-compose.py` renders `ansible/inventory/aws.yml`'s `compose` values
+the way `aws_ec2` would, against a synthetic instance. They are Jinja
+expressions rather than strings, and the failure that motivated it is
+invisible to every other check here: a literal written bare —
+`ansible_user: ec2-user` — is an undefined variable, which composes to
+nothing rather than erroring. Ansible then drops the setting and connects
+as the local user, and the file is valid YAML either way.
+
+Four mutations, each watched to fail:
+
+| Mutation | What goes red |
+|---|---|
+| `ansible_user: ec2-user`, unquoted | every compose assertion — the render raises, which is the point |
+| `ansible_host: private_ip_address` | the SSM target assertion alone |
+| drop `--document-name AWS-StartSSHSession` | the SSH-document assertion alone |
+| `StrictHostKeyChecking=no` | both host-key assertions, positive and exclusion |
+
+The first is worth its own note. The exclusion assertion — that nothing
+throws the host-key check away — stayed green under it, because a render
+that raised left no string to search. It is paired with a positive
+assertion on the same value, which went red, and that pairing is the only
+reason the mutation was caught. An exclusion with nothing to exclude
+passes.
