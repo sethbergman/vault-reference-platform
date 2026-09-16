@@ -306,6 +306,44 @@ point elsewhere. The role verifies each certificate actually matches the
 host it lands on, because the alternative failure surfaces later as a
 Raft join error that reads like a network problem.
 
+**On a cloud profile there is nothing to pre-generate.** The filenames
+follow `inventory_hostname`, which is an instance id, and instance ids do
+not exist until after the apply. So the certificates are issued between
+the apply and the playbook, from the same inventory the playbook will
+use:
+
+```bash
+./scripts/generate-cloud-certs.sh --cluster-name vault-reference
+```
+
+Each leaf carries four things, and each is load-bearing:
+
+| SAN | Who checks it |
+|---|---|
+| `IP:<private ip>` | the vault role, verifying the certificate it just delivered |
+| `DNS:<instance id>` | the common name the PKI role later renews it under |
+| `DNS:<cluster>.vault.internal` | every follower, verifying whichever node is leader |
+| `DNS:localhost`, `IP:127.0.0.1` | the node curling its own API |
+
+That is the same set `scripts/issue-node-cert.sh` and the `vault_pki`
+role issue on renewal, deliberately: let them diverge and a node that has
+renewed stops satisfying a check a node that has not still passes.
+
+**The load balancer's name is not in that list.** `terraform output
+vault_addr` is the LB's DNS name and a client dialling it verifies
+against that name, but AWS generates it and it cannot be known before the
+apply. Pass `--extra-san` for it, or point a CNAME you control at the
+cluster and pass that. Without one, clients get a name mismatch against a
+certificate that is otherwise correct — which reads as a broken cluster
+and is not one.
+
+This is a bootstrap CA, and it stays load-bearing until every node has
+been re-issued from Vault's own PKI: Vault cannot issue the certificates
+its own cluster needs in order to start.
+[`migrate-to-vault-pki.sh`](../scripts/migrate-to-vault-pki.sh) sequences
+that handover. Keep `ca.key` — a replacement node needs a certificate,
+and an autoscaling group produces replacements without asking.
+
 ### Promote the health check once Vault is serving
 
 The autoscaling group ships with `health_check_type = "EC2"`, and that is

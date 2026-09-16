@@ -554,6 +554,159 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== Bootstrap certificates for a cloud cluster ===\n'
+# ---------------------------------------------------------------------------
+# scripts/generate-cloud-certs.sh issues the TLS material the vault role
+# copies to each node. It exists because on a cloud profile the inventory
+# is dynamic and a host is named by its instance id, so the filenames are
+# not knowable until after the apply.
+#
+# The assertions below are mostly about the SANs, because every way this
+# goes wrong ends as a node serving TLS to nobody's satisfaction: a
+# missing cluster servername forms no cluster while every node reports
+# healthy, and a missing IP SAN fails the role's own delivery check.
+GEN="${REPO_ROOT}/scripts/generate-cloud-certs.sh"
+CERTS="${WORK}/cloud-certs"
+INV_JSON="${WORK}/inventory.json"
+
+cat > "$INV_JSON" <<'JSON'
+{
+  "_meta": {"hostvars": {
+      "i-0aaa": {"private_ip_address": "10.0.1.10"},
+      "i-0bbb": {"private_ip_address": "10.0.2.11"},
+      "i-0nope": {}}},
+  "vault_nodes": {"hosts": ["i-0aaa", "i-0bbb", "i-0nope"]}
+}
+JSON
+
+GEN_RC=0
+GEN_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$INV_JSON" \
+    --out "$CERTS" --extra-san vault.example.com 2>&1)" || GEN_RC=$?
+
+if [[ "$GEN_RC" == "0" ]]; then
+    ok "it issues a CA and leaves from an inventory"
+else
+    bad "it issues a CA and leaves from an inventory" "exit ${GEN_RC}: ${GEN_OUT}"
+fi
+
+# Named by inventory hostname, because that is what the role looks for:
+# vault_tls_cert_src is files/tls/{{ inventory_hostname }}.crt.
+if [[ -f "${CERTS}/i-0aaa.crt" && -f "${CERTS}/i-0aaa.key" \
+   && -f "${CERTS}/i-0bbb.crt" && -f "${CERTS}/ca.crt" ]]; then
+    ok "leaves are named by inventory hostname, beside a CA"
+else
+    bad "leaves are named by inventory hostname, beside a CA" \
+        "got: $(find "$CERTS" -maxdepth 1 -type f -printf '%f ' 2>/dev/null)"
+fi
+
+# A host with no address would get a certificate the role then rejects,
+# on the node, after the key had been written.
+if [[ ! -f "${CERTS}/i-0nope.crt" ]]; then
+    ok "a host with no private address is skipped, not half-issued"
+else
+    bad "a host with no private address is skipped, not half-issued" \
+        "issued a certificate with no IP SAN to verify against"
+fi
+
+if openssl verify -CAfile "${CERTS}/ca.crt" "${CERTS}/i-0aaa.crt" >/dev/null 2>&1; then
+    ok "each leaf verifies against the CA beside it"
+else
+    bad "each leaf verifies against the CA beside it"
+fi
+
+# Read the flag out of the role rather than hardcoding it here. This is
+# the seam the whole section is for: the role demanded -checkhost against
+# an IP, which no certificate anyone issues can satisfy, and a test that
+# picked its own flag would have agreed with the generator and missed it.
+ROLE_TASKS="${REPO_ROOT}/ansible/roles/vault/tasks/main.yml"
+CHECK_FLAG="$(grep -oE '\-check(host|ip)' "$ROLE_TASKS" | head -1)"
+
+if [[ -n "$CHECK_FLAG" ]]; then
+    ok "the vault role states how it verifies a delivered certificate (${CHECK_FLAG})"
+else
+    bad "the vault role states how it verifies a delivered certificate" \
+        "no -checkhost or -checkip in $(basename "$ROLE_TASKS") — this assertion reads nothing"
+fi
+
+DELIVERED="$(openssl x509 -in "${CERTS}/i-0aaa.crt" -noout "$CHECK_FLAG" 10.0.1.10 2>&1 || true)"
+if [[ "$DELIVERED" == *"does match"* && "$DELIVERED" != *"NOT match"* ]]; then
+    ok "and a correctly issued certificate passes that check"
+else
+    bad "and a correctly issued certificate passes that check" \
+        "${CHECK_FLAG} 10.0.1.10 said: ${DELIVERED}"
+fi
+
+# The check is only worth having if it discriminates. Same flag, the
+# other node's address.
+WRONG="$(openssl x509 -in "${CERTS}/i-0aaa.crt" -noout "$CHECK_FLAG" 10.0.2.11 2>&1 || true)"
+if [[ "$WRONG" == *"NOT match"* ]]; then
+    ok "while another node's address fails it"
+else
+    bad "while another node's address fails it" \
+        "${CHECK_FLAG} 10.0.2.11 said: ${WRONG}"
+fi
+
+# leader_tls_servername is the ONE name a follower verifies a leader
+# against, whichever node that is. Without it on every leaf, no join
+# succeeds and every node reports healthy on its own.
+SERVERNAME="$(openssl x509 -in "${CERTS}/i-0bbb.crt" -noout \
+    -checkhost vault-reference.vault.internal 2>&1 || true)"
+if [[ "$SERVERNAME" == *"does match"* && "$SERVERNAME" != *"NOT match"* ]]; then
+    ok "every leaf carries the cluster servername a follower verifies"
+else
+    bad "every leaf carries the cluster servername a follower verifies" "$SERVERNAME"
+fi
+
+SANS="$(openssl x509 -in "${CERTS}/i-0aaa.crt" -noout -ext subjectAltName 2>&1)"
+
+if [[ "$SANS" == *"vault.example.com"* ]]; then
+    ok "--extra-san reaches the certificate, for the load balancer's name"
+else
+    bad "--extra-san reaches the certificate" "$SANS"
+fi
+
+# serverAuth alone leaves Raft peers unable to authenticate to each other.
+if openssl x509 -in "${CERTS}/i-0aaa.crt" -noout -text 2>/dev/null \
+    | grep -q "TLS Web Client Authentication"; then
+    ok "leaves are usable as a client too, which Raft peers must be"
+else
+    bad "leaves are usable as a client too, which Raft peers must be"
+fi
+
+if [[ "$(stat -c '%a' "${CERTS}/i-0aaa.key" 2>/dev/null)" == "600" ]]; then
+    ok "private keys are not world-readable"
+else
+    bad "private keys are not world-readable" \
+        "mode $(stat -c '%a' "${CERTS}/i-0aaa.key" 2>/dev/null)"
+fi
+
+# Re-running issues a new CA. Delivering it to some nodes and not others
+# leaves a cluster that cannot form, so the second run has to be asked.
+RERUN_RC=0
+RERUN_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$INV_JSON" \
+    --out "$CERTS" 2>&1)" || RERUN_RC=$?
+if [[ "$RERUN_RC" != "0" && "$RERUN_OUT" == *"--force"* ]]; then
+    ok "it refuses to replace existing material without --force"
+else
+    bad "it refuses to replace existing material without --force" \
+        "exit ${RERUN_RC}: ${RERUN_OUT}"
+fi
+
+# An inventory with no usable hosts is the shape of "the cluster has not
+# finished booting". Issuing a CA and no leaves would look like success.
+EMPTY_JSON="${WORK}/empty-inventory.json"
+printf '{"_meta": {"hostvars": {}}, "vault_nodes": {"hosts": []}}\n' > "$EMPTY_JSON"
+EMPTY_RC=0
+EMPTY_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$EMPTY_JSON" \
+    --out "${WORK}/empty-certs" 2>&1)" || EMPTY_RC=$?
+if [[ "$EMPTY_RC" != "0" && "$EMPTY_OUT" == *"private_ip_address"* ]]; then
+    ok "an empty inventory is an error, not a CA with no leaves"
+else
+    bad "an empty inventory is an error, not a CA with no leaves" \
+        "exit ${EMPTY_RC}: ${EMPTY_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\nskipped: %d\n' "$PASS" "$FAIL" "$SKIP"
