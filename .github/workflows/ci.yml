@@ -153,15 +153,21 @@ jobs:
         shell: bash
 
   lint-invariants:
-    name: Shell invariants
+    name: Repo invariants
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 for the tags, not the history. The version-claim
+      # check compares the roadmap's Shipped table against the newest
+      # release tag, and the default shallow checkout carries no tags --
+      # which would leave that half reporting a skip CI never reads.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      # Properties shellcheck has no opinion about, each added because the
-      # pattern it rejects shipped here and was found by reading rather
-      # than by any test.
-      - name: Check shell invariants
+      # Properties no other tool has an opinion about, each added because
+      # the pattern it rejects shipped here and was found by reading
+      # rather than by any test.
+      - name: Check repo invariants
         run: ./tests/lint/run-tests.sh
 
   preflight-static:

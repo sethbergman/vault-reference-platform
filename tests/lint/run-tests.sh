@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-tests.sh — Invariants about shell scripts that shellcheck does not
-#                enforce
+# run-tests.sh — Repo-wide invariants no other tool has an opinion about
 #
 # Usage:
 #   ./tests/lint/run-tests.sh
@@ -13,7 +12,11 @@
 # cheap, they are repo-wide, and they fail the build with an explanation
 # rather than leaving the next person to rediscover the same thing.
 #
-# Requirements: bash, python3
+# The first was about shell, which is what this suite was named for.
+# Prose drifts the same way and the second check is about that, so the
+# scope is the invariant rather than the language it is written in.
+#
+# Requirements: bash, python3, and a checkout carrying its tags
 
 set -uo pipefail
 
@@ -53,6 +56,26 @@ if OUT="$(python3 "${SCRIPT_DIR}/check_trap_exit.py" 2>&1)"; then
     ok "no trap handler returns the result of a bare test"
 else
     bad "no trap handler returns the result of a bare test" "$OUT"
+fi
+
+# ---------------------------------------------------------------------------
+printf '
+=== The README names the release the roadmap actually ships ===
+'
+# ---------------------------------------------------------------------------
+# README.md carries one sentence naming the newest shipped release, and
+# nothing checked it: at v0.18 it still said v0.14. Four PRs had updated
+# the roadmap table directly beside it and left the sentence alone, which
+# is the failure docs/README.md is generated to avoid — a hand-maintained
+# claim that stops being true silently. One sentence is not worth
+# generating, so it is asserted instead.
+#
+# The checker also requires the roadmap table to be no older than the
+# newest git tag, which is why this suite now wants a checkout with tags.
+if OUT="$(python3 "${SCRIPT_DIR}/check_version_claim.py" 2>&1)"; then
+    ok "README, roadmap and tags agree on the newest release"
+else
+    bad "README, roadmap and tags agree on the newest release" "$OUT"
 fi
 
 printf '\n'
