@@ -453,6 +453,48 @@ PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks
 assert_contains "ansible-playbook sees the generated vault_seal_type" "$PROBE" "seal=awskms"
 
 # ---------------------------------------------------------------------------
+printf '\n=== The package the role asks for is the one cloud-init installed ===\n'
+# ---------------------------------------------------------------------------
+# The role asked for "vault={{ vault_version }}" everywhere. That is apt's
+# syntax, and not a complete apt version either -- HashiCorp publishes
+# 1.17.2-1 -- so dnf on a real AL2023 node answered "No package
+# vault=1.17.2 available" with vault-1.17.2-1 already installed, and
+# site.yml stopped at that task on every node. The role had never run on a
+# VM: the local profile is containers.
+#
+# cloud-init installs the same version the working way on each cloud, so
+# the role is rendered for each package manager and held to that spelling.
+PKG="$(python3 - "$REPO_ROOT" <<'PY'
+import sys, yaml, jinja2
+root = sys.argv[1]
+tasks = yaml.safe_load(open(f"{root}/ansible/roles/vault/tasks/main.yml"))
+task = next(t for t in tasks if t.get("name") == "Install Vault package")
+expr = task["ansible.builtin.package"]["name"]
+version = yaml.safe_load(open(f"{root}/ansible/roles/vault/defaults/main.yml"))["vault_version"]
+env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+for mgr in ("dnf", "apt"):
+    rendered = env.from_string(expr).render(vault_version=version, ansible_facts={"pkg_mgr": mgr})
+    print(mgr, rendered.strip(), version)
+PY
+)" || PKG="RENDER FAILED"
+
+# The quoted package argument of the install line in each cloud template,
+# with the shell's version variable put back to the role's version.
+cloud_init_spelling() {
+    local tpl="$1" cmd="$2" version="$3"
+    grep -oE "${cmd} install -y \"vault[^\"]*\"" "$tpl" | head -1 \
+        | sed -E 's/.*"(vault[^"]*)"/\1/; s/[$]+\{VAULT_VERSION\}/'"${version}"'/'
+}
+
+PKG_VERSION="$(awk 'NR==1 {print $3}' <<< "$PKG")"
+assert_eq "on dnf (AWS) the role asks for what user-data installed" \
+    "$(awk '$1 == "dnf" {print $2}' <<< "$PKG")" \
+    "$(cloud_init_spelling "$AWS_INIT" dnf "$PKG_VERSION")"
+assert_eq "on apt (Azure) the role asks for what cloud-init installed" \
+    "$(awk '$1 == "apt" {print $2}' <<< "$PKG")" \
+    "$(cloud_init_spelling "$AZURE_INIT" apt-get "$PKG_VERSION")"
+
+# ---------------------------------------------------------------------------
 printf '\n=== The inventory plugins accept these files ===\n'
 # ---------------------------------------------------------------------------
 # Each dynamic inventory is read by a plugin that rejects, unread, any
