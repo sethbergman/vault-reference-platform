@@ -56,7 +56,10 @@ S3 behaves this way in an account, that the IAM permissions to reach the
 bucket are the ones actually granted, or that two applies from two
 machines race the way one process planting a lock file does.
 
-**Azure gets no emulator at all.** moto is an AWS API. The Azure
+**Azure gets no emulator at all.** moto is an AWS API, and the Azure
+emulator that does exist needs a licence and implements too little of
+the profile to be worth one
+([why](../../docs/cloud-apply.md#why-azure-has-no-emulated-apply)). The Azure
 assertions in this suite are static reads of the configuration — that
 the backend block is empty, that the state account refuses shared keys
 while the backend example asks for Entra authentication — and they are

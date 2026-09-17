@@ -95,9 +95,10 @@ the anchor story is not AWS-only: an immutability policy in `Locked`
 state is Azure's `COMPLIANCE`, and the role definition excludes the blob
 delete actions the way the IAM policy denies `s3:DeleteObject`. Nothing
 ships anchors there yet — `ship-anchors.sh` speaks the S3 API — and there
-is no Azure emulator, so it has been validated and never applied. It is
-configuration with reasoning attached, like every other Azure resource
-here.
+is no Azure emulator this repository can run
+([why](cloud-apply.md#why-azure-has-no-emulated-apply)), so it has been
+validated and never applied. It is configuration with reasoning
+attached, like every other Azure resource here.
 
 Two halves remain, and they are different sizes.
 
@@ -279,7 +280,9 @@ The blockers are, in order:
    file does, or that the Entra role assignment on the Azure side is
    enough for a second person to run `terraform` at all — and the Azure
    bootstrap module has never been applied to anything, because moto is
-   an AWS API and there is no emulator for the other side.
+   an AWS API and there is no emulator for the other side this
+   repository can run
+   ([why](cloud-apply.md#why-azure-has-no-emulated-apply)).
 
    So this item moves from "not started" to the same footing as blockers
    1 and 2, and it closes when they do. See

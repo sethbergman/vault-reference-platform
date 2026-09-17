@@ -244,9 +244,11 @@ container and the storage account cannot be deleted either, so
 **Nothing ships anchors there yet.** `scripts/ship-anchors.sh` speaks the
 S3 API; the Azure path would be a blob upload with the same
 one-blob-per-sequence-number layout, and it has not been written. The
-module has also never been applied — there is no Azure emulator, so
-unlike the AWS module, which `tests/audit-anchor-worm` applies and then
-attacks, this has only been parsed and validated. It is configuration
+module has also never been applied — there is no Azure emulator this
+repository can run
+([why](cloud-apply.md#why-azure-has-no-emulated-apply)), so unlike the
+AWS module, which `tests/audit-anchor-worm` applies and then attacks,
+this has only been parsed and validated. It is configuration
 with reasoning attached, which is what every other Azure resource here
 is.
 

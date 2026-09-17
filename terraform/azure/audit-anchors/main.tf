@@ -41,8 +41,10 @@
 #
 # NOTHING HERE HAS BEEN APPLIED
 #
-# There is no Azure emulator — moto implements an AWS API — so unlike the
-# AWS module, which tests/audit-anchor-worm applies and then attacks,
+# There is no Azure emulator this repository can run — moto implements
+# an AWS API, and docs/cloud-apply.md says why LocalStack's Azure
+# emulator is not used — so unlike the AWS module, which
+# tests/audit-anchor-worm applies and then attacks,
 # this has only ever been parsed and validated. It is configuration with
 # reasoning attached, not a demonstrated guarantee. See docs/roadmap.md,
 # which says the same about every other Azure resource here.
