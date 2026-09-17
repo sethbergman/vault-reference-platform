@@ -51,6 +51,12 @@ fails. These have been checked that way:
 | ASG `max_size` allowed to exceed `node_count` | `asg_is_pinned_and_does_not_autoscale` |
 | Private subnet CIDRs overlapped with public | `public_and_private_subnets_do_not_overlap` |
 | Public access block disabled on the bucket | `snapshot_bucket_is_not_public_and_is_versioned` |
+| Volume key's data-key action narrowed from `kms:GenerateDataKey*` to `kms:GenerateDataKey` | `autoscaling_can_encrypt_node_volumes` |
+| `kms:GrantIsForAWSResource` dropped from the grant statement | `autoscaling_can_encrypt_node_volumes` |
+| Autoscaling role named as the grant's principal instead of matched by condition | `autoscaling_can_encrypt_node_volumes` |
+| Shared account statement scoped to `kms:Describe*` | `autoscaling_can_encrypt_node_volumes`, `cloudwatch_logs_can_encrypt_flow_logs` |
+| Seal key policy left on a hand-typed log group name | `cloudwatch_logs_can_encrypt_flow_logs` |
+| Logs principal made global (`logs.amazonaws.com`) | `cloudwatch_logs_can_encrypt_flow_logs` |
 
 Worth repeating for any assertion added later.
 
