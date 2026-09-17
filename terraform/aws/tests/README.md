@@ -57,6 +57,9 @@ fails. These have been checked that way:
 | Shared account statement scoped to `kms:Describe*` | `autoscaling_can_encrypt_node_volumes`, `cloudwatch_logs_can_encrypt_flow_logs` |
 | Seal key policy left on a hand-typed log group name | `cloudwatch_logs_can_encrypt_flow_logs` |
 | Logs principal made global (`logs.amazonaws.com`) | `cloudwatch_logs_can_encrypt_flow_logs` |
+| Raft egress between nodes narrowed to 8200 | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
+| Node API egress pointed at the load balancer's group | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
+| Raft egress opened to the VPC by CIDR | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
 
 Worth repeating for any assertion added later.
 
