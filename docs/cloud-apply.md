@@ -124,6 +124,7 @@ beforehand.
 ## Before you apply
 
 ```bash
+export TF_VAR_az_count=2 TF_VAR_ssh_key_name=your-key
 ./scripts/preflight-cloud.sh --cloud aws
 ```
 
@@ -132,6 +133,20 @@ are about to spend money in), validates the inputs that fail late,
 estimates cost, names what a teardown will not remove, and runs
 `terraform plan`. It applies nothing. It exits non-zero only on
 failures — warnings are things to have read, not things to fix.
+
+**Set inputs in the environment, not with `-var`.** The pre-flight checks
+the values `terraform` in the same shell will use — a `TF_VAR_*`, else
+the default — and cannot see a `-var` on a command that has not run yet.
+This document used to pass the key with `-var` on the apply, so the
+pre-flight read the empty default, warned about it on every correct run,
+and never looked the key pair up. The first real account is what showed
+it. Exported once, the same values reach the plan, the apply and the
+teardown's `destroy`.
+
+**Run it twice.** The plan needs an initialised backend, and the backend
+needs the bucket the bootstrap module creates, so a first run before
+bootstrap checks everything *except* whether the profile plans — and
+says so. Run it again after `init`, before the apply.
 
 Four failures it exists to catch, all of which cost money to discover
 otherwise:
@@ -180,14 +195,14 @@ each with an hourly charge plus data processing. At defaults they are
 roughly 60% of the bill — more than the Vault nodes.
 
 ```bash
-terraform apply -var 'az_count=2'
+export TF_VAR_az_count=2
 ```
 
 Two zones cuts the estimate to ~$128/month and still exercises Raft
 `auto_join`, auto-unseal, the load balancer, and the Ansible handoff.
 
 **Two is the floor, not one.** `terraform/aws/variables.tf` requires
-`az_count` between 2 and 4, so `-var 'az_count=1'` is rejected before
+`az_count` between 2 and 4, so `az_count=1` is rejected before
 anything is created — this document recommended it for several releases
 and it never worked. `terraform/azure/variables.tf` enforces the same
 floor on `availability_zones`, for the reason both give: a cluster that
@@ -237,7 +252,9 @@ indefinitely.** Set a calendar reminder before you start, not after.
 ### AWS
 
 ```bash
-./scripts/preflight-cloud.sh --cloud aws --az-count 2
+# In the environment, so the pre-flight checks what the apply will use.
+export TF_VAR_az_count=2 TF_VAR_ssh_key_name=your-key
+./scripts/preflight-cloud.sh --cloud aws
 
 # Once per account, before the first apply. Creates the bucket the next
 # command keeps its state in — see terraform-state.md.
@@ -247,8 +264,11 @@ terraform -chdir=terraform/aws/bootstrap output -raw backend_config \
     > terraform/aws/backend.hcl
 
 terraform -chdir=terraform/aws init -backend-config=backend.hcl
-terraform -chdir=terraform/aws apply \
-    -var 'az_count=2' -var 'ssh_key_name=your-key'
+
+# Again: the first run could not plan without the backend.
+./scripts/preflight-cloud.sh --cloud aws
+
+terraform -chdir=terraform/aws apply
 ./scripts/terraform-to-ansible.sh --cloud aws   # outputs -> group_vars
 
 # Issued now, not before: the filenames follow inventory_hostname, which

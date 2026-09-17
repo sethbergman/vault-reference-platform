@@ -29,6 +29,26 @@
 # It does not apply anything. It runs `terraform plan`, which needs
 # credentials and read access, and nothing else.
 #
+# WHICH VALUES IT CHECKS
+#
+# The ones `terraform` in this shell would use: a TF_VAR_<name> in the
+# environment, else the default in variables.tf. Set inputs that way
+# rather than with -var on the apply, so the pre-flight and the apply see
+# the same thing:
+#
+#   export TF_VAR_az_count=2 TF_VAR_ssh_key_name=my-key
+#
+# It used to read defaults alone. The profile ships ssh_key_name empty and
+# the documented apply passed the key with -var, so the check that exists
+# to catch a missing key pair warned about an empty name on every correct
+# run and never looked the key up. -var and .tfvars files are still not
+# read; nothing here parses HCL.
+#
+# Run it twice. The plan needs an initialised backend, and the backend
+# needs the bucket terraform/aws/bootstrap creates, so a first run before
+# bootstrap checks everything except whether the profile plans. Run it
+# again after `init`, before the apply.
+#
 # Requirements: terraform, and the CLI for the chosen cloud.
 
 set -euo pipefail
@@ -84,9 +104,15 @@ esac
 
 tf() { terraform -chdir="$TF_DIR" "$@"; }
 
-# tfvar <name> <fallback> — the profile's default for a variable.
+# tfvar <name> <fallback> — the value terraform would use from this shell:
+# TF_VAR_<name> if it is set, even to empty, as Terraform treats it; else
+# the profile's default.
 tfvar() {
-    local v
+    local v env="TF_VAR_$1"
+    if [[ -n "${!env+set}" ]]; then
+        printf '%s' "${!env}"
+        return 0
+    fi
     v="$(grep -A6 "^variable \"$1\"" "${TF_DIR}/variables.tf" 2>/dev/null \
         | sed -n 's/^ *default *= *//p' | head -1 | tr -d '" ' || true)"
     printf '%s' "${v:-$2}"
@@ -97,7 +123,8 @@ tfvar() {
 # back to the literal 3, which then priced three NAT gateways for a profile
 # that creates one. Resolve it only where it exists.
 if [[ "$CLOUD" == "aws" ]]; then
-    [[ -n "$AZ_COUNT" ]] || AZ_COUNT="$(tfvar az_count 3)"
+    TF_AZ_COUNT="$(tfvar az_count 3)"
+    [[ -n "$AZ_COUNT" ]] || AZ_COUNT="$TF_AZ_COUNT"
 fi
 NODE_COUNT="$(tfvar node_count 3)"
 VM_SIZE="$(tfvar vm_size Standard_B2s)"
@@ -169,13 +196,21 @@ info ""
 info "=== Inputs this profile needs ==="
 # ---------------------------------------------------------------------------
 if [[ "$CLOUD" == "aws" ]]; then
+    # --az-count prices and quota-checks a zone count; the plan below, and
+    # the apply after it, use whatever terraform sees. When those differ
+    # the cost and EIP lines describe a cluster nobody is about to build.
+    if [[ "$AZ_COUNT_GIVEN" == true && "$AZ_COUNT" != "$TF_AZ_COUNT" ]]; then
+        warn "--az-count ${AZ_COUNT} checks a cluster terraform will not build" \
+            "terraform in this shell sees az_count=${TF_AZ_COUNT}; export TF_VAR_az_count=${AZ_COUNT} so the plan and the apply match"
+    fi
+
     # An empty ssh_key_name applies fine and produces instances nobody can
     # reach. Since the whole point of the exercise is to get onto a node
     # and check things, that is worth catching before the apply.
     SSH_KEY="$(tfvar ssh_key_name "")"
     if [[ -z "$SSH_KEY" ]]; then
         warn "ssh_key_name is empty" \
-            "the apply will succeed and you will not be able to log in to verify anything"
+            "the apply will succeed and you will not be able to log in to verify anything; export TF_VAR_ssh_key_name=<key pair>"
     else
         ok "ssh_key_name is set (${SSH_KEY})"
         if command -v aws >/dev/null 2>&1; then
@@ -346,7 +381,11 @@ info "=== Does it plan? ==="
 # ---------------------------------------------------------------------------
 if command -v terraform >/dev/null 2>&1; then
     if ! tf providers >/dev/null 2>&1; then
-        warn "terraform is not initialised in ${TF_DIR}" "run: terraform -chdir=${TF_DIR} init"
+        # A warning, but the one that most needs reading: everything above
+        # passing says nothing about whether the profile plans, and a
+        # reader skimming for FAIL will take this run as the whole check.
+        warn "terraform is not initialised in ${TF_DIR}, so whether it plans was not checked" \
+            "initialise it (after the bootstrap module, for the backend), then run this pre-flight again"
     else
         info "        running terraform plan (no changes are made)..."
         if tf plan -no-color -input=false >/dev/null 2>&1; then
