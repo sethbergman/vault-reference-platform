@@ -15,7 +15,7 @@ vault_cloud: ""
 
 # Manual Shamir unseal by default — safe with no further configuration.
 # Set to "awskms" or "azurekeyvault" via group_vars for auto-unseal; see
-# ansible/group_vars/vault_nodes_aws.yml.example and
+# ansible/inventory/group_vars/vault_nodes_aws.yml.example and
 # vault_nodes_azure.yml.example.
 vault_seal_type: shamir
 

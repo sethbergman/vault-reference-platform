@@ -507,7 +507,7 @@ against a saved `terraform output -json`, never a live one.
 
 ```bash
 ./scripts/terraform-to-ansible.sh --cloud aws
-cat ansible/group_vars/vault_nodes.yml
+cat ansible/inventory/group_vars/vault_nodes.yml
 ```
 
 **Expect** the KMS key id, region and snapshot bucket to be populated.
@@ -535,7 +535,7 @@ bastion or a node.
 
 ```bash
 ./scripts/terraform-to-ansible.sh --cloud azure
-cat ansible/group_vars/vault_nodes.yml   # same path for both clouds
+cat ansible/inventory/group_vars/vault_nodes.yml   # same path for both clouds
 cd ansible
 ansible-inventory -i inventory/azure_rm.yml --list
 ansible -i inventory/azure_rm.yml vault_nodes -m ping

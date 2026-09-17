@@ -137,7 +137,7 @@ on 8200, Key Vault auto-unseal, and a storage account for Raft snapshots.
 `ssh_public_key` is required — Azure will not create a Linux scale set
 with neither a password nor a key.
 
-Same `group_vars/vault_nodes_azure.yml.example` step as AWS before
+Same `inventory/group_vars/vault_nodes_azure.yml.example` step as AWS before
 running the playbook.
 
 ### Differences from the AWS profile
@@ -180,7 +180,7 @@ hand out of `terraform output` works exactly once.
 ```
 
 That reads `terraform output -json` and writes
-`ansible/group_vars/vault_nodes.yml`. Re-run it after any apply rather
+`ansible/inventory/group_vars/vault_nodes.yml`. Re-run it after any apply rather
 than editing the file — a hand edit drifts from the infrastructure it
 describes and nothing catches that. It refuses to overwrite an existing
 file unless you pass `--force`, and it aborts without writing anything if

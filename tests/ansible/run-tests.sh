@@ -412,6 +412,47 @@ fi
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+printf '\n=== ansible-playbook reads what the handoff writes ===\n'
+# ---------------------------------------------------------------------------
+# Ansible loads group_vars from beside the inventory or beside the
+# playbook, and nowhere else. The handoff wrote to ansible/group_vars/,
+# beside neither. Ad-hoc `ansible` and `ansible-inventory` run from
+# ansible/ happened to read it; ansible-playbook did not. On the first real
+# apply every node's vault_seal_type was undefined to site.yml, and the
+# role default is shamir -- a config that cannot auto-unseal, written by a
+# run that would have reported success.
+#
+# Every assertion above reads the generated file directly, so none of them
+# could see it. This runs the script with its own default output in a copy
+# of the tree, and asks ansible-playbook what a host receives.
+TREE="${WORK}/tree"
+mkdir -p "${TREE}/scripts" "${TREE}/ansible/playbooks"
+cp "$HANDOFF" "${TREE}/scripts/"
+cp -r "${REPO_ROOT}/ansible/inventory" "${TREE}/ansible/"
+# A developer's own generated file must not answer for the script's.
+find "${TREE}/ansible" -name vault_nodes.yml -delete
+
+if "${TREE}/scripts/terraform-to-ansible.sh" --cloud aws \
+       --state-json "${FIXTURES}/aws-outputs.json" >/dev/null 2>&1; then
+    ok "the handoff writes to its default location"
+else
+    bad "the handoff writes to its default location"
+fi
+
+cat > "${TREE}/ansible/playbooks/probe.yml" <<'YML'
+- name: Probe
+  hosts: vault_nodes
+  gather_facts: false
+  tasks:
+    - name: Report a generated variable without connecting
+      ansible.builtin.debug:
+        msg: "seal={{ vault_seal_type | default('UNDEFINED') }}"
+YML
+
+PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks/probe.yml) 2>&1 )" || true
+assert_contains "ansible-playbook sees the generated vault_seal_type" "$PROBE" "seal=awskms"
+
+# ---------------------------------------------------------------------------
 printf '\n=== The inventory plugins accept these files ===\n'
 # ---------------------------------------------------------------------------
 # Each dynamic inventory is read by a plugin that rejects, unread, any

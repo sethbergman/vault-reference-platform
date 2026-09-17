@@ -7,7 +7,7 @@
 #
 # Example:
 #   ./terraform-to-ansible.sh --cloud aws
-#   ./terraform-to-ansible.sh --cloud azure --output ansible/group_vars/vault_nodes.yml
+#   ./terraform-to-ansible.sh --cloud azure --output ansible/inventory/group_vars/vault_nodes.yml
 #
 # The seam between "the infrastructure exists" and "Vault is configured on
 # it". Terraform knows the KMS key id, the region, the snapshot bucket;
@@ -65,7 +65,14 @@ done
 [[ "$CLOUD" == "aws" || "$CLOUD" == "azure" ]] || die "--cloud must be aws or azure, got: ${CLOUD}"
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
-[[ -n "$OUTPUT" ]] || OUTPUT="${REPO_ROOT}/ansible/group_vars/vault_nodes.yml"
+# Beside the inventory, because that is one of the two places Ansible
+# reads group_vars from -- the other is beside the playbook. This used to
+# be ansible/group_vars/, beside neither. Ad-hoc `ansible` run from
+# ansible/ happened to read it; ansible-playbook did not, so on the first
+# real apply site.yml saw no vault_seal_type and would have rendered the
+# role default, shamir, onto nodes meant to auto-unseal. tests/ansible
+# asks ansible-playbook what it sees.
+[[ -n "$OUTPUT" ]] || OUTPUT="${REPO_ROOT}/ansible/inventory/group_vars/vault_nodes.yml"
 
 # ---------------------------------------------------------------------------
 # Read the outputs

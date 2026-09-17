@@ -38,7 +38,9 @@ ansible/
   roles/                    One role per concern; see "Ansible" below
   inventory/                local, aws_ec2.yml, azure_rm.yml (dynamic, by
                             tag; the plugins require those names)
-  group_vars/*.example      Templates; the real files are generated
+  inventory/group_vars/     *.example templates; vault_nodes.yml is
+                            generated, gitignored, and read from here
+                            because nowhere else is next to the inventory
 docker/
   vault/          Vault server image; entrypoint substitutes the
                   Transit token into vault.hcl at start
