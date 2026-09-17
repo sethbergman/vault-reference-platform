@@ -40,8 +40,10 @@ def main() -> int:
         key, _, value = override.partition("=")
         variables[key] = value
 
-    # Facts Ansible would gather from the host.
+    # Facts Ansible would gather from the host, and the magic variable the
+    # TLS source paths are anchored to.
     variables.setdefault("inventory_hostname", "vault-0")
+    variables.setdefault("playbook_dir", str(REPO_ROOT / "ansible" / "playbooks"))
     variables.setdefault("ansible_default_ipv4", {"address": "10.0.1.10"})
 
     # defaults/main.yml defines the TLS paths in terms of

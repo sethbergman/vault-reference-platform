@@ -590,7 +590,7 @@ else
 fi
 
 # Named by inventory hostname, because that is what the role looks for:
-# vault_tls_cert_src is files/tls/{{ inventory_hostname }}.crt.
+# vault_tls_cert_src ends files/tls/{{ inventory_hostname }}.crt.
 if [[ -f "${CERTS}/i-0aaa.crt" && -f "${CERTS}/i-0aaa.key" \
    && -f "${CERTS}/i-0bbb.crt" && -f "${CERTS}/ca.crt" ]]; then
     ok "leaves are named by inventory hostname, beside a CA"

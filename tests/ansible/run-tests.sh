@@ -495,6 +495,48 @@ assert_eq "on apt (Azure) the role asks for what cloud-init installed" \
     "$(cloud_init_spelling "$AZURE_INIT" apt-get "$PKG_VERSION")"
 
 # ---------------------------------------------------------------------------
+printf '\n=== The role finds the certificates where they are issued ===\n'
+# ---------------------------------------------------------------------------
+# The role's TLS sources were relative -- "files/tls/ca.crt" -- which
+# Ansible looks for in the role's files/ and the playbook's files/.
+# generate-cloud-certs.sh writes ansible/files/tls, in neither, and the
+# first real apply stopped on every node with "Could not find or access".
+#
+# In the same copy of the tree: material where the certificate script's
+# default puts it, the role's defaults loaded as they are, and a file lookup
+# from a playbook. A lookup searches the same places as a copy's src.
+CERT_OUT_REL="$(sed -nE 's/^OUT_DIR="[$][{]REPO_ROOT[}]\/(.*)"$/\1/p' "${REPO_ROOT}/scripts/generate-cloud-certs.sh")"
+if [[ -n "$CERT_OUT_REL" ]]; then
+    ok "the certificate script's default output is ${CERT_OUT_REL}"
+else
+    bad "the certificate script's default output is readable" "no OUT_DIR default found"
+fi
+mkdir -p "${TREE}/${CERT_OUT_REL}" "${TREE}/ansible/roles/vault"
+cp -r "${REPO_ROOT}/ansible/roles/vault/defaults" "${TREE}/ansible/roles/vault/"
+printf 'probe-ca' > "${TREE}/${CERT_OUT_REL}/ca.crt"
+printf 'probe-leaf' > "${TREE}/${CERT_OUT_REL}/localhost.crt"
+printf 'probe-key' > "${TREE}/${CERT_OUT_REL}/localhost.key"
+
+cat > "${TREE}/ansible/playbooks/tls-probe.yml" <<'YML'
+- name: Probe
+  hosts: vault_nodes
+  gather_facts: false
+  vars_files:
+    - ../roles/vault/defaults/main.yml
+  tasks:
+    - name: Read the TLS sources the role would copy
+      ansible.builtin.debug:
+        msg: >-
+          ca={{ lookup('ansible.builtin.file', vault_tls_ca_src) }}
+          leaf={{ lookup('ansible.builtin.file', vault_tls_cert_src) }}
+          key={{ lookup('ansible.builtin.file', vault_tls_key_src) }}
+YML
+
+TLS_PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks/tls-probe.yml) 2>&1 )" || true
+assert_contains "the role's CA, leaf and key sources all resolve" \
+    "$TLS_PROBE" "ca=probe-ca leaf=probe-leaf key=probe-key"
+
+# ---------------------------------------------------------------------------
 printf '\n=== The inventory plugins accept these files ===\n'
 # ---------------------------------------------------------------------------
 # Each dynamic inventory is read by a plugin that rejects, unread, any
