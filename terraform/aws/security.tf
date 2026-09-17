@@ -119,6 +119,38 @@ resource "aws_vpc_security_group_ingress_rule" "vault_api_between_nodes" {
 # baking an AMI with Vault preinstalled rather than installing at boot
 # (see the note in templates/user-data.sh.tftpl). Both are worth doing
 # and both are more than a security group change.
+# Peers, outbound. The ingress rules above admit other nodes on 8200 and
+# 8201, but a security group checks a new connection's egress at the
+# sender as well as its ingress at the receiver, and this group allowed
+# out only 80 and 443. So every node could reach KMS, SSM and the package
+# repositories, and no node could open a connection to another.
+#
+# Found on the first real apply: the leader initialised and auto-unsealed,
+# the followers discovered it by tag, and every join timed out at TCP
+# connect. Raft's join handshake is an API call on 8200 before any 8201
+# traffic, so both ports are needed. Nothing reported an error louder than
+# a retry loop -- three healthy-looking processes, one of them a cluster.
+#
+# Peer-only, like the ingress side: the group references itself and no
+# CIDR, so this admits nothing the ingress rules do not.
+resource "aws_vpc_security_group_egress_rule" "vault_api_to_peers" {
+  security_group_id            = aws_security_group.vault.id
+  description                  = "Raft join and request forwarding to other nodes"
+  referenced_security_group_id = aws_security_group.vault.id
+  from_port                    = 8200
+  to_port                      = 8200
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "vault_cluster_to_peers" {
+  security_group_id            = aws_security_group.vault.id
+  description                  = "Raft cluster traffic to other nodes"
+  referenced_security_group_id = aws_security_group.vault.id
+  from_port                    = 8201
+  to_port                      = 8201
+  ip_protocol                  = "tcp"
+}
+
 resource "aws_vpc_security_group_egress_rule" "vault_https" {
   security_group_id = aws_security_group.vault.id
   description       = "HTTPS out to KMS, S3, SSM and package repositories"

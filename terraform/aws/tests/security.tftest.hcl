@@ -103,7 +103,46 @@ run "egress_is_not_every_protocol_and_port" {
       aws_vpc_security_group_egress_rule.vault_https.from_port == 443,
       aws_vpc_security_group_egress_rule.vault_http.from_port == 80,
     ])
-    error_message = "Egress should be limited to HTTPS and HTTP."
+    error_message = "Egress to the internet should be limited to HTTPS and HTTP."
+  }
+}
+
+# The assertion above once read "Egress should be limited to HTTPS and
+# HTTP", and was true, and was the bug: the ingress rules admitted peers
+# on 8200 and 8201, egress let no node send to one, and on the first real
+# apply the followers discovered the leader and never reached it. A
+# cluster of one, three processes healthy.
+#
+# apply, not plan: the peer references are computed ids.
+run "nodes_can_reach_each_other_and_nothing_else_on_cluster_ports" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      aws_vpc_security_group_egress_rule.vault_api_to_peers.from_port == 8200,
+      aws_vpc_security_group_egress_rule.vault_api_to_peers.to_port == 8200,
+      aws_vpc_security_group_egress_rule.vault_cluster_to_peers.from_port == 8201,
+      aws_vpc_security_group_egress_rule.vault_cluster_to_peers.to_port == 8201,
+    ])
+    error_message = "Nodes must be able to open connections to peers on 8200 (Raft join, forwarding) and 8201 (Raft)."
+  }
+
+  assert {
+    condition = alltrue([
+      aws_vpc_security_group_egress_rule.vault_api_to_peers.referenced_security_group_id == aws_security_group.vault.id,
+      aws_vpc_security_group_egress_rule.vault_cluster_to_peers.referenced_security_group_id == aws_security_group.vault.id,
+    ])
+    error_message = "Cluster-port egress must go to the node group itself, not to another group."
+  }
+
+  # Paired with the reference above: a CIDR alongside it would widen the
+  # rule to the network while the reference assertion still passed.
+  assert {
+    condition = alltrue([
+      aws_vpc_security_group_egress_rule.vault_api_to_peers.cidr_ipv4 == null,
+      aws_vpc_security_group_egress_rule.vault_cluster_to_peers.cidr_ipv4 == null,
+    ])
+    error_message = "Cluster-port egress must be peer-only, never a CIDR."
   }
 }
 
