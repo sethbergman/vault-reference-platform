@@ -70,7 +70,12 @@ reset_scenario() {
     export FAKE_WRAP_TOKEN="hvs.WRAPPEDTOKEN"
     export VAULT_ADDR=https://127.0.0.1:8200
     export VAULT_TOKEN=s.testtoken
-    CREDS="${WORK}/creds.$RANDOM"
+    # mktemp, not $RANDOM: two scenarios drawing the same number share a
+    # directory, and this suite has a case asserting a file is ABSENT after
+    # a failed run. Inheriting an earlier scenario's role_id failed it once
+    # in CI and never locally, which is the shape of a bug that gets called
+    # flaky and re-run rather than fixed.
+    CREDS="$(mktemp -d "${WORK}/creds.XXXXXXXX")"
 }
 
 run_bootstrap() {

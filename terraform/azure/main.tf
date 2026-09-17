@@ -49,7 +49,7 @@ resource "azurerm_resource_group" "vault" {
 
 # Auto-unseal key for Vault's "azurekeyvault" seal stanza (see
 # ansible/roles/vault/templates/vault.hcl.j2 and
-# ansible/group_vars/vault_nodes_azure.yml.example).
+# ansible/inventory/group_vars/vault_nodes_azure.yml.example).
 resource "random_id" "key_vault_suffix" {
   byte_length = 4
 }

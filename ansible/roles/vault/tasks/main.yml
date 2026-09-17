@@ -5,9 +5,23 @@
     system: true
     shell: /usr/sbin/nologin
 
+# Spelled per package manager, and exactly as the cloud-init templates
+# spell it (terraform/aws/templates/user-data.sh.tftpl, terraform/azure/
+# templates/cloud-init.sh.tftpl), so the version the node booted with and
+# the version this asks for cannot be two different strings.
+#
+# It was "vault={{ vault_version }}" for both. That is apt's syntax, and
+# not even a complete apt version -- HashiCorp's packages are 1.17.2-1 --
+# so dnf answered "No package vault=1.17.2 available" on a node where
+# vault-1.17.2-1 was already installed, and the first real run of this
+# playbook stopped here on every node. Nothing had run the role against a
+# VM before: the local profile is containers.
 - name: Install Vault package
   ansible.builtin.package:
-    name: "vault={{ vault_version }}"
+    name: >-
+      {{ ('vault=' ~ vault_version ~ '-1')
+         if ansible_facts['pkg_mgr'] == 'apt'
+         else ('vault-' ~ vault_version ~ '-1') }}
     state: present
 
 # ---------------------------------------------------------------------------

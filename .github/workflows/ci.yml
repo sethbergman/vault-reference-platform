@@ -910,8 +910,14 @@ jobs:
 
       # jinja2 renders the role template the way Ansible would, so the
       # tests exercise the real template rather than a copy of it.
+      #
+      # The ansible package too, not ansible-core: the suite asks the
+      # amazon.aws and azure.azcollection inventory plugins whether they
+      # will read our inventories, and runs ansible-playbook to see which
+      # group_vars a host receives. 9.13.0 is ansible-core 2.16, the
+      # version the first real apply ran.
       - name: Install rendering dependencies
-        run: pip install jinja2 pyyaml
+        run: pip install jinja2 pyyaml ansible==9.13.0
 
       - name: Exercise the Terraform to Ansible handoff
         run: ./tests/ansible/run-tests.sh

@@ -1,5 +1,13 @@
 # Dynamic inventory for the AWS profile.
 #
+# THE FILENAME IS PART OF THE CONFIGURATION. amazon.aws.aws_ec2 reads
+# only a file whose name ends in aws_ec2.yml or aws_ec2.yaml, and rejects
+# any other before looking inside it. This file was aws.yml: Ansible
+# warned that the source "could not be verified", parsed nothing, and
+# every documented `ansible-playbook -i inventory/aws.yml` ran against no
+# hosts at all. The first real apply found it; tests/ansible now asks
+# ansible-inventory rather than trusting the name.
+#
 # Instances are discovered through the EC2 API by tag rather than listed
 # by address. That is not a convenience: the autoscaling group replaces
 # nodes, so a static inventory is wrong the first time an instance is
@@ -13,8 +21,8 @@
 #
 # Usage:
 #   cd ansible
-#   ansible-inventory -i inventory/aws.yml --graph
-#   ansible-playbook -i inventory/aws.yml playbooks/site.yml
+#   ansible-inventory -i inventory/aws_ec2.yml --graph
+#   ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 #
 # Requires the amazon.aws collection and AWS credentials with
 # ec2:DescribeInstances.

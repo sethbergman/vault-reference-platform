@@ -15,7 +15,7 @@ vault_cloud: ""
 
 # Manual Shamir unseal by default — safe with no further configuration.
 # Set to "awskms" or "azurekeyvault" via group_vars for auto-unseal; see
-# ansible/group_vars/vault_nodes_aws.yml.example and
+# ansible/inventory/group_vars/vault_nodes_aws.yml.example and
 # vault_nodes_azure.yml.example.
 vault_seal_type: shamir
 
@@ -60,6 +60,13 @@ vault_tls_dir: /etc/vault.d/tls
 # or Vault's own PKI engine once a first cluster exists. The local
 # profile uses scripts/generate-dev-certs.sh, which produces exactly this
 # layout. See docs/deployment.md.
-vault_tls_ca_src: "files/tls/ca.crt"
-vault_tls_cert_src: "files/tls/{{ inventory_hostname }}.crt"
-vault_tls_key_src: "files/tls/{{ inventory_hostname }}.key"
+#
+# Anchored to playbook_dir rather than relative. A relative src is searched
+# for in the role's files/ and the playbook's files/, and
+# scripts/generate-cloud-certs.sh writes to ansible/files/tls -- beside
+# the playbooks directory, inside neither. So the three were "files/tls/..."
+# for months and could never be found; the first real apply stopped at
+# "Could not find or access 'files/tls/ca.crt'" on every node.
+vault_tls_ca_src: "{{ playbook_dir }}/../files/tls/ca.crt"
+vault_tls_cert_src: "{{ playbook_dir }}/../files/tls/{{ inventory_hostname }}.crt"
+vault_tls_key_src: "{{ playbook_dir }}/../files/tls/{{ inventory_hostname }}.key"

@@ -71,7 +71,7 @@ variable "instance_type" {
 # This said that leaving it empty "disables SSH entirely and uses SSM
 # Session Manager instead", which read as a supported arrangement and was
 # not one. Session Manager replaces the *network path* -- no public
-# address, no inbound 22 -- and ansible/inventory/aws.yml tunnels SSH
+# address, no inbound 22 -- and ansible/inventory/aws_ec2.yml tunnels SSH
 # through it on that basis. What reaches the node at the far end is still
 # sshd, still checking authorized_keys, which EC2 populates from this key
 # pair at boot. Empty means no key, so nothing authenticates, and the

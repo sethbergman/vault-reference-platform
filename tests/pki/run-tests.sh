@@ -64,7 +64,9 @@ reset_scenario() {
     export VAULT_TOKEN=s.testtoken
     unset VAULT_ROLE_ID VAULT_SECRET_ID 2>/dev/null || true
 
-    TLS_DIR="${WORK}/tls.$RANDOM"
+    # mktemp, not $RANDOM -- see the note in tests/agent. Certificates
+    # left by one scenario would be read as another's.
+    TLS_DIR="$(mktemp -d "${WORK}/tls.XXXXXXXX")"
     mkdir -p "$TLS_DIR"
 }
 
@@ -590,7 +592,7 @@ else
 fi
 
 # Named by inventory hostname, because that is what the role looks for:
-# vault_tls_cert_src is files/tls/{{ inventory_hostname }}.crt.
+# vault_tls_cert_src ends files/tls/{{ inventory_hostname }}.crt.
 if [[ -f "${CERTS}/i-0aaa.crt" && -f "${CERTS}/i-0aaa.key" \
    && -f "${CERTS}/i-0bbb.crt" && -f "${CERTS}/ca.crt" ]]; then
     ok "leaves are named by inventory hostname, beside a CA"
