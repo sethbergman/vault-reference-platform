@@ -87,6 +87,12 @@ reset_scenario() {
     export FAKE_AZ_ACCOUNT_RC=0
     export FAKE_AZ_ROLE_RC=0
     export FAKE_AZ_ROLES="Contributor"
+
+    # The pre-flight reads these now, so one leaking out of a case -- or
+    # out of the shell of whoever runs the suite, who may well be mid-apply
+    # -- would decide cases that never set it.
+    unset TF_VAR_ssh_key_name TF_VAR_az_count TF_VAR_node_count \
+          TF_VAR_vm_size TF_VAR_os_disk_size_gb
 }
 
 # run_preflight <args...>
@@ -286,6 +292,85 @@ if grep -q "does not exist in this account" <<< "$OUT" && [[ "$RC" != "0" ]]; th
 else
     bad "a key pair that does not exist is a failure, not a warning" \
         "exit ${RC} — this one fails after the NAT gateways are billing"
+fi
+
+printf '\n=== Pre-flight: the values terraform will see ===\n'
+
+# The profile ships ssh_key_name empty, and the documented apply supplied
+# the key on the command line. The pre-flight read only the default, so
+# on every correct run it warned about an empty name and never looked the
+# key pair up -- the one check it exists to make before NAT gateways bill.
+# Found by running it against the first real account. It now reads what
+# terraform in the same shell would: TF_VAR_<name>, then the default.
+reset_scenario
+export TF_VAR_ssh_key_name="env-keypair"
+run_preflight --cloud aws
+if grep -q "ssh_key_name is set (env-keypair)" <<< "$OUT" \
+   && logged "describe-key-pairs --key-names env-keypair" \
+   && ! grep -q "ssh_key_name is empty" <<< "$OUT"; then
+    ok "a key name in TF_VAR_ssh_key_name is the one checked"
+else
+    bad "a key name in TF_VAR_ssh_key_name is the one checked" \
+        "the profile default is empty; only the environment carries the key"
+fi
+
+# Over a non-empty default too, and a missing key still fails under the
+# name the apply will use rather than the one in variables.tf.
+reset_scenario
+export TF_VAR_ssh_key_name="env-missing"
+export FAKE_AWS_KEYPAIR_RC=254
+run_preflight --cloud aws --dir "$WITH_KEY"
+if grep -q "key pair 'env-missing' does not exist" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "the environment overrides the default, and a missing key still fails"
+else
+    bad "the environment overrides the default, and a missing key still fails" "exit ${RC}"
+fi
+
+# Set to empty is not unset: terraform takes TF_VAR_x= as the empty
+# string (checked against 1.15.9), so the pre-flight must as well, or a
+# cleared variable is reported as the key it no longer is.
+reset_scenario
+export TF_VAR_ssh_key_name=""
+run_preflight --cloud aws --dir "$WITH_KEY"
+if grep -q "ssh_key_name is empty" <<< "$OUT" && ! logged "describe-key-pairs"; then
+    ok "an empty TF_VAR_ssh_key_name is empty, whatever the default"
+else
+    bad "an empty TF_VAR_ssh_key_name is empty, whatever the default" \
+        "terraform would launch with no key; the pre-flight must not report my-keypair"
+fi
+
+reset_scenario
+export TF_VAR_az_count=2
+run_preflight --cloud aws
+if grep -q "2 NAT gateway(s)" <<< "$OUT" && grep -q "this apply needs 2 more" <<< "$OUT"; then
+    ok "TF_VAR_az_count prices and quota-checks without --az-count"
+else
+    bad "TF_VAR_az_count prices and quota-checks without --az-count" \
+        "the profile default is 3; the apply will build 2"
+fi
+
+# --az-count on its own used to be the documented way to check a two-zone
+# apply, while the plan beside it -- and the apply after -- still built
+# three. Saying so is the fix; refusing would break asking "what would
+# two cost?"
+reset_scenario
+run_preflight --cloud aws --az-count 2
+if grep -q "checks a cluster terraform will not build" <<< "$OUT" \
+   && grep -q "export TF_VAR_az_count=2" <<< "$OUT"; then
+    ok "--az-count that terraform will not use is called out"
+else
+    bad "--az-count that terraform will not use is called out" \
+        "costs for 2 zones beside a plan for 3"
+fi
+
+reset_scenario
+export TF_VAR_az_count=2
+run_preflight --cloud aws --az-count 2
+if grep -q "2 NAT gateway(s)" <<< "$OUT" \
+   && ! grep -q "checks a cluster terraform will not build" <<< "$OUT"; then
+    ok "and agreeing with it is not"
+else
+    bad "and agreeing with it is not" "a warning on every correct run is one nobody reads"
 fi
 
 reset_scenario
@@ -495,6 +580,18 @@ if grep -q "not initialised" <<< "$OUT" && ! logged "plan"; then
 else
     bad "an uninitialised directory is reported, and plan is not attempted" \
         "planning without init produces a confusing error instead of a clear one"
+fi
+
+# The documented order runs the pre-flight before bootstrap, and init
+# needs what bootstrap creates, so the first run can never plan. Unless
+# the output says to come back, nobody does -- and a run with no FAIL in
+# it reads as the whole check.
+if grep -q "whether it plans was not checked" <<< "$OUT" \
+   && grep -q "run this pre-flight again" <<< "$OUT"; then
+    ok "and it says the plan is still unchecked, and to run again after init"
+else
+    bad "and it says the plan is still unchecked, and to run again after init" \
+        "the first real run skipped the plan and said only 'run init'"
 fi
 
 reset_scenario

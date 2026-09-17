@@ -248,6 +248,7 @@ API accepts; it says nothing about whether the cluster it describes
 comes up.
 
 ```bash
+export TF_VAR_ssh_key_name=your-key TF_VAR_az_count=2
 ./scripts/preflight-cloud.sh --cloud aws
 ```
 

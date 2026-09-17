@@ -38,8 +38,13 @@ credentials, the inputs that fail late, quota and cost, and applies
 nothing:
 
 ```bash
+export TF_VAR_ssh_key_name=your-key   # and any other input, the same way
 ./scripts/preflight-cloud.sh --cloud aws
 ```
+
+It checks the values `terraform` in that shell will use, so set inputs as
+`TF_VAR_*` rather than `-var`. It cannot plan until the backend is
+initialised, so run it again after `init`.
 
 Then read [`cloud-apply.md`](cloud-apply.md), which lists what to verify
 while the cluster is up and how to tear it down afterwards.
