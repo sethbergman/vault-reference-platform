@@ -167,8 +167,13 @@ resource "aws_vpc_endpoint" "s3" {
 # cluster this is the difference between "something reached the API" being
 # answerable and being guesswork — Vault's audit device records requests
 # it served, and flow logs record attempts it never saw.
+#
+# Encrypted with the seal key, whose policy in main.tf has to admit the
+# CloudWatch Logs service for this group by name. The name is a local
+# because that policy cannot refer to this resource: the group depends on
+# the key.
 resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
-  name              = "/aws/vpc/${var.cluster_name}-flow-logs"
+  name              = local.flow_log_group_name
   retention_in_days = var.flow_log_retention_days
   kms_key_id        = aws_kms_key.vault_autounseal.arn
 

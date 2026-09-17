@@ -181,6 +181,91 @@ run "the_seal_key_and_the_volume_key_are_separate" {
   }
 }
 
+# The first real apply launched twelve instances and kept none: the
+# autoscaling group's service-linked role could not use the volume key,
+# because the key had the default policy and that role's IAM cannot be
+# changed. See the comment on aws_kms_key.vault_data.
+#
+# These read the policy the configuration writes, never a mocked data
+# source's output -- the account id in it is the mock's, and says nothing.
+run "autoscaling_can_encrypt_node_volumes" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_kms_key.vault_data.policy).Statement :
+      endswith(try(s.Condition.StringEquals["aws:PrincipalArn"], ""),
+      ":role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling")
+      && contains(flatten([s.Action]), "kms:GenerateDataKey*")
+      && s.Effect == "Allow"
+    ])
+    error_message = "The autoscaling service-linked role must be allowed to generate data keys, or no instance survives launch."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_kms_key.vault_data.policy).Statement :
+      endswith(try(s.Condition.StringEquals["aws:PrincipalArn"], ""),
+      ":role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling")
+      && contains(flatten([s.Action]), "kms:CreateGrant")
+      && try(s.Condition.Bool["kms:GrantIsForAWSResource"], "") == "true"
+    ])
+    error_message = "The role must be able to grant the key to EC2, and only to an AWS resource."
+  }
+
+  # Named by condition, never as the principal: on a new account the role
+  # does not exist until the group does, and KMS refuses a policy naming
+  # a principal that does not exist. Paired with the two positives above,
+  # which pin that the role is still admitted.
+  assert {
+    condition = !anytrue([
+      for s in jsondecode(aws_kms_key.vault_data.policy).Statement :
+      strcontains(jsonencode(s.Principal), "AWSServiceRoleForAutoScaling")
+    ])
+    error_message = "Match the service-linked role by condition; naming it as a principal fails on an account that has never had an autoscaling group."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_kms_key.vault_data.policy).Statement :
+      endswith(try(s.Principal.AWS, ""), ":root") && s.Action == "kms:*" && s.Effect == "Allow"
+    ])
+    error_message = "Keep the account's administration statement, or nothing can manage the key."
+  }
+}
+
+# The same mistake on the seal key, and the error that actually ended the
+# first real apply: the flow log group is encrypted with it, the key had
+# the default policy, and CloudWatch Logs was denied CreateLogGroup.
+run "cloudwatch_logs_can_encrypt_flow_logs" {
+  command = plan
+
+  # Pinned to the group the configuration creates, by comparing with that
+  # resource's own name -- so renaming the group without the policy fails
+  # here, not at CreateLogGroup.
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_kms_key.vault_autounseal.policy).Statement :
+      try(s.Principal.Service, "") == "logs.${var.aws_region}.amazonaws.com"
+      && contains(flatten([s.Action]), "kms:GenerateDataKey*")
+      && endswith(try(s.Condition.ArnEquals["kms:EncryptionContext:aws:logs:arn"], ""),
+      ":log-group:${aws_cloudwatch_log_group.vpc_flow_logs.name}")
+    ])
+    error_message = "CloudWatch Logs must be able to use the seal key for the flow log group, and that group only."
+  }
+
+  # The seal key is the one everything durable depends on. Losing the
+  # account statement would cut off the instance role's IAM grant, which
+  # is how Vault unseals.
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_kms_key.vault_autounseal.policy).Statement :
+      endswith(try(s.Principal.AWS, ""), ":root") && s.Action == "kms:*" && s.Effect == "Allow"
+    ])
+    error_message = "Keep the account's administration statement on the seal key, or Vault loses its IAM route to unseal."
+  }
+}
+
 run "snapshot_bucket_is_not_public_and_is_versioned" {
   command = plan
 

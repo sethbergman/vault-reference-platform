@@ -64,10 +64,43 @@ module "vault_cluster" {
 # down a test cluster and permanently stranding every snapshot ever taken
 # with this key -- including from clusters that no longer exist. Seven
 # days is a short time to notice.
+#
+# Its policy exists for the flow log group in network.tf, which is
+# encrypted with this key too. Vault and the snapshot bucket reach the key
+# through the instance role's IAM, which the default policy allows; the
+# CloudWatch Logs service has no IAM in this account to allow it, so with
+# the default policy CreateLogGroup was denied. That was the error that
+# ended the first real apply -- partway, with the flow logs never created.
+# Admitted for that one log group and nothing else.
 resource "aws_kms_key" "vault_autounseal" {
   description             = "Vault auto-unseal and snapshot key for ${var.cluster_name}"
   deletion_window_in_days = 30
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.kms_account_administers_through_iam,
+      {
+        Sid       = "CloudWatchLogsEncryptsFlowLogs"
+        Effect    = "Allow"
+        Principal = { Service = "logs.${var.aws_region}.amazonaws.com" }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*",
+        ]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${local.flow_log_group_name}"
+          }
+        }
+      },
+    ]
+  })
 }
 
 # Data at rest on the nodes, which is not durable and should not be
@@ -81,10 +114,86 @@ resource "aws_kms_key" "vault_autounseal" {
 #
 # Seven days is right here. Losing this key costs nothing that was not
 # already going away.
+#
+# THE KEY POLICY IS WHAT LETS A NODE EXIST AT ALL
+#
+# The autoscaling group launches instances as its service-linked role,
+# AWSServiceRoleForAutoScaling, and encrypting a root volume needs that
+# role to generate a data key and grant it to EC2. With no policy here
+# the key gets the default one, which admits principals only through
+# IAM -- and a service-linked role's IAM policies cannot be changed. So
+# every launch was denied, and AWS reported it as
+# Client.InvalidKMSKey.InvalidState, "the KMS key provided is in an
+# incorrect state", about a key that was Enabled. Terraform's apply
+# succeeded; the group then launched and terminated twelve instances in
+# eight minutes. Found on the first real apply: the emulated one cannot
+# see it, because moto does not enforce key policies.
+#
+# The role is matched by condition, not named as the principal. A key
+# policy naming a principal that does not exist is refused, and on a new
+# account this role does not exist until the first autoscaling group is
+# created -- which depends on this key.
 resource "aws_kms_key" "vault_data" {
   description             = "Vault node volume encryption for ${var.cluster_name}"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.kms_account_administers_through_iam,
+      {
+        Sid       = "AutoScalingEncryptsNodeVolumes"
+        Effect    = "Allow"
+        Principal = { AWS = "*" }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource  = "*"
+        Condition = { StringEquals = local.autoscaling_role_condition }
+      },
+      {
+        # Only for an AWS resource: EC2 holds the grant for the life of
+        # the volume, and nothing else can be handed one.
+        Sid       = "AutoScalingGrantsVolumesToEc2"
+        Effect    = "Allow"
+        Principal = { AWS = "*" }
+        Action    = "kms:CreateGrant"
+        Resource  = "*"
+        Condition = {
+          StringEquals = local.autoscaling_role_condition
+          Bool         = { "kms:GrantIsForAWSResource" = "true" }
+        }
+      },
+    ]
+  })
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
+locals {
+  flow_log_group_name = "/aws/vpc/${var.cluster_name}-flow-logs"
+
+  # The default key policy's statement, kept in both keys that replace it.
+  # Without it nothing in the account can administer the key, and every
+  # IAM grant of it -- the instance role's included -- stops working.
+  kms_account_administers_through_iam = {
+    Sid       = "AccountAdministersThroughIam"
+    Effect    = "Allow"
+    Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+    Action    = "kms:*"
+    Resource  = "*"
+  }
+
+  autoscaling_role_condition = {
+    "aws:PrincipalArn"  = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+    "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+  }
 }
 
 resource "aws_kms_alias" "vault_data" {
