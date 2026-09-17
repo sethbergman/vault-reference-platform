@@ -64,7 +64,9 @@ reset_scenario() {
     export VAULT_TOKEN=s.testtoken
     unset VAULT_ROLE_ID VAULT_SECRET_ID 2>/dev/null || true
 
-    TLS_DIR="${WORK}/tls.$RANDOM"
+    # mktemp, not $RANDOM -- see the note in tests/agent. Certificates
+    # left by one scenario would be read as another's.
+    TLS_DIR="$(mktemp -d "${WORK}/tls.XXXXXXXX")"
     mkdir -p "$TLS_DIR"
 }
 
