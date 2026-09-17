@@ -36,7 +36,8 @@ ansible/
   playbooks/site.yml        vault, vault_hardening, vault_snapshots,
                             vault_pki, vault_audit — in that order
   roles/                    One role per concern; see "Ansible" below
-  inventory/                local, aws.yml, azure.yml (dynamic, by tag)
+  inventory/                local, aws_ec2.yml, azure_rm.yml (dynamic, by
+                            tag; the plugins require those names)
   group_vars/*.example      Templates; the real files are generated
 docker/
   vault/          Vault server image; entrypoint substitutes the
@@ -176,7 +177,7 @@ generated vars under `StrictUndefined`, against saved real `terraform
 output -json` fixtures — so renaming an output on either side of the
 seam fails there rather than producing a cluster that never forms.
 
-**Node discovery** — `ansible/inventory/aws.yml` matches the same tag
+**Node discovery** — `ansible/inventory/aws_ec2.yml` matches the same tag
 that Raft's `auto_join` filters on (`terraform/aws/compute.tf`). One
 tag, two consumers, deliberately: change it and both break together
 instead of one drifting silently. Azure discovers peers through the
@@ -331,7 +332,7 @@ Per-suite requirements:
 | preflight-static | bash, python3; shellcheck if present |
 | pki | bash, jq, openssl |
 | pki-migration | bash, jq, python3, openssl |
-| ansible | bash, jq, python3 with jinja2 + pyyaml |
+| ansible | bash, jq, python3 with jinja2 + pyyaml, the `ansible` package |
 | alert-routing | bash, python3 + PyYAML; Docker for the amtool cases |
 | alerting | promtool (Prometheus distribution), python3 |
 | upgrade | bash, curl, unzip, jq, sha256sum, python3 |

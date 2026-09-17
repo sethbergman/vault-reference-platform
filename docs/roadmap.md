@@ -202,7 +202,7 @@ The blockers are, in order:
      auto-unseal and rejoin Raft with nobody watching. This is the check
      the whole architecture exists to justify.
    - **`auto_join` in tag mode**, against real EC2 instance tags — the
-     same tag `ansible/inventory/aws.yml` filters on, so here discovery
+     same tag `ansible/inventory/aws_ec2.yml` filters on, so here discovery
      and configuration management break together or not at all.
    - **The profile whose default apply is broken.** `ssh_key_name` ships
      empty, so the apply succeeds and produces a cluster nobody can log
@@ -609,7 +609,7 @@ the path to getting there is continuous.
 
 | What | Why nothing saw it |
 |---|---|
-| An autoscaling group tags every instance identically, and `inventory/aws.yml` preferred `tag:Name`. An Ansible inventory is keyed by host name, so three nodes collapsed into one and `site.yml` configured a single node and exited 0 | Terraform sets the tags and is tested; the inventory filters on them and was tested as valid YAML. Neither asks whether the inventory can tell two instances apart |
+| An autoscaling group tags every instance identically, and `inventory/aws_ec2.yml` preferred `tag:Name`. An Ansible inventory is keyed by host name, so three nodes collapsed into one and `site.yml` configured a single node and exited 0 | Terraform sets the tags and is tested; the inventory filters on them and was tested as valid YAML. Neither asks whether the inventory can tell two instances apart |
 | Nothing could reach the nodes at all. Private subnets, no inbound 22, and the documented sequence ends in `ansible-playbook`. `docs/deployment.md` said reaching them "needs SSM, a bastion, or a VPN" and the repository shipped none of the three. `ansible_user` was never set either | Both sides were tested. `security.tf` was tested for what it refuses, the playbook for what it renders, and nothing tested that one could reach the other |
 | The vault role verified a delivered certificate with `openssl -checkhost` against an IP address, which reports "does NOT match" for every certificate this repository issues — `issue-node-cert.sh` and the `vault_pki` role both put the address in `--ip-sans`. A correct certificate failed; only a wrong one passed | It had never executed. The local profile is Docker Compose and does not use this role, and neither cloud profile has been applied |
 
@@ -629,7 +629,7 @@ already draws, arriving as a concrete example: a profile that applies is
 not a cluster that configures.
 
 All three now have assertions, and the second and third needed code
-before they could have any — `ansible/inventory/aws.yml` tunnels SSH
+before they could have any — `ansible/inventory/aws_ec2.yml` tunnels SSH
 through Session Manager, and `scripts/generate-cloud-certs.sh` issues the
 bootstrap material after the apply, because the filenames follow
 instance ids that do not exist until then.

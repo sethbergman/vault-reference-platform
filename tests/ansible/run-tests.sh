@@ -16,7 +16,8 @@
 # side of the handoff fails the test rather than producing a config that
 # is syntactically fine and never forms a cluster.
 #
-# Requirements: bash, jq, python3 with jinja2 and pyyaml
+# Requirements: bash, jq, python3 with jinja2 and pyyaml, and the
+#   ansible package (its inventory plugins, and ansible-playbook)
 #   No terraform and no cloud credentials — the fixtures are saved
 #   `terraform output -json` payloads.
 
@@ -103,6 +104,11 @@ for dep in jq python3; do
 done
 python3 -c 'import jinja2, yaml' 2>/dev/null \
     || { red "ERROR: python3 needs the jinja2 and pyyaml modules"; exit 1; }
+# The community ansible package, not ansible-core alone: the inventory
+# checks need the amazon.aws and azure.azcollection plugins to exist.
+for dep in ansible-inventory ansible-playbook; do
+    command -v "$dep" >/dev/null 2>&1 || { red "ERROR: ${dep} not found (pip install ansible)"; exit 1; }
+done
 [[ -x "$HANDOFF" ]] || { red "ERROR: ${HANDOFF} is not executable"; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -327,8 +333,9 @@ printf '\n=== Dynamic inventories ===\n'
 # Not a substitute for running them against a live API, which needs
 # credentials. This checks the part that can be checked offline: they
 # parse, and they filter on the same tag Terraform sets.
-for cloud in aws azure; do
-    inv="${REPO_ROOT}/ansible/inventory/${cloud}.yml"
+for pair in "aws aws_ec2" "azure azure_rm"; do
+    cloud="${pair% *}"
+    inv="${REPO_ROOT}/ansible/inventory/${pair#* }.yml"
     if python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$inv"; then
         ok "${cloud} inventory is valid YAML"
     else
@@ -346,7 +353,7 @@ done
 #
 # Render them the way aws_ec2 would and assert the values.
 COMPOSE="$(python3 "${SCRIPT_DIR}/eval-compose.py" \
-    "${REPO_ROOT}/ansible/inventory/aws.yml" 2>&1)" || COMPOSE="EVAL FAILED: ${COMPOSE}"
+    "${REPO_ROOT}/ansible/inventory/aws_ec2.yml" 2>&1)" || COMPOSE="EVAL FAILED: ${COMPOSE}"
 
 compose_value() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' <<< "$COMPOSE"; }
 
@@ -397,11 +404,67 @@ fi
 # Azure's nodes are equally private, but its inventory has no compose
 # connection settings -- so if one profile grows a tunnel the other must
 # say why it has not. This assertion is here to be noticed.
-if grep -q "ProxyCommand" "${REPO_ROOT}/ansible/inventory/azure.yml"; then
+if grep -q "ProxyCommand" "${REPO_ROOT}/ansible/inventory/azure_rm.yml"; then
     ok "azure inventory: also tunnels (update this assertion)"
 else
     ok "azure inventory: does not tunnel, and its apply is still unproven"
 fi
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+printf '\n=== The inventory plugins accept these files ===\n'
+# ---------------------------------------------------------------------------
+# Each dynamic inventory is read by a plugin that rejects, unread, any
+# file not named for it. The two were aws.yml and azure.yml: Ansible
+# warned the source "could not be verified", parsed nothing, and the
+# documented playbook command configured no hosts. Everything above this
+# section passed throughout -- valid YAML, the right tag, compose values
+# that render -- in a file no plugin would open.
+#
+# Asked of ansible-inventory, not of a suffix list kept here. Offline, an
+# accepted file goes on to the plugin, which then fails for want of an SDK
+# or credentials; a rejected one says "could not be verified". The same
+# content under the old name is the control: it must be rejected, or the
+# check has stopped being able to tell the difference -- a missing
+# collection, say, fails both files the same way.
+#
+# Compared with all whitespace removed. Ansible wraps warnings at 80
+# columns whatever COLUMNS says when stdout is not a terminal, and breaks
+# inside a path at a hyphen, so no pattern survives the output as printed.
+offline_inventory() {
+    ( cd "$WORK" && env -u AWS_PROFILE -u AWS_REGION -u AWS_ACCESS_KEY_ID \
+        -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+        AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+        AWS_EC2_METADATA_DISABLED=true AZURE_CONFIG_DIR="${WORK}/no-az" \
+        ansible-inventory -i "$1" --list 2>&1 ) | tr -d ' \t\n'
+}
+
+for pair in "aws_ec2 amazon.aws.aws_ec2 aws" "azure_rm azure.azcollection.azure_rm azure"; do
+    read -r name plugin old <<< "$pair"
+    inv="${REPO_ROOT}/ansible/inventory/${name}.yml"
+    rejected="couldnotbeverifiedbyinventoryplugin'${plugin}'"
+
+    control="${WORK}/renamed/${old}.yml"
+    mkdir -p "${WORK}/renamed"
+    cp "$inv" "$control"
+    if [[ "$(offline_inventory "$control")" == *"$rejected"* ]]; then
+        ok "${plugin}: the control, ${old}.yml, is rejected"
+    else
+        bad "${plugin}: the control, ${old}.yml, is rejected" \
+            "ansible-inventory never said it could not verify ${old}.yml -- is the collection installed? The check below means nothing without it"
+    fi
+
+    # The plugin line is pinned too: a file naming a plugin that does not
+    # exist is never "not verified" either -- it is never tried at all.
+    OUT_INV="$(offline_inventory "$inv")"
+    if [[ "$(sed -n 's/^plugin: *//p' "$inv")" == "$plugin" \
+       && "$OUT_INV" != *"couldnotbeverified"* && "$OUT_INV" == *"$inv"* ]]; then
+        ok "${plugin}: accepts inventory/${name}.yml"
+    else
+        bad "${plugin}: accepts inventory/${name}.yml" \
+            "ansible-inventory could not verify it, or never read it: ${OUT_INV:0:300}"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'

@@ -23,7 +23,7 @@
 #
 # What it deliberately does NOT do:
 #   Write an inventory. Instances are discovered dynamically by tag —
-#   see ansible/inventory/aws.yml and azure.yml — because a static
+#   see ansible/inventory/aws_ec2.yml and azure_rm.yml — because a static
 #   inventory goes stale the moment the scale set replaces a node, and
 #   goes stale silently.
 #
@@ -160,7 +160,7 @@ vault_awskms_key_id: ${KMS_KEY_ID}
 
 # Raft peers are discovered through the EC2 API by this tag rather than
 # listed statically, so replacing a node needs no inventory change. The
-# same tag drives ansible/inventory/aws.yml.
+# same tag drives ansible/inventory/aws_ec2.yml.
 vault_cluster_tag: ${CLUSTER_TAG}
 vault_cluster_name: ${CLUSTER_NAME}
 
@@ -191,7 +191,7 @@ vault_azurekeyvault_key_name: ${KEY_NAME}
 vault_scale_set_name: ${SCALE_SET_NAME}
 vault_resource_group: ${RESOURCE_GROUP}
 
-# Still emitted because ansible/inventory/azure.yml filters on it.
+# Still emitted because ansible/inventory/azure_rm.yml filters on it.
 vault_cluster_tag: ${CLUSTER_TAG}
 vault_cluster_name: ${CLUSTER_NAME}
 

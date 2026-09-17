@@ -275,7 +275,7 @@ terraform -chdir=terraform/aws apply
 # is an instance id. See deployment.md#certificates.
 ./scripts/generate-cloud-certs.sh --cluster-name vault-reference
 
-cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 ```
 
 ### Azure
@@ -293,7 +293,7 @@ terraform -chdir=terraform/azure init -backend-config=backend.hcl
 terraform -chdir=terraform/azure apply \
     -var "ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
 ./scripts/terraform-to-ansible.sh --cloud azure  # outputs -> group_vars
-cd ansible && ansible-playbook -i inventory/azure.yml playbooks/site.yml
+cd ansible && ansible-playbook -i inventory/azure_rm.yml playbooks/site.yml
 ```
 
 `ssh_public_key` has no default and Azure will not create a Linux scale
@@ -319,7 +319,7 @@ Ansible configures what a running cluster needs: snapshots, audit
 devices, PKI node certificates, hardening.
 
 Note that `terraform-to-ansible.sh` writes **group_vars, not an
-inventory**. The inventory is dynamic (`ansible/inventory/aws.yml`) and
+inventory**. The inventory is dynamic (`ansible/inventory/aws_ec2.yml`) and
 discovers instances by tag, because a static inventory goes stale the
 moment the scale set replaces a node — and goes stale silently. That
 distinction matters for the next section: they are two separate things
@@ -499,7 +499,7 @@ before relying on the invocation.
 ### 5. The Ansible handoff — two separate things
 
 *Claimed by:* `scripts/terraform-to-ansible.sh`,
-`ansible/inventory/aws.yml`
+`ansible/inventory/aws_ec2.yml`
 *Never verified:* against real Terraform outputs, or a real cloud API
 
 **5a. group_vars are generated from real outputs.** The script is tested
@@ -518,8 +518,8 @@ that cannot be tested locally at all — it queries the cloud API.
 
 ```bash
 cd ansible
-ansible-inventory -i inventory/aws.yml --list
-ansible -i inventory/aws.yml vault_nodes -m ping
+ansible-inventory -i inventory/aws_ec2.yml --list
+ansible -i inventory/aws_ec2.yml vault_nodes -m ping
 ```
 
 **Expect** every node. **Failure looks like** an empty group, which means
@@ -537,8 +537,8 @@ bastion or a node.
 ./scripts/terraform-to-ansible.sh --cloud azure
 cat ansible/group_vars/vault_nodes.yml   # same path for both clouds
 cd ansible
-ansible-inventory -i inventory/azure.yml --list
-ansible -i inventory/azure.yml vault_nodes -m ping
+ansible-inventory -i inventory/azure_rm.yml --list
+ansible -i inventory/azure_rm.yml vault_nodes -m ping
 ```
 
 **And here 5a and 5b are genuinely independent, which they are not on

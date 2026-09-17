@@ -10,7 +10,7 @@
 #   --cluster-name <name>  Required. The cluster's name, which decides the
 #                          servername every peer verifies a leader against.
 #   --inventory <path>     Ansible inventory to read the hosts from
-#                          (default: ansible/inventory/aws.yml).
+#                          (default: ansible/inventory/aws_ec2.yml).
 #   --hosts-json <path>    Read `ansible-inventory --list` output from a
 #                          file instead of running it. For testing, and
 #                          for a control machine without the AWS
@@ -89,7 +89,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME=""
-INVENTORY="${REPO_ROOT}/ansible/inventory/aws.yml"
+INVENTORY="${REPO_ROOT}/ansible/inventory/aws_ec2.yml"
 HOSTS_JSON=""
 OUT_DIR="${REPO_ROOT}/ansible/files/tls"
 DAYS_LEAF=90
@@ -243,4 +243,4 @@ log ""
 log "Every leaf carries ${CLUSTER_SERVERNAME}, the name a follower verifies"
 log "a leader against. Nothing forms a cluster without it."
 log ""
-log "Next: cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml"
+log "Next: cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml"

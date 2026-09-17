@@ -137,7 +137,7 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
   boot_diagnostics {}
 
   tags = merge(module.vault_cluster.cluster_tags, {
-    # What ansible/inventory/azure.yml filters on. NOT what retry_join
+    # What ansible/inventory/azure_rm.yml filters on. NOT what retry_join
     # matches: go-discover's azure provider rejects a mix of tag and
     # scale-set selectors, so the cloud-init template enumerates the
     # scale set instead and never looks at tags.

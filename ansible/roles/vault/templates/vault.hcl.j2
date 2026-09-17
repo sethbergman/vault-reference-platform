@@ -14,7 +14,7 @@ storage "raft" {
   # discovery here cannot drift from what Terraform actually built.
 {% if vault_cloud == "aws" %}
   # AWS filters on the same EC2 instance tag the dynamic inventory uses
-  # (ansible/inventory/aws.yml), so cluster formation and configuration
+  # (ansible/inventory/aws_ec2.yml), so cluster formation and configuration
   # management break together rather than one drifting from the other.
   retry_join {
     auto_join           = "provider=aws region={{ vault_aws_region }} tag_key={{ vault_cluster_tag.split('=')[0] }} tag_value={{ vault_cluster_tag.split('=')[1] }}"

@@ -76,7 +76,7 @@ deployments. To enable auto-unseal, copy the matching example into
 cp ansible/group_vars/vault_nodes_aws.yml.example \
    ansible/group_vars/vault_nodes.yml
 # fill in the terraform output values it references, then:
-ansible-playbook -i inventory/aws playbooks/site.yml
+ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 ```
 
 (`vault_nodes_azure.yml.example` for the Azure profile.)
