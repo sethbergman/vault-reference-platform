@@ -17,9 +17,10 @@ storage "raft" {
   # (ansible/inventory/aws_ec2.yml), so cluster formation and configuration
   # management break together rather than one drifting from the other.
   retry_join {
-    auto_join           = "provider=aws region={{ vault_aws_region }} tag_key={{ vault_cluster_tag.split('=')[0] }} tag_value={{ vault_cluster_tag.split('=')[1] }}"
-    auto_join_scheme    = "https"
-    leader_ca_cert_file = "{{ vault_tls_dir }}/ca.crt"
+    auto_join             = "provider=aws region={{ vault_aws_region }} tag_key={{ vault_cluster_tag.split('=')[0] }} tag_value={{ vault_cluster_tag.split('=')[1] }}"
+    auto_join_scheme      = "https"
+    leader_tls_servername = "{{ vault_cluster_name }}.vault.internal"
+    leader_ca_cert_file   = "{{ vault_tls_dir }}/ca.crt"
   }
 {% elif vault_cloud == "azure" %}
   # Azure uses scale-set mode, not tag mode. go-discover accepts
@@ -31,11 +32,19 @@ storage "raft" {
   # This keeps the Ansible path identical to what cloud-init writes; see
   # terraform/azure/templates/cloud-init.sh.tftpl.
   retry_join {
-    auto_join           = "provider=azure subscription_id={{ vault_azure_subscription_id }} resource_group={{ vault_resource_group }} vm_scale_set={{ vault_scale_set_name }}"
-    auto_join_scheme    = "https"
-    leader_ca_cert_file = "{{ vault_tls_dir }}/ca.crt"
+    auto_join             = "provider=azure subscription_id={{ vault_azure_subscription_id }} resource_group={{ vault_resource_group }} vm_scale_set={{ vault_scale_set_name }}"
+    auto_join_scheme      = "https"
+    leader_tls_servername = "{{ vault_cluster_name }}.vault.internal"
+    leader_ca_cert_file   = "{{ vault_tls_dir }}/ca.crt"
   }
 {% endif %}
+  #
+  # leader_tls_servername is the one name every follower verifies a leader
+  # against, whichever node leads; every certificate carries it. cloud-init
+  # has always set it and this template never did, so the playbook quietly
+  # replaced a config that verified the cluster's name with one verifying
+  # an IP -- which works only while certificates carry IP SANs, and stops
+  # once Vault's PKI issues them. Seen on the first real apply, in the diff.
 }
 
 listener "tcp" {
@@ -48,6 +57,10 @@ listener "tcp" {
   tls_client_ca_file = "{{ vault_tls_dir }}/ca.crt"
 
   tls_min_version = "tls12"
+
+  telemetry {
+    unauthenticated_metrics_access = false
+  }
 }
 
 # Rendered from vault_ui_enabled rather than omitted when the UI is off,
@@ -67,6 +80,14 @@ ui = {{ vault_ui_enabled | lower }}
 
 api_addr     = "https://{{ ansible_default_ipv4.address }}:8200"
 cluster_addr = "https://{{ ansible_default_ipv4.address }}:8201"
+
+# Also always in cloud-init and never here: without a retention time
+# /v1/sys/metrics has nothing in Prometheus format, so the playbook turned
+# off the metrics the monitoring stack scrapes on every node it touched.
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}
 
 {% if vault_seal_type == "awskms" %}
 # Auto-unseal via AWS KMS. Relies on the instance role for credentials —

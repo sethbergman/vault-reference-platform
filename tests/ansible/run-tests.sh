@@ -217,8 +217,8 @@ assert_contains "has a retry_join stanza"       "$AWS_HCL" "retry_join {"
 assert_contains "uses the aws provider"         "$AWS_HCL" "provider=aws"
 assert_contains "filters on the cluster tag"    "$AWS_HCL" "tag_key=VaultCluster tag_value=vault-test"
 assert_contains "passes the region"             "$AWS_HCL" "region=us-east-1"
-assert_contains "joins over https"              "$AWS_HCL" 'auto_join_scheme    = "https"'
-assert_contains "verifies peers against the CA" "$AWS_HCL" 'leader_ca_cert_file = "/etc/vault.d/tls/ca.crt"'
+assert_contains "joins over https"              "$AWS_HCL" 'auto_join_scheme      = "https"'
+assert_contains "verifies peers against the CA" "$AWS_HCL" 'leader_ca_cert_file   = "/etc/vault.d/tls/ca.crt"'
 assert_contains "configures the KMS seal"       "$AWS_HCL" 'seal "awskms"'
 assert_contains "requires client certs"         "$AWS_HCL" "tls_client_ca_file"
 assert_not_contains "no unrendered Jinja left"  "$AWS_HCL" "{{"
@@ -535,6 +535,38 @@ YML
 TLS_PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks/tls-probe.yml) 2>&1 )" || true
 assert_contains "the role's CA, leaf and key sources all resolve" \
     "$TLS_PROBE" "ca=probe-ca leaf=probe-leaf key=probe-key"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The playbook writes what cloud-init wrote ===\n'
+# ---------------------------------------------------------------------------
+# A node's vault.hcl is written twice: by cloud-init at boot, then by this
+# role. On the first real apply the playbook's diff removed two things
+# cloud-init had set and this template never had -- the leader's TLS
+# servername, and telemetry. Neither broke the run. One changes what a join
+# verifies once certificates stop carrying IPs; the other empties the
+# metrics endpoint monitoring scrapes.
+#
+# Pinned to the rendered value for each cloud, and to the cloud templates'
+# own lines, so the two writers cannot drift apart again.
+for pair in "aws AWS_HCL AWS_INIT" "azure AZURE_HCL AZURE_INIT"; do
+    read -r cloud hcl_var init_var <<< "$pair"
+    hcl="${!hcl_var}"; init="${!init_var}"
+    assert_contains "${cloud}: the playbook verifies the leader as <cluster>.vault.internal" \
+        "$hcl" 'leader_tls_servername = "vault-test.vault.internal"'
+    if grep -qE 'leader_tls_servername += "[$]+\{CLUSTER_NAME\}\.vault\.internal"' "$init"; then
+        ok "${cloud}: and cloud-init verifies it by the same name"
+    else
+        bad "${cloud}: and cloud-init verifies it by the same name" "no such line in ${init}"
+    fi
+    for line in 'prometheus_retention_time = "24h"' 'disable_hostname          = true' \
+                'unauthenticated_metrics_access = false'; do
+        if [[ "$hcl" == *"$line"* ]] && grep -qF "$line" "$init"; then
+            ok "${cloud}: both writers set ${line%% *}"
+        else
+            bad "${cloud}: both writers set ${line%% *}" "missing from the rendered template or from ${init}"
+        fi
+    done
+done
 
 # ---------------------------------------------------------------------------
 printf '\n=== The inventory plugins accept these files ===\n'
