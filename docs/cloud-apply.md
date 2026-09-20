@@ -872,10 +872,11 @@ the cluster, it holds the state of every other cluster in the account,
 and it is protected by `prevent_destroy` so a `terraform destroy` in a
 bootstrap directory fails rather than succeeding quietly.
 
-It costs cents a month with nothing in it. Leave it: the next apply in
-this account reuses it, and removing it means editing the configuration
-first, which is the deliberate act it should be. See
-[terraform-state.md](terraform-state.md).
+Empty, it costs about a dollar a month — almost all of it the
+customer-managed KMS key the state is encrypted with, not the storage.
+Leave it: the next apply in this account reuses it, and removing it means
+editing the configuration first, which is the deliberate act it should
+be. See [terraform-state.md](terraform-state.md).
 
 ### Then check the console
 

@@ -294,19 +294,25 @@ The blockers are, in order:
    `-backend=false` still runs `validate` with no credentials, which is
    asserted rather than assumed.
 
-   What is left is what is left everywhere else in this section: neither
-   backend has been pointed at a real account. Nothing here shows that
-   the IAM permissions to reach the bucket are the ones granted, that two
-   applies from two machines race the way one process planting a lock
-   file does, or that the Entra role assignment on the Azure side is
-   enough for a second person to run `terraform` at all — and the Azure
+   The AWS half has now been pointed at a real account, by the
+   2026-09-17 session: `terraform/aws/bootstrap` applied in one pass,
+   the generated `backend.hcl` initialised the profile against the
+   bucket it had just built, and every plan, apply and destroy that
+   followed kept its state there rather than on disk. The bucket is the
+   one thing that session deliberately left behind.
+
+   What is left is narrower than it was. Nothing shows that two applies
+   from two machines race the way one process planting a lock file does,
+   or that a least-privilege identity can reach the bucket at all — that
+   session ran as an administrator, which answers the question in the
+   easiest possible way. And the Azure side is untouched: the Entra role
+   assignment has never been granted to a second person, and the Azure
    bootstrap module has never been applied to anything, because moto is
    an AWS API and there is no emulator for the other side this
    repository can run
    ([why](cloud-apply.md#why-azure-has-no-emulated-apply)).
 
-   So this item moves from "not started" to the same footing as blockers
-   1 and 2, and it closes when they do. See
+   So this item is half proven, and closes with blocker 2. See
    [terraform-state.md](terraform-state.md).
 5. **An upgrade path that matches how the profiles actually deploy.**
    `scripts/vault-upgrade.sh` steps the leader down, swaps the binary

@@ -177,6 +177,11 @@ assertions in that suite are static reads of the configuration and are
 labelled as such. `terraform/azure/bootstrap` has never been applied to
 anything.
 
-Neither backend has been pointed at a real account, which puts remote
-state exactly where the profiles it serves already are: configured, not
-exercised. See [roadmap.md](roadmap.md) and [cloud-apply.md](cloud-apply.md).
+The AWS backend has been pointed at a real account once, by the
+2026-09-17 session: the bootstrap module built the bucket and its KMS
+key, the generated `backend.hcl` initialised the profile against it, and
+every plan, apply and destroy in that session kept its state there. What
+that does not answer is whether two machines race for the lock the way
+one process planting a lock file does, or whether a least-privilege
+identity can reach the bucket — the session ran as an administrator.
+The Azure backend remains configured and never exercised. See [roadmap.md](roadmap.md) and [cloud-apply.md](cloud-apply.md).

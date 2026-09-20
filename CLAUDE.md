@@ -552,7 +552,9 @@ between here and v1.0:
    `terraform/<cloud>/bootstrap` generates. CI's `-backend=false` is what
    keeps `validate` runnable without credentials, and
    `tests/state-backend` asserts it still works — do not regress it.
-   Neither backend has been pointed at a real account.
+   The AWS backend has been used against a real account once (the
+   2026-09-17 apply); the Azure one never has, and no identity narrower
+   than an administrator has been tried against either.
 5. An upgrade path matching how the profiles deploy. The canonical model
    per profile is now decided (`docs/rolling-upgrades.md`): instance
    refresh on AWS, `vault-upgrade.sh` on Azure and on fixed machines.
