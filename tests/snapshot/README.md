@@ -110,11 +110,14 @@ That a snapshot restores. `tests/upgrade` and `scripts/dr-drill.sh` cover
 the restore path against a real local cluster; this suite covers the
 capture and upload path against shims.
 
-Neither cloud profile has been applied to a real account, so the S3 and
-blob uploads have never run against real storage — the emulated apply
-covers the Terraform profile, not the snapshot path that uses it. The
-status-code and credential handling are asserted; the endpoints' actual
-behaviour is not.
+The S3 and blob uploads have never run against real storage. The
+emulated apply covers the Terraform profile, not the snapshot path that
+uses it, and the 2026-09-17 AWS apply never reached this item: the
+`vault_snapshots` role is off by default and enabling it was out of
+scope, so the bucket that session built stayed empty — which is also why
+its teardown never exercised the `BucketNotEmpty` path. The status-code
+and credential handling are asserted; the endpoints' actual behaviour is
+not.
 
 ## What the shims got wrong
 

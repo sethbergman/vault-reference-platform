@@ -43,9 +43,16 @@ One of the assertions proves that strictness is actually on, so the rest
 are load-bearing.
 
 **No cluster is ever formed.** These tests check that the configuration
-is right, not that Vault accepts it. Nothing here has been applied
-against a real cloud account; see "What this has and has not been tested
-against" in [`docs/deployment.md`](../../docs/deployment.md).
+is right, not that Vault accepts it.
+
+They are also the suite the 2026-09-17 AWS apply embarrassed most: it
+found four defects in this exact seam, and every assertion here passed
+throughout, because each of them read a file rather than asking Ansible
+what it would do with one. The four checks added since — a plugin asked
+whether it will open the inventory, `ansible-playbook` asked which
+`group_vars` a host receives, the package spelling held to cloud-init's,
+and a lookup resolving the role's TLS paths — exist for that reason. See
+[`docs/cloud-apply.md`](../../docs/cloud-apply.md).
 
 ## The mutual-exclusivity guard
 
