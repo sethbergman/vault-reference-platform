@@ -88,7 +88,7 @@ indistinguishable from a real regression.
 
 ### The inventory's compose block
 
-`eval-compose.py` renders `ansible/inventory/aws.yml`'s `compose` values
+`eval-compose.py` renders `ansible/inventory/aws_ec2.yml`'s `compose` values
 the way `aws_ec2` would, against a synthetic instance. They are Jinja
 expressions rather than strings, and the failure that motivated it is
 invisible to every other check here: a literal written bare —

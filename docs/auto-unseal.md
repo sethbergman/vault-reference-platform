@@ -70,13 +70,13 @@ The Ansible seal stanza doesn't turn on by itself — `vault_seal_type`
 defaults to `shamir` (plain manual unseal,
 `ansible/roles/vault/defaults/main.yml`) so nothing changes for existing
 deployments. To enable auto-unseal, copy the matching example into
-`group_vars/vault_nodes.yml`:
+`inventory/group_vars/vault_nodes.yml`:
 
 ```bash
-cp ansible/group_vars/vault_nodes_aws.yml.example \
-   ansible/group_vars/vault_nodes.yml
+cp ansible/inventory/group_vars/vault_nodes_aws.yml.example \
+   ansible/inventory/group_vars/vault_nodes.yml
 # fill in the terraform output values it references, then:
-ansible-playbook -i inventory/aws playbooks/site.yml
+ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 ```
 
 (`vault_nodes_azure.yml.example` for the Azure profile.)

@@ -137,7 +137,7 @@ on 8200, Key Vault auto-unseal, and a storage account for Raft snapshots.
 `ssh_public_key` is required — Azure will not create a Linux scale set
 with neither a password nor a key.
 
-Same `group_vars/vault_nodes_azure.yml.example` step as AWS before
+Same `inventory/group_vars/vault_nodes_azure.yml.example` step as AWS before
 running the playbook.
 
 ### Differences from the AWS profile
@@ -180,7 +180,7 @@ hand out of `terraform output` works exactly once.
 ```
 
 That reads `terraform output -json` and writes
-`ansible/group_vars/vault_nodes.yml`. Re-run it after any apply rather
+`ansible/inventory/group_vars/vault_nodes.yml`. Re-run it after any apply rather
 than editing the file — a hand edit drifts from the infrastructure it
 describes and nothing catches that. It refuses to overwrite an existing
 file unless you pass `--force`, and it aborts without writing anything if
@@ -190,14 +190,14 @@ a Vault which starts and cannot unseal.
 Then run the playbook:
 
 ```bash
-cd ansible && ansible-playbook -i inventory/aws.yml playbooks/site.yml
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 ```
 
-Substitute `inventory/azure.yml` for the Azure profile.
+Substitute `inventory/azure_rm.yml` for the Azure profile.
 
 ### Why the inventory is dynamic
 
-`inventory/aws.yml` and `inventory/azure.yml` discover nodes through the
+`inventory/aws_ec2.yml` and `inventory/azure_rm.yml` discover nodes through the
 cloud API by tag, not from a list of addresses. The autoscaling group and
 the scale set both replace instances, so a static inventory is wrong the
 first time a node is recycled — and wrong *silently*: the playbook
@@ -227,7 +227,7 @@ no public address, no bastion to patch and pay for, and the session is
 recorded against the caller's IAM identity rather than against whoever
 holds a key.
 
-It is configured in `ansible/inventory/aws.yml` and needs nothing from
+It is configured in `ansible/inventory/aws_ec2.yml` and needs nothing from
 the playbook. Three things it does need, none of which Terraform can
 supply:
 

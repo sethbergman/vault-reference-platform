@@ -20,7 +20,7 @@ vault_awskms_region: us-east-1
 vault_awskms_key_id: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE
 
 # Raft auto-join filters EC2 instance tags on this, and so does
-# ansible/inventory/aws.yml.
+# ansible/inventory/aws_ec2.yml.
 vault_cluster_tag: VaultCluster=vault-reference
 vault_cluster_name: vault-reference
 

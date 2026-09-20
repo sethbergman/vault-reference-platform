@@ -385,7 +385,7 @@ printf '\n=== The inventory can tell the nodes apart ===\n'
 # Nothing else here can see it. terraform validate reads one file, the
 # mocks read the configuration's shape, and tests/ansible checks this file
 # parses as YAML. It is the Terraform/Ansible seam this suite is for.
-INV="${REPO_ROOT}/ansible/inventory/aws.yml"
+INV="${REPO_ROOT}/ansible/inventory/aws_ec2.yml"
 HOSTNAMES="$(python3 -c '
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}

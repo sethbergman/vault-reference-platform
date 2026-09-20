@@ -60,8 +60,10 @@ RC=0
 OUT=""
 
 reset_scenario() {
-    FAKE_LOG="${WORK}/log.$RANDOM"
-    FAKE_STATE_DIR="${WORK}/state.$RANDOM"
+    # mktemp, not $RANDOM -- see the note in tests/agent. A shared log
+    # between two scenarios lets one satisfy the next's assert_log_has.
+    FAKE_LOG="$(mktemp "${WORK}/log.XXXXXXXX")"
+    FAKE_STATE_DIR="$(mktemp -d "${WORK}/state.XXXXXXXX")"
     mkdir -p "$FAKE_STATE_DIR"
     : > "$FAKE_LOG"
     export FAKE_LOG FAKE_STATE_DIR

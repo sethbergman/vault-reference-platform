@@ -48,7 +48,7 @@ module "vault_cluster" {
 
 # Auto-unseal key for Vault's "awskms" seal stanza (see
 # ansible/roles/vault/templates/vault.hcl.j2 and
-# ansible/group_vars/vault_nodes_aws.yml.example). Key rotation is AWS-side
+# ansible/inventory/group_vars/vault_nodes_aws.yml.example). Key rotation is AWS-side
 # and transparent to Vault — it always calls KMS for the current key
 # version, so there's no coordination needed with the Vault cluster.
 # The key everything durable depends on.

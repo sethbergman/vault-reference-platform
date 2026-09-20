@@ -16,7 +16,8 @@
 # side of the handoff fails the test rather than producing a config that
 # is syntactically fine and never forms a cluster.
 #
-# Requirements: bash, jq, python3 with jinja2 and pyyaml
+# Requirements: bash, jq, python3 with jinja2 and pyyaml, and the
+#   ansible package (its inventory plugins, and ansible-playbook)
 #   No terraform and no cloud credentials — the fixtures are saved
 #   `terraform output -json` payloads.
 
@@ -103,6 +104,11 @@ for dep in jq python3; do
 done
 python3 -c 'import jinja2, yaml' 2>/dev/null \
     || { red "ERROR: python3 needs the jinja2 and pyyaml modules"; exit 1; }
+# The community ansible package, not ansible-core alone: the inventory
+# checks need the amazon.aws and azure.azcollection plugins to exist.
+for dep in ansible-inventory ansible-playbook; do
+    command -v "$dep" >/dev/null 2>&1 || { red "ERROR: ${dep} not found (pip install ansible)"; exit 1; }
+done
 [[ -x "$HANDOFF" ]] || { red "ERROR: ${HANDOFF} is not executable"; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -211,8 +217,8 @@ assert_contains "has a retry_join stanza"       "$AWS_HCL" "retry_join {"
 assert_contains "uses the aws provider"         "$AWS_HCL" "provider=aws"
 assert_contains "filters on the cluster tag"    "$AWS_HCL" "tag_key=VaultCluster tag_value=vault-test"
 assert_contains "passes the region"             "$AWS_HCL" "region=us-east-1"
-assert_contains "joins over https"              "$AWS_HCL" 'auto_join_scheme    = "https"'
-assert_contains "verifies peers against the CA" "$AWS_HCL" 'leader_ca_cert_file = "/etc/vault.d/tls/ca.crt"'
+assert_contains "joins over https"              "$AWS_HCL" 'auto_join_scheme      = "https"'
+assert_contains "verifies peers against the CA" "$AWS_HCL" 'leader_ca_cert_file   = "/etc/vault.d/tls/ca.crt"'
 assert_contains "configures the KMS seal"       "$AWS_HCL" 'seal "awskms"'
 assert_contains "requires client certs"         "$AWS_HCL" "tls_client_ca_file"
 assert_not_contains "no unrendered Jinja left"  "$AWS_HCL" "{{"
@@ -327,8 +333,9 @@ printf '\n=== Dynamic inventories ===\n'
 # Not a substitute for running them against a live API, which needs
 # credentials. This checks the part that can be checked offline: they
 # parse, and they filter on the same tag Terraform sets.
-for cloud in aws azure; do
-    inv="${REPO_ROOT}/ansible/inventory/${cloud}.yml"
+for pair in "aws aws_ec2" "azure azure_rm"; do
+    cloud="${pair% *}"
+    inv="${REPO_ROOT}/ansible/inventory/${pair#* }.yml"
     if python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$inv"; then
         ok "${cloud} inventory is valid YAML"
     else
@@ -346,7 +353,7 @@ done
 #
 # Render them the way aws_ec2 would and assert the values.
 COMPOSE="$(python3 "${SCRIPT_DIR}/eval-compose.py" \
-    "${REPO_ROOT}/ansible/inventory/aws.yml" 2>&1)" || COMPOSE="EVAL FAILED: ${COMPOSE}"
+    "${REPO_ROOT}/ansible/inventory/aws_ec2.yml" 2>&1)" || COMPOSE="EVAL FAILED: ${COMPOSE}"
 
 compose_value() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' <<< "$COMPOSE"; }
 
@@ -397,11 +404,224 @@ fi
 # Azure's nodes are equally private, but its inventory has no compose
 # connection settings -- so if one profile grows a tunnel the other must
 # say why it has not. This assertion is here to be noticed.
-if grep -q "ProxyCommand" "${REPO_ROOT}/ansible/inventory/azure.yml"; then
+if grep -q "ProxyCommand" "${REPO_ROOT}/ansible/inventory/azure_rm.yml"; then
     ok "azure inventory: also tunnels (update this assertion)"
 else
     ok "azure inventory: does not tunnel, and its apply is still unproven"
 fi
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+printf '\n=== ansible-playbook reads what the handoff writes ===\n'
+# ---------------------------------------------------------------------------
+# Ansible loads group_vars from beside the inventory or beside the
+# playbook, and nowhere else. The handoff wrote to ansible/group_vars/,
+# beside neither. Ad-hoc `ansible` and `ansible-inventory` run from
+# ansible/ happened to read it; ansible-playbook did not. On the first real
+# apply every node's vault_seal_type was undefined to site.yml, and the
+# role default is shamir -- a config that cannot auto-unseal, written by a
+# run that would have reported success.
+#
+# Every assertion above reads the generated file directly, so none of them
+# could see it. This runs the script with its own default output in a copy
+# of the tree, and asks ansible-playbook what a host receives.
+TREE="${WORK}/tree"
+mkdir -p "${TREE}/scripts" "${TREE}/ansible/playbooks"
+cp "$HANDOFF" "${TREE}/scripts/"
+cp -r "${REPO_ROOT}/ansible/inventory" "${TREE}/ansible/"
+# A developer's own generated file must not answer for the script's.
+find "${TREE}/ansible" -name vault_nodes.yml -delete
+
+if "${TREE}/scripts/terraform-to-ansible.sh" --cloud aws \
+       --state-json "${FIXTURES}/aws-outputs.json" >/dev/null 2>&1; then
+    ok "the handoff writes to its default location"
+else
+    bad "the handoff writes to its default location"
+fi
+
+cat > "${TREE}/ansible/playbooks/probe.yml" <<'YML'
+- name: Probe
+  hosts: vault_nodes
+  gather_facts: false
+  tasks:
+    - name: Report a generated variable without connecting
+      ansible.builtin.debug:
+        msg: "seal={{ vault_seal_type | default('UNDEFINED') }}"
+YML
+
+PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks/probe.yml) 2>&1 )" || true
+assert_contains "ansible-playbook sees the generated vault_seal_type" "$PROBE" "seal=awskms"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The package the role asks for is the one cloud-init installed ===\n'
+# ---------------------------------------------------------------------------
+# The role asked for "vault={{ vault_version }}" everywhere. That is apt's
+# syntax, and not a complete apt version either -- HashiCorp publishes
+# 1.17.2-1 -- so dnf on a real AL2023 node answered "No package
+# vault=1.17.2 available" with vault-1.17.2-1 already installed, and
+# site.yml stopped at that task on every node. The role had never run on a
+# VM: the local profile is containers.
+#
+# cloud-init installs the same version the working way on each cloud, so
+# the role is rendered for each package manager and held to that spelling.
+PKG="$(python3 - "$REPO_ROOT" <<'PY'
+import sys, yaml, jinja2
+root = sys.argv[1]
+tasks = yaml.safe_load(open(f"{root}/ansible/roles/vault/tasks/main.yml"))
+task = next(t for t in tasks if t.get("name") == "Install Vault package")
+expr = task["ansible.builtin.package"]["name"]
+version = yaml.safe_load(open(f"{root}/ansible/roles/vault/defaults/main.yml"))["vault_version"]
+env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+for mgr in ("dnf", "apt"):
+    rendered = env.from_string(expr).render(vault_version=version, ansible_facts={"pkg_mgr": mgr})
+    print(mgr, rendered.strip(), version)
+PY
+)" || PKG="RENDER FAILED"
+
+# The quoted package argument of the install line in each cloud template,
+# with the shell's version variable put back to the role's version.
+cloud_init_spelling() {
+    local tpl="$1" cmd="$2" version="$3"
+    grep -oE "${cmd} install -y \"vault[^\"]*\"" "$tpl" | head -1 \
+        | sed -E 's/.*"(vault[^"]*)"/\1/; s/[$]+\{VAULT_VERSION\}/'"${version}"'/'
+}
+
+PKG_VERSION="$(awk 'NR==1 {print $3}' <<< "$PKG")"
+assert_eq "on dnf (AWS) the role asks for what user-data installed" \
+    "$(awk '$1 == "dnf" {print $2}' <<< "$PKG")" \
+    "$(cloud_init_spelling "$AWS_INIT" dnf "$PKG_VERSION")"
+assert_eq "on apt (Azure) the role asks for what cloud-init installed" \
+    "$(awk '$1 == "apt" {print $2}' <<< "$PKG")" \
+    "$(cloud_init_spelling "$AZURE_INIT" apt-get "$PKG_VERSION")"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The role finds the certificates where they are issued ===\n'
+# ---------------------------------------------------------------------------
+# The role's TLS sources were relative -- "files/tls/ca.crt" -- which
+# Ansible looks for in the role's files/ and the playbook's files/.
+# generate-cloud-certs.sh writes ansible/files/tls, in neither, and the
+# first real apply stopped on every node with "Could not find or access".
+#
+# In the same copy of the tree: material where the certificate script's
+# default puts it, the role's defaults loaded as they are, and a file lookup
+# from a playbook. A lookup searches the same places as a copy's src.
+CERT_OUT_REL="$(sed -nE 's/^OUT_DIR="[$][{]REPO_ROOT[}]\/(.*)"$/\1/p' "${REPO_ROOT}/scripts/generate-cloud-certs.sh")"
+if [[ -n "$CERT_OUT_REL" ]]; then
+    ok "the certificate script's default output is ${CERT_OUT_REL}"
+else
+    bad "the certificate script's default output is readable" "no OUT_DIR default found"
+fi
+mkdir -p "${TREE}/${CERT_OUT_REL}" "${TREE}/ansible/roles/vault"
+cp -r "${REPO_ROOT}/ansible/roles/vault/defaults" "${TREE}/ansible/roles/vault/"
+printf 'probe-ca' > "${TREE}/${CERT_OUT_REL}/ca.crt"
+printf 'probe-leaf' > "${TREE}/${CERT_OUT_REL}/localhost.crt"
+printf 'probe-key' > "${TREE}/${CERT_OUT_REL}/localhost.key"
+
+cat > "${TREE}/ansible/playbooks/tls-probe.yml" <<'YML'
+- name: Probe
+  hosts: vault_nodes
+  gather_facts: false
+  vars_files:
+    - ../roles/vault/defaults/main.yml
+  tasks:
+    - name: Read the TLS sources the role would copy
+      ansible.builtin.debug:
+        msg: >-
+          ca={{ lookup('ansible.builtin.file', vault_tls_ca_src) }}
+          leaf={{ lookup('ansible.builtin.file', vault_tls_cert_src) }}
+          key={{ lookup('ansible.builtin.file', vault_tls_key_src) }}
+YML
+
+TLS_PROBE="$( (cd "${TREE}/ansible" && ansible-playbook -i inventory/local playbooks/tls-probe.yml) 2>&1 )" || true
+assert_contains "the role's CA, leaf and key sources all resolve" \
+    "$TLS_PROBE" "ca=probe-ca leaf=probe-leaf key=probe-key"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The playbook writes what cloud-init wrote ===\n'
+# ---------------------------------------------------------------------------
+# A node's vault.hcl is written twice: by cloud-init at boot, then by this
+# role. On the first real apply the playbook's diff removed two things
+# cloud-init had set and this template never had -- the leader's TLS
+# servername, and telemetry. Neither broke the run. One changes what a join
+# verifies once certificates stop carrying IPs; the other empties the
+# metrics endpoint monitoring scrapes.
+#
+# Pinned to the rendered value for each cloud, and to the cloud templates'
+# own lines, so the two writers cannot drift apart again.
+for pair in "aws AWS_HCL AWS_INIT" "azure AZURE_HCL AZURE_INIT"; do
+    read -r cloud hcl_var init_var <<< "$pair"
+    hcl="${!hcl_var}"; init="${!init_var}"
+    assert_contains "${cloud}: the playbook verifies the leader as <cluster>.vault.internal" \
+        "$hcl" 'leader_tls_servername = "vault-test.vault.internal"'
+    if grep -qE 'leader_tls_servername += "[$]+\{CLUSTER_NAME\}\.vault\.internal"' "$init"; then
+        ok "${cloud}: and cloud-init verifies it by the same name"
+    else
+        bad "${cloud}: and cloud-init verifies it by the same name" "no such line in ${init}"
+    fi
+    for line in 'prometheus_retention_time = "24h"' 'disable_hostname          = true' \
+                'unauthenticated_metrics_access = false'; do
+        if [[ "$hcl" == *"$line"* ]] && grep -qF "$line" "$init"; then
+            ok "${cloud}: both writers set ${line%% *}"
+        else
+            bad "${cloud}: both writers set ${line%% *}" "missing from the rendered template or from ${init}"
+        fi
+    done
+done
+
+# ---------------------------------------------------------------------------
+printf '\n=== The inventory plugins accept these files ===\n'
+# ---------------------------------------------------------------------------
+# Each dynamic inventory is read by a plugin that rejects, unread, any
+# file not named for it. The two were aws.yml and azure.yml: Ansible
+# warned the source "could not be verified", parsed nothing, and the
+# documented playbook command configured no hosts. Everything above this
+# section passed throughout -- valid YAML, the right tag, compose values
+# that render -- in a file no plugin would open.
+#
+# Asked of ansible-inventory, not of a suffix list kept here. Offline, an
+# accepted file goes on to the plugin, which then fails for want of an SDK
+# or credentials; a rejected one says "could not be verified". The same
+# content under the old name is the control: it must be rejected, or the
+# check has stopped being able to tell the difference -- a missing
+# collection, say, fails both files the same way.
+#
+# Compared with all whitespace removed. Ansible wraps warnings at 80
+# columns whatever COLUMNS says when stdout is not a terminal, and breaks
+# inside a path at a hyphen, so no pattern survives the output as printed.
+offline_inventory() {
+    ( cd "$WORK" && env -u AWS_PROFILE -u AWS_REGION -u AWS_ACCESS_KEY_ID \
+        -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+        AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+        AWS_EC2_METADATA_DISABLED=true AZURE_CONFIG_DIR="${WORK}/no-az" \
+        ansible-inventory -i "$1" --list 2>&1 ) | tr -d ' \t\n'
+}
+
+for pair in "aws_ec2 amazon.aws.aws_ec2 aws" "azure_rm azure.azcollection.azure_rm azure"; do
+    read -r name plugin old <<< "$pair"
+    inv="${REPO_ROOT}/ansible/inventory/${name}.yml"
+    rejected="couldnotbeverifiedbyinventoryplugin'${plugin}'"
+
+    control="${WORK}/renamed/${old}.yml"
+    mkdir -p "${WORK}/renamed"
+    cp "$inv" "$control"
+    if [[ "$(offline_inventory "$control")" == *"$rejected"* ]]; then
+        ok "${plugin}: the control, ${old}.yml, is rejected"
+    else
+        bad "${plugin}: the control, ${old}.yml, is rejected" \
+            "ansible-inventory never said it could not verify ${old}.yml -- is the collection installed? The check below means nothing without it"
+    fi
+
+    # The plugin line is pinned too: a file naming a plugin that does not
+    # exist is never "not verified" either -- it is never tried at all.
+    OUT_INV="$(offline_inventory "$inv")"
+    if [[ "$(sed -n 's/^plugin: *//p' "$inv")" == "$plugin" \
+       && "$OUT_INV" != *"couldnotbeverified"* && "$OUT_INV" == *"$inv"* ]]; then
+        ok "${plugin}: accepts inventory/${name}.yml"
+    else
+        bad "${plugin}: accepts inventory/${name}.yml" \
+            "ansible-inventory could not verify it, or never read it: ${OUT_INV:0:300}"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'

@@ -149,7 +149,7 @@ fi
 
 # The nodes have no public address and no inbound port 22, so Ansible
 # reaches them by tunnelling SSH through SSM Session Manager -- see
-# ansible/inventory/aws.yml. The AWS CLI does not implement that itself;
+# ansible/inventory/aws_ec2.yml. The AWS CLI does not implement that itself;
 # it shells out to session-manager-plugin, and without it every
 # connection fails naming the plugin rather than the thing you were
 # doing, which is a slow way to learn this with the meter running.

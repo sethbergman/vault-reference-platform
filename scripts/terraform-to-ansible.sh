@@ -7,7 +7,7 @@
 #
 # Example:
 #   ./terraform-to-ansible.sh --cloud aws
-#   ./terraform-to-ansible.sh --cloud azure --output ansible/group_vars/vault_nodes.yml
+#   ./terraform-to-ansible.sh --cloud azure --output ansible/inventory/group_vars/vault_nodes.yml
 #
 # The seam between "the infrastructure exists" and "Vault is configured on
 # it". Terraform knows the KMS key id, the region, the snapshot bucket;
@@ -23,7 +23,7 @@
 #
 # What it deliberately does NOT do:
 #   Write an inventory. Instances are discovered dynamically by tag —
-#   see ansible/inventory/aws.yml and azure.yml — because a static
+#   see ansible/inventory/aws_ec2.yml and azure_rm.yml — because a static
 #   inventory goes stale the moment the scale set replaces a node, and
 #   goes stale silently.
 #
@@ -65,7 +65,14 @@ done
 [[ "$CLOUD" == "aws" || "$CLOUD" == "azure" ]] || die "--cloud must be aws or azure, got: ${CLOUD}"
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
-[[ -n "$OUTPUT" ]] || OUTPUT="${REPO_ROOT}/ansible/group_vars/vault_nodes.yml"
+# Beside the inventory, because that is one of the two places Ansible
+# reads group_vars from -- the other is beside the playbook. This used to
+# be ansible/group_vars/, beside neither. Ad-hoc `ansible` run from
+# ansible/ happened to read it; ansible-playbook did not, so on the first
+# real apply site.yml saw no vault_seal_type and would have rendered the
+# role default, shamir, onto nodes meant to auto-unseal. tests/ansible
+# asks ansible-playbook what it sees.
+[[ -n "$OUTPUT" ]] || OUTPUT="${REPO_ROOT}/ansible/inventory/group_vars/vault_nodes.yml"
 
 # ---------------------------------------------------------------------------
 # Read the outputs
@@ -160,7 +167,7 @@ vault_awskms_key_id: ${KMS_KEY_ID}
 
 # Raft peers are discovered through the EC2 API by this tag rather than
 # listed statically, so replacing a node needs no inventory change. The
-# same tag drives ansible/inventory/aws.yml.
+# same tag drives ansible/inventory/aws_ec2.yml.
 vault_cluster_tag: ${CLUSTER_TAG}
 vault_cluster_name: ${CLUSTER_NAME}
 
@@ -191,7 +198,7 @@ vault_azurekeyvault_key_name: ${KEY_NAME}
 vault_scale_set_name: ${SCALE_SET_NAME}
 vault_resource_group: ${RESOURCE_GROUP}
 
-# Still emitted because ansible/inventory/azure.yml filters on it.
+# Still emitted because ansible/inventory/azure_rm.yml filters on it.
 vault_cluster_tag: ${CLUSTER_TAG}
 vault_cluster_name: ${CLUSTER_NAME}
 
