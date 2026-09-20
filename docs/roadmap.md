@@ -220,10 +220,14 @@ The blockers are, in order:
      is why the blocker stays open. The group replaced a terminated
      leader in 75 seconds and the replacement never started Vault: its
      certificates arrive only through an Ansible run, named after an
-     instance id that did not exist until the launch. Recovery by hand
-     works and is written down in
-     [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing);
-     recovery without a human does not exist yet. The same gap blocks
+     instance id that did not exist until the launch. Recovery is now two
+     commands rather than improvisation —
+     `generate-cloud-certs.sh --add-missing` signs one leaf from the CA
+     the cluster already trusts, then the playbook runs `--limit` that
+     host — and it is still two commands somebody has to run. See
+     [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing).
+     Unattended recovery means a node fetching its own material at boot,
+     which is a design decision nobody here has made. The same gap blocks
      item 5's instance refresh.
 
    What that session did not reach: snapshots to the bucket, PKI

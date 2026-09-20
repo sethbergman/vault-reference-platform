@@ -166,16 +166,38 @@ exist, until systemd stopped retrying. **Certificates reach a node only
 through an Ansible run, and they are named after instance ids that do not
 exist until after the launch.** Nothing in the automated path issues one.
 
-Recovering it by hand took two steps and worked: issue a leaf from the
-existing CA, then run the playbook limited to the new host. It unsealed
-through KMS and joined as a voter. `scripts/configure-autopilot.sh` ran
-against the live cluster for the first time here, and the dead voter was
-pruned once the replacement existed.
+Recovering it takes two commands, and they worked:
+
+```bash
+./scripts/generate-cloud-certs.sh --cluster-name vault-reference --add-missing
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml \
+    --limit <new-instance-id>
+```
+
+`--add-missing` signs one more leaf with the CA already on disk and
+already trusted, leaving every other node's material alone — the CA key
+was being kept for exactly this and there was no mode that used it. On
+2026-09-17 the leaf was cut by hand because the flag did not exist yet;
+the node then unsealed through KMS and joined as a voter.
+`scripts/configure-autopilot.sh` also ran against a live cluster for the
+first time here, and the dead voter was pruned once the replacement
+existed.
 
 So auto-unseal and `auto_join` work at recovery time as well as at apply
 time — but only after a person intervenes, which is what item 10 exists
-to rule out. Until a replacement can get a certificate without one,
+to rule out. Two commands is better than the guesswork it replaced, and
+it is still two commands: something has to notice the node exists.
+Until a replacement can get its material without a person,
 **blocker 1 stays open** and item 9 cannot be attempted.
+
+Doing that properly means a node fetching its own certificate at boot,
+from something that will issue one to an instance that cannot yet prove
+much about itself. That is a design decision — an internal CA reachable
+from the subnet, ACM Private CA with the instance role authorising the
+request, or Vault's own PKI once a first cluster exists, which is
+`scripts/migrate-to-vault-pki.sh`'s territory and has the same
+chicken-and-egg problem at the start. None of the three is written here
+yet.
 
 ---
 
