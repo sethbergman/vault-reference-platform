@@ -144,8 +144,12 @@ confirm the pre-outage write reads back, and bring a replacement node in.
 It also runs the recovery script against a *healthy* cluster to confirm
 it refuses — a guard only ever exercised where it passes is not a guard.
 
-Not proven: the `--service-name` path on a real node, and any of this on
-a cloud profile, neither of which has been applied.
+Not proven: the `--service-name` path on a real node, and quorum
+recovery on a cloud profile. The 2026-09-17 AWS apply did restore a
+snapshot under a KMS seal — canary written, snapshot taken, canary
+deleted, restore, canary read back — which is the item below rather than
+this one. Nothing has recovered a cloud cluster from quorum loss, and
+`terraform/azure` has never been applied.
 
 ## The snapshot is only half of a backup
 

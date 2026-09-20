@@ -184,4 +184,5 @@ every plan, apply and destroy in that session kept its state there. What
 that does not answer is whether two machines race for the lock the way
 one process planting a lock file does, or whether a least-privilege
 identity can reach the bucket — the session ran as an administrator.
-The Azure backend remains configured and never exercised. See [roadmap.md](roadmap.md) and [cloud-apply.md](cloud-apply.md).
+The Azure backend remains configured and never exercised. See
+[roadmap.md](roadmap.md) and [cloud-apply.md](cloud-apply.md).
