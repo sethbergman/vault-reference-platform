@@ -1,14 +1,22 @@
 # The cloud apply
 
-**Neither cloud profile in this repository has ever been applied to a
-real account.**
+**`terraform/aws` has been applied to a real account once, on
+2026-09-17. `terraform/azure` never has.**
 
-Everything else here is tested — 80 assertions against a real three-node
-cluster, promtool unit tests on the alert rules, `terraform test` against
-mocked providers. But mocked providers confirm that the configuration is
-*well-formed*, not that AWS accepts it. The gap between those two things
-is the first blocker on the [roadmap](roadmap.md), and it is the reason
-this document exists.
+That session is recorded under [what the first apply
+settled](#what-the-first-apply-settled): six of the ten items below were
+observed, one was observed failing, three were not reached, and the ten
+defects found on the way are in the [roadmap](roadmap.md). The document
+still reads as instructions rather than a report, because the next real
+apply is Azure's, and because AWS's remaining items need a cluster
+standing again.
+
+Everything outside the cloud profiles is tested — 80 assertions against a
+real three-node cluster, promtool unit tests on the alert rules,
+`terraform test` against mocked providers. But mocked providers confirm
+that the configuration is *well-formed*, not that AWS accepts it. The gap
+between those two things is the first blocker on the
+[roadmap](roadmap.md), and it is the reason this document exists.
 
 Part of that gap has since been closed for free.
 [`tests/cloud-apply-emulated`](../tests/cloud-apply-emulated/run-tests.sh)
@@ -29,8 +37,10 @@ runtime, which is exactly what an emulator does not have. Azure has no
 equivalent run at all, for the reasons
 [below](#why-azure-has-no-emulated-apply).
 
-The first person to apply one of these profiles is spending money to find
-out what is wrong. This is about making that session produce the maximum
+The first person to apply the Azure profile is spending money to find out
+what is wrong. On AWS that session has happened, and it was: ten defects
+between an apply and a working cluster, five of them found before Vault
+started at all. This is about making that session produce the maximum
 amount of evidence, rather than discovering a missing SSH key twenty
 minutes in and starting again tomorrow.
 
@@ -118,6 +128,54 @@ tried.
 Until then, the Azure side of this document is what it has always been:
 the pre-flight, the checklist and the teardown, with nothing applied
 beforehand.
+
+---
+
+## What the first apply settled
+
+One session, 2026-09-17, in a sandbox account: `az_count=2`,
+`node_count=3`, `t3.small`, us-east-1, about two hours and under a dollar.
+Every fix named here is merged; the defects themselves are in
+[roadmap.md](roadmap.md).
+
+| Item | Result |
+|---|---|
+| 1. The instance boots and Vault starts | **Observed.** cloud-init `done`, `vault` active on all three, 1.17.2, Raft storage |
+| 2. Auto-unseal, no human | **Observed**, after two KMS key policies had to be written: `Sealed false`, `Seal Type awskms`, and `Decrypt` by the node role in CloudTrail |
+| 3. Raft `auto_join` finds the other nodes | **Observed**, after the node security group was allowed to send to its own members: three voters, autopilot healthy, failure tolerance 1 |
+| 4. The load balancer keeps standbys in the pool | **Observed.** All three targets healthy; a standby answers 429 bare and 200 with `standbyok`, so the `200,429` matcher is a backstop that never fires — as this document already said |
+| 5. The Ansible handoff | **Observed**, after four defects: the inventory filenames, where `group_vars` live, the package spelling, and the certificate paths. The SSM tunnel reached all three nodes from a laptop |
+| 6. Snapshots reach the bucket | **Not reached.** The role is off by default and enabling it was out of scope for the session |
+| 7. Restoring a snapshot works | **Observed** under the KMS seal: canary written, snapshot taken, canary hard-deleted, restore, canary read back |
+| 8. PKI certificates and audit devices | **Not reached.** Both roles are off by default |
+| 9. An instance refresh keeps quorum | **Not reached**, and blocked by item 10: a refresh replaces every node the same way a termination replaces one |
+| 10. Losing a node | **Observed failing.** See below |
+| The teardown | **Observed.** `teardown-cloud.sh` in one pass; afterwards no instances, NAT gateways, EIPs, load balancer or ASG remained. The `BucketNotEmpty` path was *not* exercised — no snapshot had been written, so the bucket was empty |
+
+### The cluster is not self-healing
+
+Item 10 is the one that justifies the architecture, and it failed.
+Terminating the leader did everything the middle of this document
+promises: a new leader was elected in seconds, the load balancer dropped
+the dead target, and the autoscaling group launched a replacement inside
+75 seconds.
+
+The replacement never became a Vault node. cloud-init finished, and Vault
+exited with `error loading TLS cert` because `/etc/vault.d/tls/` did not
+exist, until systemd stopped retrying. **Certificates reach a node only
+through an Ansible run, and they are named after instance ids that do not
+exist until after the launch.** Nothing in the automated path issues one.
+
+Recovering it by hand took two steps and worked: issue a leaf from the
+existing CA, then run the playbook limited to the new host. It unsealed
+through KMS and joined as a voter. `scripts/configure-autopilot.sh` ran
+against the live cluster for the first time here, and the dead voter was
+pruned once the replacement existed.
+
+So auto-unseal and `auto_join` work at recovery time as well as at apply
+time — but only after a person intervenes, which is what item 10 exists
+to rule out. Until a replacement can get a certificate without one,
+**blocker 1 stays open** and item 9 cannot be attempted.
 
 ---
 
@@ -527,9 +585,11 @@ the inventory plugin's tag filter and the tag Terraform actually applied
 disagree — the same class of bug as the Azure `auto_join` mismatch in
 item 3, in a second place, and equally invisible to local tests.
 
-If `ping` fails but the inventory lists hosts, it is emitting private IPs
-reachable only from inside the VPC. That is not a bug; run Ansible from a
-bastion or a node.
+If `ping` fails but the inventory lists hosts, check
+`session-manager-plugin` and your own `ssm:StartSession` before anything
+else: `ansible_host` is the instance id and the connection is tunnelled,
+so there is no IP to blame. That tunnel reached all three nodes from a
+laptop outside the VPC on 2026-09-17.
 
 **On Azure**, same two halves, different commands:
 
@@ -754,11 +814,15 @@ empty. Both the object versions and the delete markers have to go. The
 teardown script does that, paging through both lists, before it runs
 destroy.
 
-### AWS: the KMS key is scheduled, not deleted
+### AWS: the KMS keys are scheduled, not deleted
 
-`deletion_window_in_days = 7` (`terraform/aws/main.tf:34`). The key sits
-in `PendingDeletion` for a week. It costs nothing there, and it can be
+Both sit in `PendingDeletion`, costing nothing, and either can be
 cancelled if you destroyed by mistake — which is the point of the window.
+The windows differ deliberately (`terraform/aws/main.tf`):
+`aws_kms_key.vault_data`, which encrypts root volumes, waits 7 days;
+`aws_kms_key.vault_autounseal`, which every snapshot is sealed under,
+waits 30. The teardown on 2026-09-17 left one of each, and the state
+bucket's own key, which is not scheduled at all.
 
 ### Azure: the Key Vault cannot be purged, by anyone
 

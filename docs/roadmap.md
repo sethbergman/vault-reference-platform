@@ -32,7 +32,8 @@ and which parts are a plausible-looking configuration nobody has run.
 
 ## The honest gap
 
-**Neither cloud profile has been applied to a real account.**
+**`terraform/aws` has been applied to a real account once, on 2026-09-17.
+`terraform/azure` never has.**
 
 `terraform/aws` and `terraform/azure` are covered by `terraform test`
 against mocked providers, and that catches more than it might sound like
@@ -41,15 +42,22 @@ against mocked providers, and that catches more than it might sound like
 granting delete on the snapshot bucket. But mocked providers do not
 create anything, and a plan that succeeds is not a deployment that works.
 
-`terraform/aws` is now one step further along: `tests/cloud-apply-emulated`
+`terraform/aws` is two steps further along. `tests/cloud-apply-emulated`
 applies and destroys it on every PR against an implementation of the AWS
 API, so the configuration is known to apply in one pass with every
-request accepted. That is the shape of the profile confirmed, not its
-behaviour — an emulator boots nothing, so auto-unseal, peer discovery,
-health checks and instance replacement remain untested. `terraform/azure`
-has no equivalent run.
+request accepted — the shape of the profile, not its behaviour, because
+an emulator boots nothing. Then one real apply, on 2026-09-17, observed
+the behaviour: KMS auto-unseal, peer discovery by tag, health checks
+keeping standbys in the pool, the Ansible handoff, and a snapshot
+restored under the KMS seal. It also observed instance replacement
+failing, and took ten defects to get that far.
 
-Treat those two profiles as reviewed and tested, not as proven.
+So treat `terraform/aws` as proven in the parts
+[cloud-apply.md](cloud-apply.md) names and unproven everywhere else —
+snapshots to the bucket, PKI and audit on a real node, and an instance
+refresh, none of which that session reached. Treat `terraform/azure` as
+reviewed and tested, not as proven: it has no real apply and no emulated
+one.
 
 The local profile is different: `tests/integration` runs the operational
 scripts against a real three-node Raft cluster on every PR, so the
@@ -188,26 +196,38 @@ of them is about what happens after something boots.
 
 The blockers are, in order:
 
-1. **A real AWS apply.** `terraform/aws` has never been stood up and
-   torn down on real hardware. Four things only this profile can settle,
-   none of them reachable by the emulated apply:
+1. **A real AWS apply.** Done once, on 2026-09-17, and **still open**.
+   Three of its four questions are settled and the fourth is settled in
+   the wrong direction:
 
-   - **The KMS triangle.** The instance profile, the key policy and the
-     `seal "awskms"` stanza live in three files that have never been
-     reconciled against a real API. Any one of them wrong leaves Vault
-     running and sealed, which makes this the highest-value single
-     check.
-   - **Auto Scaling group replacement.** Terminate the leader; a new
-     instance should launch from the launch template, run its user-data,
-     auto-unseal and rejoin Raft with nobody watching. This is the check
-     the whole architecture exists to justify.
-   - **`auto_join` in tag mode**, against real EC2 instance tags — the
-     same tag `ansible/inventory/aws_ec2.yml` filters on, so here discovery
-     and configuration management break together or not at all.
-   - **The profile whose default apply is broken.** `ssh_key_name` ships
-     empty, so the apply succeeds and produces a cluster nobody can log
-     in to. Azure has no equivalent: it refuses to create a scale set
-     without a key.
+   - **The KMS triangle.** Settled. The instance profile, the key policy
+     and the `seal "awskms"` stanza agree: all three nodes reported
+     `Seal Type awskms` and `Sealed false`, with the node role's
+     `Decrypt` calls in CloudTrail. Getting there needed two key
+     *policies* nobody had written — the autoscaling service-linked role
+     could not use the volume key, and CloudWatch Logs could not use the
+     seal key, so no instance survived launch and the apply ended
+     partway.
+   - **`auto_join` in tag mode.** Settled, against real EC2 tags: three
+     voters, autopilot healthy. The nodes could not reach each other
+     until the security group let them send to their own members —
+     discovery worked long before the network did.
+   - **The profile whose default apply is broken.** Settled: the
+     pre-flight now reads the variable an apply would use, so an empty
+     `ssh_key_name` is caught before anything bills.
+   - **Auto Scaling group replacement.** Settled as **broken**, and this
+     is why the blocker stays open. The group replaced a terminated
+     leader in 75 seconds and the replacement never started Vault: its
+     certificates arrive only through an Ansible run, named after an
+     instance id that did not exist until the launch. Recovery by hand
+     works and is written down in
+     [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing);
+     recovery without a human does not exist yet. The same gap blocks
+     item 5's instance refresh.
+
+   What that session did not reach: snapshots to the bucket, PKI
+   certificates and audit devices on a real node, and the refresh. Those
+   need a cluster standing again, and the roles are off by default.
 2. **A real Azure apply.** `terraform/azure` has never been applied
    either, and it is not item 1 with different commands:
 

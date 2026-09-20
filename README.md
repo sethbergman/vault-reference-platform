@@ -29,10 +29,11 @@ that part down.
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
   bucket. `terraform/azure` builds the same shape with a VM scale set,
   Key Vault auto-unseal, and a blob container. The AWS profile applies
-  and destroys cleanly against an emulated AWS API on every PR; neither
-  profile has been applied against a real account — see
-  [`docs/cloud-apply.md`](docs/cloud-apply.md) for what that leaves
-  unproven, and how to prove it.
+  and destroys cleanly against an emulated AWS API on every PR, and was
+  applied to a real account once, on 2026-09-17 — which found ten
+  defects and left the cluster not self-healing. `terraform/azure` has
+  never been applied. See [`docs/cloud-apply.md`](docs/cloud-apply.md)
+  for what that session settled and what it did not.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -241,11 +242,13 @@ See [`docs/deployment.md`](docs/deployment.md).
 
 ## Before a cloud apply
 
-Neither cloud profile has been applied against a real account, so the
-first person to try is spending real money to find out what is wrong.
-The emulated apply in CI settles that the AWS configuration is one the
-API accepts; it says nothing about whether the cluster it describes
-comes up.
+`terraform/aws` has been applied to a real account once, on 2026-09-17;
+`terraform/azure` never has. The emulated apply in CI settles that the
+AWS configuration is one the API accepts; it says nothing about whether
+the cluster it describes comes up, which is what that session was for —
+and what it found is in
+[`docs/cloud-apply.md`](docs/cloud-apply.md). Run the pre-flight first
+either way.
 
 ```bash
 export TF_VAR_ssh_key_name=your-key TF_VAR_az_count=2
