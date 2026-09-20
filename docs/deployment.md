@@ -390,9 +390,14 @@ can be dropped without a test failing.
 rendered `vault.hcl` for both clouds, and the case where no cloud is
 configured. It needs no credentials and runs in CI.
 
-It does not prove the playbook converges against real hosts. Neither
-cloud profile has been applied to a real account, and the emulated apply
-covers Terraform only — it never reaches the Ansible layer. See
+It does not prove the playbook converges against real hosts, and the
+emulated apply covers Terraform only — it never reaches the Ansible
+layer. The 2026-09-17 AWS apply did converge, on three nodes, but only
+after four defects in this seam that every test here had passed over:
+the inventory filenames the plugins reject, the directory
+`ansible-playbook` reads `group_vars` from, the package spelling dnf
+wants, and where the role looks for certificates. `terraform/azure` has
+never been applied at all. See
 [Provider lock files](#provider-lock-files) and the note in the README.
 
 ## Provider lock files

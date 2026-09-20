@@ -66,7 +66,11 @@ while the backend example asks for Entra authentication — and they are
 labelled that way in the output. `terraform/azure/bootstrap` has never
 been applied to anything.
 
-Neither backend has been pointed at a real account. See
+The AWS backend has been pointed at a real account once, by the
+2026-09-17 apply: that session's bootstrap, applies and destroys all kept
+their state in the bucket the module built. It raced nothing and ran as an
+administrator, so what this suite asserts about locking and permissions is
+still only asserted here. The Azure backend has never been used. See
 [`docs/terraform-state.md`](../../docs/terraform-state.md) and
 [`docs/roadmap.md`](../../docs/roadmap.md).
 

@@ -83,5 +83,7 @@ thing.
 ## What it does not prove
 
 Any of this on a cloud profile, where the seal is KMS rather than
-Transit. The ceremony and the source of the keys are the same, but no
-cloud profile has been applied.
+Transit. The ceremony and the source of the keys are the same. The
+2026-09-17 AWS apply got as far as `operator init` under a KMS seal,
+which returned the recovery shares this ceremony consumes; it revoked no
+root token and minted none.

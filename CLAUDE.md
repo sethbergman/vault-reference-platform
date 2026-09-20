@@ -140,16 +140,20 @@ one-way door and a restart of vault-unseal an unrecoverable one.
 | Profile | Provisioning | Seal | Proven by |
 |---|---|---|---|
 | local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
-| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), plus an emulated apply — never a real account |
+| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and one real apply on 2026-09-17 — partly proven, see `docs/cloud-apply.md` |
 | Azure | `terraform/azure` | Azure Key Vault | `terraform test` with mocked providers only |
 | bare/other | Ansible alone | Shamir (role default) | not exercised |
 
-**Neither cloud profile has ever been applied to a real account.** Do
-not describe them as working or proven. `docs/cloud-apply.md` lists
-exactly what a first real apply would settle, per provider, and
+**`terraform/aws` has been applied to a real account once, on
+2026-09-17; `terraform/azure` never has.** Do not describe either as
+working or proven. `docs/cloud-apply.md` records what that session
+settled — auto-unseal, peer discovery, health checks, the handoff, a
+restore — what it observed failing, and what it never reached. Its
+headline finding is that **the cluster is not self-healing**: a
+replacement node's certificates come only from an Ansible run keyed to an
+instance id that does not exist until launch, so blocker 1 stays open.
 `scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
-`terraform destroy` fails partway on both. These two applies are v1.0
-blockers 1 and 2 in the README.
+`terraform destroy` fails partway on both profiles.
 
 `tests/cloud-apply-emulated` narrows that gap for AWS only, and only so
 far: it applies and destroys `terraform/aws` against an implementation
@@ -548,7 +552,9 @@ between here and v1.0:
    `terraform/<cloud>/bootstrap` generates. CI's `-backend=false` is what
    keeps `validate` runnable without credentials, and
    `tests/state-backend` asserts it still works — do not regress it.
-   Neither backend has been pointed at a real account.
+   The AWS backend has been used against a real account once (the
+   2026-09-17 apply); the Azure one never has, and no identity narrower
+   than an administrator has been tried against either.
 5. An upgrade path matching how the profiles deploy. The canonical model
    per profile is now decided (`docs/rolling-upgrades.md`): instance
    refresh on AWS, `vault-upgrade.sh` on Azure and on fixed machines.

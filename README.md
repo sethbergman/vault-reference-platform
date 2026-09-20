@@ -29,10 +29,11 @@ that part down.
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
   bucket. `terraform/azure` builds the same shape with a VM scale set,
   Key Vault auto-unseal, and a blob container. The AWS profile applies
-  and destroys cleanly against an emulated AWS API on every PR; neither
-  profile has been applied against a real account — see
-  [`docs/cloud-apply.md`](docs/cloud-apply.md) for what that leaves
-  unproven, and how to prove it.
+  and destroys cleanly against an emulated AWS API on every PR, and was
+  applied to a real account once, on 2026-09-17 — which found ten
+  defects and left the cluster not self-healing. `terraform/azure` has
+  never been applied. See [`docs/cloud-apply.md`](docs/cloud-apply.md)
+  for what that session settled and what it did not.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -241,11 +242,13 @@ See [`docs/deployment.md`](docs/deployment.md).
 
 ## Before a cloud apply
 
-Neither cloud profile has been applied against a real account, so the
-first person to try is spending real money to find out what is wrong.
-The emulated apply in CI settles that the AWS configuration is one the
-API accepts; it says nothing about whether the cluster it describes
-comes up.
+`terraform/aws` has been applied to a real account once, on 2026-09-17;
+`terraform/azure` never has. The emulated apply in CI settles that the
+AWS configuration is one the API accepts; it says nothing about whether
+the cluster it describes comes up, which is what that session was for —
+and what it found is in
+[`docs/cloud-apply.md`](docs/cloud-apply.md). Run the pre-flight first
+either way.
 
 ```bash
 export TF_VAR_ssh_key_name=your-key TF_VAR_az_count=2
@@ -442,23 +445,26 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-Everything through v0.19 has shipped — see
+Everything through v0.20 has shipped — see
 [Releases](https://github.com/sethbergman/vault-reference-platform/releases)
 for the log. "Shipped" here means there is a test that fails if the
 feature breaks, not that the code exists.
 
 What stands between here and v1.0, in order:
 
-1. **A real AWS apply.** `terraform/aws` has never been stood up end to
-   end. It passes `terraform test` against mocked providers — which
-   catches an IAM policy granting delete on the snapshot bucket — and it
-   applies and destroys cleanly against an emulated AWS API, which
-   settles that every request the profile makes is one the API accepts.
-   Neither runs anything: a mock answers from a fixture, an emulator
-   answers for real but boots nothing. What only a real apply settles:
-   that the instance profile, the KMS key policy and the `seal` stanza
-   agree; and that a terminated leader is replaced by a node which
-   auto-unseals and rejoins unattended.
+1. **A real AWS apply.** Done once, on 2026-09-17 — and still open,
+   because of what it found. Settled: the instance profile, the KMS key
+   policy and the `seal` stanza do agree, peers find each other by tag,
+   the load balancer keeps standbys in the pool, the Ansible handoff
+   works, and a snapshot restores under the KMS seal. Not settled: **a
+   terminated leader is replaced by a node that never starts Vault**,
+   because certificates reach a node only through an Ansible run named
+   after an instance id that does not exist until the launch. Recovery by
+   hand works; unattended recovery does not exist. Ten defects were fixed
+   getting that far, four of them in code no test here could reach.
+   Snapshots to the bucket, PKI and audit on a real node, and an instance
+   refresh were never reached. See
+   [`docs/cloud-apply.md`](docs/cloud-apply.md).
 2. **A real Azure apply.** A separate item, not the same job twice.
    `terraform/azure` discovers peers through a scale set rather than
    tags, has a health probe with no status-code matcher, and reconciles
@@ -486,8 +492,12 @@ What stands between here and v1.0, in order:
    matching config. `tests/state-backend` proves the AWS half against an
    emulated API on every PR — including that `init` before the bucket
    exists is refused, and that a held lock turns away a second apply.
-   Still unproven in an account: the permissions to reach the bucket,
-   two machines actually racing, and the whole Azure side, which has no
+   The AWS half then held up in an account: the bootstrap module built
+   the bucket and its key, the profile's backend initialised against it,
+   and every apply and destroy of the 2026-09-17 session kept its state
+   there. Still unproven: two machines actually racing for the lock,
+   whether a least-privilege identity can reach the bucket — that session
+   ran as an administrator — and the whole Azure side, which has no
    emulator. See [`docs/terraform-state.md`](docs/terraform-state.md).
 5. **An upgrade path that matches how the profiles deploy.** Which
    model is canonical is now decided per profile — instance refresh on

@@ -29,10 +29,12 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.17 | Seal migration in both directions, and the unseal-key rekey — plus the key the local root of trust had been discarding, which made restarting one container unrecoverable |
 | v0.18 | Rate limit quotas, and the three ways of setting one that write successfully and protect nothing — including the quota that refuses its own deletion |
 | v0.19 | The path from a running cluster to a configured one, which had three breaks in it: three nodes arriving as one Ansible host, no way to reach any of them, and a certificate check no correct certificate could pass |
+| v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which keeps blocker 1 open |
 
 ## The honest gap
 
-**Neither cloud profile has been applied to a real account.**
+**`terraform/aws` has been applied to a real account once, on 2026-09-17.
+`terraform/azure` never has.**
 
 `terraform/aws` and `terraform/azure` are covered by `terraform test`
 against mocked providers, and that catches more than it might sound like
@@ -41,15 +43,22 @@ against mocked providers, and that catches more than it might sound like
 granting delete on the snapshot bucket. But mocked providers do not
 create anything, and a plan that succeeds is not a deployment that works.
 
-`terraform/aws` is now one step further along: `tests/cloud-apply-emulated`
+`terraform/aws` is two steps further along. `tests/cloud-apply-emulated`
 applies and destroys it on every PR against an implementation of the AWS
 API, so the configuration is known to apply in one pass with every
-request accepted. That is the shape of the profile confirmed, not its
-behaviour — an emulator boots nothing, so auto-unseal, peer discovery,
-health checks and instance replacement remain untested. `terraform/azure`
-has no equivalent run.
+request accepted — the shape of the profile, not its behaviour, because
+an emulator boots nothing. Then one real apply, on 2026-09-17, observed
+the behaviour: KMS auto-unseal, peer discovery by tag, health checks
+keeping standbys in the pool, the Ansible handoff, and a snapshot
+restored under the KMS seal. It also observed instance replacement
+failing, and took ten defects to get that far.
 
-Treat those two profiles as reviewed and tested, not as proven.
+So treat `terraform/aws` as proven in the parts
+[cloud-apply.md](cloud-apply.md) names and unproven everywhere else —
+snapshots to the bucket, PKI and audit on a real node, and an instance
+refresh, none of which that session reached. Treat `terraform/azure` as
+reviewed and tested, not as proven: it has no real apply and no emulated
+one.
 
 The local profile is different: `tests/integration` runs the operational
 scripts against a real three-node Raft cluster on every PR, so the
@@ -188,26 +197,38 @@ of them is about what happens after something boots.
 
 The blockers are, in order:
 
-1. **A real AWS apply.** `terraform/aws` has never been stood up and
-   torn down on real hardware. Four things only this profile can settle,
-   none of them reachable by the emulated apply:
+1. **A real AWS apply.** Done once, on 2026-09-17, and **still open**.
+   Three of its four questions are settled and the fourth is settled in
+   the wrong direction:
 
-   - **The KMS triangle.** The instance profile, the key policy and the
-     `seal "awskms"` stanza live in three files that have never been
-     reconciled against a real API. Any one of them wrong leaves Vault
-     running and sealed, which makes this the highest-value single
-     check.
-   - **Auto Scaling group replacement.** Terminate the leader; a new
-     instance should launch from the launch template, run its user-data,
-     auto-unseal and rejoin Raft with nobody watching. This is the check
-     the whole architecture exists to justify.
-   - **`auto_join` in tag mode**, against real EC2 instance tags — the
-     same tag `ansible/inventory/aws_ec2.yml` filters on, so here discovery
-     and configuration management break together or not at all.
-   - **The profile whose default apply is broken.** `ssh_key_name` ships
-     empty, so the apply succeeds and produces a cluster nobody can log
-     in to. Azure has no equivalent: it refuses to create a scale set
-     without a key.
+   - **The KMS triangle.** Settled. The instance profile, the key policy
+     and the `seal "awskms"` stanza agree: all three nodes reported
+     `Seal Type awskms` and `Sealed false`, with the node role's
+     `Decrypt` calls in CloudTrail. Getting there needed two key
+     *policies* nobody had written — the autoscaling service-linked role
+     could not use the volume key, and CloudWatch Logs could not use the
+     seal key, so no instance survived launch and the apply ended
+     partway.
+   - **`auto_join` in tag mode.** Settled, against real EC2 tags: three
+     voters, autopilot healthy. The nodes could not reach each other
+     until the security group let them send to their own members —
+     discovery worked long before the network did.
+   - **The profile whose default apply is broken.** Settled: the
+     pre-flight now reads the variable an apply would use, so an empty
+     `ssh_key_name` is caught before anything bills.
+   - **Auto Scaling group replacement.** Settled as **broken**, and this
+     is why the blocker stays open. The group replaced a terminated
+     leader in 75 seconds and the replacement never started Vault: its
+     certificates arrive only through an Ansible run, named after an
+     instance id that did not exist until the launch. Recovery by hand
+     works and is written down in
+     [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing);
+     recovery without a human does not exist yet. The same gap blocks
+     item 5's instance refresh.
+
+   What that session did not reach: snapshots to the bucket, PKI
+   certificates and audit devices on a real node, and the refresh. Those
+   need a cluster standing again, and the roles are off by default.
 2. **A real Azure apply.** `terraform/azure` has never been applied
    either, and it is not item 1 with different commands:
 
@@ -273,19 +294,25 @@ The blockers are, in order:
    `-backend=false` still runs `validate` with no credentials, which is
    asserted rather than assumed.
 
-   What is left is what is left everywhere else in this section: neither
-   backend has been pointed at a real account. Nothing here shows that
-   the IAM permissions to reach the bucket are the ones granted, that two
-   applies from two machines race the way one process planting a lock
-   file does, or that the Entra role assignment on the Azure side is
-   enough for a second person to run `terraform` at all — and the Azure
+   The AWS half has now been pointed at a real account, by the
+   2026-09-17 session: `terraform/aws/bootstrap` applied in one pass,
+   the generated `backend.hcl` initialised the profile against the
+   bucket it had just built, and every plan, apply and destroy that
+   followed kept its state there rather than on disk. The bucket is the
+   one thing that session deliberately left behind.
+
+   What is left is narrower than it was. Nothing shows that two applies
+   from two machines race the way one process planting a lock file does,
+   or that a least-privilege identity can reach the bucket at all — that
+   session ran as an administrator, which answers the question in the
+   easiest possible way. And the Azure side is untouched: the Entra role
+   assignment has never been granted to a second person, and the Azure
    bootstrap module has never been applied to anything, because moto is
    an AWS API and there is no emulator for the other side this
    repository can run
    ([why](cloud-apply.md#why-azure-has-no-emulated-apply)).
 
-   So this item moves from "not started" to the same footing as blockers
-   1 and 2, and it closes when they do. See
+   So this item is half proven, and closes with blocker 2. See
    [terraform-state.md](terraform-state.md).
 5. **An upgrade path that matches how the profiles actually deploy.**
    `scripts/vault-upgrade.sh` steps the leader down, swaps the binary
@@ -653,3 +680,53 @@ that nothing here provides?**
 
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.
+
+### And then the apply happened
+
+v0.19 staged the AWS apply and found three defects without spending
+anything. v0.20 ran it, on 2026-09-17, and found ten more. The account
+was a sandbox, the cluster was three `t3.small` nodes across two zones,
+and the whole session cost under a dollar — which is the part to keep in
+mind while reading the list, because every one of these had been in the
+repository for releases.
+
+| # | Defect | Why nothing here saw it |
+|---|---|---|
+| 1 | `preflight-cloud.sh` read `ssh_key_name` only from `variables.tf`, while the documented apply passed it with `-var` — so the check that exists to catch a missing key pair warned about an empty name on every correct run and never looked the pair up | The shim suite set the default and asserted on the warning. It tested the code's own assumption |
+| 2 | In the documented order the pre-flight's `terraform plan` never ran at all: the plan needs an initialised backend, the backend needs the bucket the bootstrap module creates, and the pre-flight came before both | Nothing tests the order a document tells a human to work in |
+| 3 | The volume key had no key policy, so the autoscaling group's service-linked role could not generate a data key. Twelve instances launched and terminated; AWS reported `InvalidKMSKey.InvalidState` about a key that was `Enabled` | moto does not enforce key policies, and the mocks assert on configuration. Both said yes |
+| 4 | The seal key had the same gap for CloudWatch Logs, which denied `CreateLogGroup`. **This is the error that ended the apply partway**, leaving no flow logs and a tainted ASG | As above. A key with no policy looks identical to a key with a correct one until a service principal asks |
+| 5 | The node security group admitted peers on 8200 and 8201 and allowed egress only on 80 and 443, so no node could open a connection to another. Discovery worked; every Raft join timed out at TCP connect | `terraform test` asserted egress was "limited to HTTPS and HTTP". The assertion passed, and described the bug |
+| 6 | `amazon.aws.aws_ec2` rejects any file not named `*aws_ec2.yml`, unread. The inventory was `aws.yml`, so every documented `ansible-playbook` command configured no hosts | Every assertion read the file — valid YAML, right tag, rendered compose values. None asked a plugin to open it |
+| 7 | `ansible-playbook` does not read `ansible/group_vars/`, only directories beside the inventory or the playbook. The nodes would have got the role default, a **Shamir seal**, from a run reporting success | Ad-hoc `ansible` *does* read it from that directory, which is what made it look correct. The tests read the generated file directly |
+| 8 | The role asked dnf for `vault=1.17.2`, which is apt's syntax; the task failed on every node with `vault-1.17.2-1` already installed | The role had never run against a VM. The local profile is containers |
+| 9 | The role's TLS sources were relative paths Ansible searches for in two directories, neither of which is where `generate-cloud-certs.sh` writes | Same reason. The paths were only ever read, never resolved |
+| 10 | The playbook's own diff showed it **removing** `leader_tls_servername` and both `telemetry` blocks that cloud-init sets. Nothing failed: joins fell back to verifying an IP, and `/v1/sys/metrics` stopped serving Prometheus data | Two writers configure one file and nothing compared them. `tests/preflight-static` compares the cloud templates to the PKI role, and stops there |
+
+Four of those — 3, 4, 5 and 10 — are in code no test in this repository
+could have reached, which is what blocker 1 was for. Two more, 1 and 5,
+had passing assertions describing them: the pre-flight's shim set the
+value the script would read, and the egress test said "limited to HTTPS
+and HTTP" about a group that could not talk to itself. That is the
+failure mode this file already warns about, found twice more in one
+afternoon.
+
+The eleventh was in a test rather than in the code. `tests/agent` named
+each scenario's workspace `creds.$RANDOM`, two scenarios eventually drew
+the same number, and an assertion that a file is *absent* after a failed
+run found one an earlier passing scenario had written. It failed once in
+CI, passed locally, and would ordinarily have been re-run and forgotten
+as flaky. Pointing every scenario at one directory reproduces it exactly;
+`mktemp -d` fixes it. Two other suites named their workspaces the same
+way.
+
+What the session did not settle is as much the point. Snapshots to the
+bucket, PKI and audit on a real node, and an instance refresh were never
+reached; the teardown never exercised its `BucketNotEmpty` path, because
+no snapshot had been written. And the headline finding is a gap rather
+than a defect: **a replacement node cannot get a certificate without a
+person**, so the self-healing claim the architecture rests on is false
+today. Blocker 1 stays open for that reason, and the next step is a way
+to issue one node's certificate from the CA already on disk —
+`generate-cloud-certs.sh` keeps that CA key for exactly this case and
+offers no way to use it.

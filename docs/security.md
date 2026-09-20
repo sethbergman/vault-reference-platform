@@ -288,7 +288,9 @@ is a different credential from the one revoked.
 
 Not covered: doing this on a cloud profile, where the seal is KMS rather
 than Transit. The ceremony is the same and the recovery keys come from
-the same place, but no cloud profile has been applied.
+the same place. The 2026-09-17 AWS apply went as far as `operator init`
+under a KMS seal, which returned the recovery keys this ceremony needs —
+it did not revoke a root token or mint one from those shares.
 
 ## Rotating the keys
 

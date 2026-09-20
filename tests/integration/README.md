@@ -100,10 +100,14 @@ are stated rather than hidden:
 
 ## What is still not covered
 
-The cloud profiles. Neither AWS nor Azure has been applied to a real
-account, and nothing here changes that. `tests/cloud-apply-emulated`
-proves the AWS profile applies, not that anything it describes runs —
-see the note in [`docs/deployment.md`](../../docs/deployment.md).
+The cloud profiles, and nothing here changes that.
+`tests/cloud-apply-emulated` proves the AWS profile applies, not that
+anything it describes runs. The 2026-09-17 apply ran it once for real and
+reached six of the ten checklist items in
+[`docs/cloud-apply.md`](../../docs/cloud-apply.md) — none of them
+repeatable without standing a cluster up again, which is why they live in
+a document rather than in this suite. `terraform/azure` has never been
+applied.
 
 Also untested: a full migration of *every* node from bootstrap
 certificates to Vault PKI. This suite swaps one node and checks the
