@@ -29,6 +29,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.17 | Seal migration in both directions, and the unseal-key rekey — plus the key the local root of trust had been discarding, which made restarting one container unrecoverable |
 | v0.18 | Rate limit quotas, and the three ways of setting one that write successfully and protect nothing — including the quota that refuses its own deletion |
 | v0.19 | The path from a running cluster to a configured one, which had three breaks in it: three nodes arriving as one Ansible host, no way to reach any of them, and a certificate check no correct certificate could pass |
+| v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which keeps blocker 1 open |
 
 ## The honest gap
 
@@ -673,3 +674,53 @@ that nothing here provides?**
 
 None of this changes what the table above claims. It changes how much the
 word "tested" in it is worth, which seemed worth writing down.
+
+### And then the apply happened
+
+v0.19 staged the AWS apply and found three defects without spending
+anything. v0.20 ran it, on 2026-09-17, and found ten more. The account
+was a sandbox, the cluster was three `t3.small` nodes across two zones,
+and the whole session cost under a dollar — which is the part to keep in
+mind while reading the list, because every one of these had been in the
+repository for releases.
+
+| # | Defect | Why nothing here saw it |
+|---|---|---|
+| 1 | `preflight-cloud.sh` read `ssh_key_name` only from `variables.tf`, while the documented apply passed it with `-var` — so the check that exists to catch a missing key pair warned about an empty name on every correct run and never looked the pair up | The shim suite set the default and asserted on the warning. It tested the code's own assumption |
+| 2 | In the documented order the pre-flight's `terraform plan` never ran at all: the plan needs an initialised backend, the backend needs the bucket the bootstrap module creates, and the pre-flight came before both | Nothing tests the order a document tells a human to work in |
+| 3 | The volume key had no key policy, so the autoscaling group's service-linked role could not generate a data key. Twelve instances launched and terminated; AWS reported `InvalidKMSKey.InvalidState` about a key that was `Enabled` | moto does not enforce key policies, and the mocks assert on configuration. Both said yes |
+| 4 | The seal key had the same gap for CloudWatch Logs, which denied `CreateLogGroup`. **This is the error that ended the apply partway**, leaving no flow logs and a tainted ASG | As above. A key with no policy looks identical to a key with a correct one until a service principal asks |
+| 5 | The node security group admitted peers on 8200 and 8201 and allowed egress only on 80 and 443, so no node could open a connection to another. Discovery worked; every Raft join timed out at TCP connect | `terraform test` asserted egress was "limited to HTTPS and HTTP". The assertion passed, and described the bug |
+| 6 | `amazon.aws.aws_ec2` rejects any file not named `*aws_ec2.yml`, unread. The inventory was `aws.yml`, so every documented `ansible-playbook` command configured no hosts | Every assertion read the file — valid YAML, right tag, rendered compose values. None asked a plugin to open it |
+| 7 | `ansible-playbook` does not read `ansible/group_vars/`, only directories beside the inventory or the playbook. The nodes would have got the role default, a **Shamir seal**, from a run reporting success | Ad-hoc `ansible` *does* read it from that directory, which is what made it look correct. The tests read the generated file directly |
+| 8 | The role asked dnf for `vault=1.17.2`, which is apt's syntax; the task failed on every node with `vault-1.17.2-1` already installed | The role had never run against a VM. The local profile is containers |
+| 9 | The role's TLS sources were relative paths Ansible searches for in two directories, neither of which is where `generate-cloud-certs.sh` writes | Same reason. The paths were only ever read, never resolved |
+| 10 | The playbook's own diff showed it **removing** `leader_tls_servername` and both `telemetry` blocks that cloud-init sets. Nothing failed: joins fell back to verifying an IP, and `/v1/sys/metrics` stopped serving Prometheus data | Two writers configure one file and nothing compared them. `tests/preflight-static` compares the cloud templates to the PKI role, and stops there |
+
+Four of those — 3, 4, 5 and 10 — are in code no test in this repository
+could have reached, which is what blocker 1 was for. Two more, 1 and 5,
+had passing assertions describing them: the pre-flight's shim set the
+value the script would read, and the egress test said "limited to HTTPS
+and HTTP" about a group that could not talk to itself. That is the
+failure mode this file already warns about, found twice more in one
+afternoon.
+
+The eleventh was in a test rather than in the code. `tests/agent` named
+each scenario's workspace `creds.$RANDOM`, two scenarios eventually drew
+the same number, and an assertion that a file is *absent* after a failed
+run found one an earlier passing scenario had written. It failed once in
+CI, passed locally, and would ordinarily have been re-run and forgotten
+as flaky. Pointing every scenario at one directory reproduces it exactly;
+`mktemp -d` fixes it. Two other suites named their workspaces the same
+way.
+
+What the session did not settle is as much the point. Snapshots to the
+bucket, PKI and audit on a real node, and an instance refresh were never
+reached; the teardown never exercised its `BucketNotEmpty` path, because
+no snapshot had been written. And the headline finding is a gap rather
+than a defect: **a replacement node cannot get a certificate without a
+person**, so the self-healing claim the architecture rests on is false
+today. Blocker 1 stays open for that reason, and the next step is a way
+to issue one node's certificate from the CA already on disk —
+`generate-cloud-certs.sh` keeps that CA key for exactly this case and
+offers no way to use it.
