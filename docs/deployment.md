@@ -195,6 +195,35 @@ cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
 
 Substitute `inventory/azure_rm.yml` for the Azure profile.
 
+### When the group replaces a node
+
+An autoscaling group or scale set replaces an instance without asking,
+and the replacement boots with no TLS material — so Vault does not start
+on it, and the cluster carries on without it. The first real AWS apply
+watched that happen, and
+[cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing) records
+it as the reason blocker 1 is still open.
+
+Until a node can fetch its own certificate, recovery is two commands:
+
+```bash
+./scripts/generate-cloud-certs.sh --cluster-name <cluster> --add-missing
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml \
+    --limit <new-instance-id>
+```
+
+`--add-missing` signs a leaf for any host in the inventory that has none,
+using the CA already in `ansible/files/tls` — the one the running nodes
+trust. It rewrites nothing else, refuses a CA belonging to another
+cluster, and carries over the extra SANs the existing leaves have, so a
+replacement is reachable through the load balancer like its peers. Do not
+reach for `--force` here: that mints a new CA, and then every node needs
+new material before any node presents it.
+
+`--limit` matters as much. Without it the playbook reconfigures all three
+nodes and restarts Vault on each, which is a cluster-wide event in
+service of one node.
+
 ### Why the inventory is dynamic
 
 `inventory/aws_ec2.yml` and `inventory/azure_rm.yml` discover nodes through the

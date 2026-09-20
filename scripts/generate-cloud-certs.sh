@@ -19,12 +19,19 @@
 #   --extra-san <name>     Additional DNS SAN on every leaf. Repeatable.
 #                          See "the load balancer" below.
 #   --days <n>             Leaf lifetime in days (default: 90).
-#   --force                Replace an existing directory.
+#   --add-missing          Issue leaves only for hosts that have none, from
+#                          the CA already in --out. For a replacement node.
+#   --force                Replace an existing directory, CA and all.
 #
 # Examples:
 #   ./generate-cloud-certs.sh --cluster-name vault-reference
 #   ./generate-cloud-certs.sh --cluster-name vault-reference \
 #       --extra-san vault-nlb-abc123.elb.us-east-1.amazonaws.com
+#
+#   # After the autoscaling group replaced a node:
+#   ./generate-cloud-certs.sh --cluster-name vault-reference --add-missing
+#   cd ansible && ansible-playbook -i inventory/aws_ec2.yml \
+#       playbooks/site.yml --limit <new-instance-id>
 #
 # WHY THIS EXISTS
 #
@@ -68,11 +75,40 @@
 # certificate that is otherwise correct, which reads as a broken cluster
 # and is not one.
 #
+# THE REPLACEMENT NODE, WHICH IS WHY --add-missing EXISTS
+#
+# An autoscaling group replaces a node without asking, and the
+# replacement boots with no certificate: the vault role delivers one, and
+# the role runs when a person runs it. The first real apply found out the
+# hard way -- a terminated leader was replaced in 75 seconds by an
+# instance whose Vault exited with `error loading TLS cert` until systemd
+# gave up. The cluster carried on with two voters; nothing recovered.
+#
+# This script kept the CA key for exactly that case and offered no way to
+# use it. Its only other mode was --force, which mints a *new* CA: every
+# node then needs the new material before any node presents it, so
+# reaching for it to fix one node is how a working cluster becomes a
+# cluster that cannot form. --add-missing signs one more leaf with the CA
+# that is already trusted, and touches nothing else.
+#
+# It is still a person running a command. Unattended recovery would mean
+# a node fetching its own material at boot, which is a different design
+# and is not this.
+#
 # DELIBERATE BEHAVIOURS
 #
 #   - Refuses to overwrite without --force. It mints private keys, and a
 #     re-run that silently replaced them would leave nodes serving
 #     certificates the CA on disk no longer matches.
+#   - --add-missing refuses a CA that is not this cluster's, by reading
+#     the subject of ca.crt. The servername on a leaf comes from
+#     --cluster-name, so a mistyped one signs a certificate for a name
+#     nobody verifies -- and the node it lands on joins nothing while
+#     reporting healthy.
+#   - --add-missing carries over the extra SANs an existing leaf has. Pass
+#     --extra-san for the load balancer once and a replacement gets it
+#     too; forget it and clients through the load balancer fail against
+#     that node alone, which reads as the node being broken.
 #   - Writes the CA key, and keeps it. A replacement node needs a
 #     certificate, and an autoscaling group produces replacements without
 #     asking. The directory is gitignored; treat it as a secret.
@@ -95,6 +131,7 @@ OUT_DIR="${REPO_ROOT}/ansible/files/tls"
 DAYS_LEAF=90
 DAYS_CA=3650
 FORCE=false
+ADD_MISSING=false
 EXTRA_SANS=()
 
 log() { printf '%s\n' "$*" >&2; }
@@ -113,6 +150,7 @@ while [[ $# -gt 0 ]]; do
         --out)          OUT_DIR="$2"; shift 2 ;;
         --extra-san)    EXTRA_SANS+=("$2"); shift 2 ;;
         --days)         DAYS_LEAF="$2"; shift 2 ;;
+        --add-missing)  ADD_MISSING=true; shift ;;
         --force)        FORCE=true; shift ;;
         -h|--help)      usage ;;
         *)              die "Unknown argument: $1" ;;
@@ -120,6 +158,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$CLUSTER_NAME" ]] || die "--cluster-name is required"
+
+# One mints a CA, the other reuses one. Together they read as "add what is
+# missing" and would replace everything.
+if [[ "$ADD_MISSING" == true && "$FORCE" == true ]]; then
+    die "--add-missing and --force are opposites: --force mints a new CA and
+       replaces every leaf, --add-missing signs one more with the CA on disk."
+fi
 
 command -v openssl >/dev/null 2>&1 || die "openssl is not on PATH"
 command -v jq >/dev/null 2>&1 || die "jq is not on PATH"
@@ -165,9 +210,28 @@ log "Found ${NODE_COUNT} node(s)."
 # ---------------------------------------------------------------------------
 # Output directory
 # ---------------------------------------------------------------------------
-if [[ -d "$OUT_DIR" ]] && [[ -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]]; then
+CA_SUBJECT="${CLUSTER_NAME} bootstrap CA"
+
+if [[ "$ADD_MISSING" == true ]]; then
+    for f in ca.crt ca.key; do
+        [[ -f "${OUT_DIR}/${f}" ]] || die "No ${f} in ${OUT_DIR}.
+       --add-missing signs a leaf with the CA that is already on disk and
+       already trusted by the running nodes. There is none here, so this is
+       a first run: drop --add-missing."
+    done
+
+    ON_DISK="$(openssl x509 -in "${OUT_DIR}/ca.crt" -noout -subject 2>/dev/null || true)"
+    if [[ "$ON_DISK" != *"${CA_SUBJECT}"* ]]; then
+        die "The CA in ${OUT_DIR} is not ${CLUSTER_NAME}'s.
+       Its subject is: ${ON_DISK:-<unreadable>}
+       A leaf's servername comes from --cluster-name, so signing one here
+       would produce a certificate for a name no node verifies."
+    fi
+    log "Reusing the bootstrap CA in ${OUT_DIR} (${CA_SUBJECT})."
+elif [[ -d "$OUT_DIR" ]] && [[ -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]]; then
     if [[ "$FORCE" != true ]]; then
-        die "${OUT_DIR} is not empty — pass --force to replace it.
+        die "${OUT_DIR} is not empty — pass --force to replace it, or
+       --add-missing to issue only for hosts that have no certificate.
        Replacing it issues a new CA, so every node needs the new material.
        Delivering it to some of them leaves a cluster that cannot form."
     fi
@@ -179,22 +243,65 @@ mkdir -p "$OUT_DIR"
 chmod 700 "$OUT_DIR"
 cd "$OUT_DIR"
 
+CLUSTER_SERVERNAME="${CLUSTER_NAME}.vault.internal"
+
 # ---------------------------------------------------------------------------
 # The CA
 # ---------------------------------------------------------------------------
-log "Issuing a bootstrap CA for ${CLUSTER_NAME}..."
+if [[ "$ADD_MISSING" != true ]]; then
+    log "Issuing a bootstrap CA for ${CLUSTER_NAME}..."
 
-openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
-    -keyout ca.key -out ca.crt -days "$DAYS_CA" \
-    -subj "/CN=${CLUSTER_NAME} bootstrap CA/O=vault-reference-platform" \
-    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
-    -addext "keyUsage=critical,keyCertSign,cRLSign" \
-    2>/dev/null || die "Failed to generate the CA"
+    openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+        -keyout ca.key -out ca.crt -days "$DAYS_CA" \
+        -subj "/CN=${CA_SUBJECT}/O=vault-reference-platform" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        2>/dev/null || die "Failed to generate the CA"
 
-chmod 600 ca.key
-chmod 644 ca.crt
+    chmod 600 ca.key
+    chmod 644 ca.crt
+fi
 
-CLUSTER_SERVERNAME="${CLUSTER_NAME}.vault.internal"
+# ---------------------------------------------------------------------------
+# Which hosts, and which SANs, when adding to an existing set
+# ---------------------------------------------------------------------------
+if [[ "$ADD_MISSING" == true ]]; then
+    # Any DNS name on an existing leaf that is not that node's own name and
+    # not one this script puts on every leaf is an --extra-san somebody
+    # passed. Carrying it over is the difference between a replacement
+    # clients can reach through the load balancer and one they cannot.
+    EXISTING_LEAF=""
+    while read -r node _; do
+        [[ -n "$node" ]] || continue
+        if [[ -f "${node}.crt" ]]; then EXISTING_LEAF="${node}.crt"; break; fi
+    done <<< "$HOSTS"
+
+    if [[ -n "$EXISTING_LEAF" ]]; then
+        CARRIED="$(openssl x509 -in "$EXISTING_LEAF" -noout -ext subjectAltName 2>/dev/null \
+            | tr ',' '\n' | sed -n 's/^ *DNS://p' \
+            | grep -vxF -e "${EXISTING_LEAF%.crt}" -e "$CLUSTER_SERVERNAME" -e localhost || true)"
+        while read -r name; do
+            [[ -n "$name" ]] || continue
+            if [[ " ${EXTRA_SANS[*]-} " == *" ${name} "* ]]; then continue; fi
+            EXTRA_SANS+=("$name")
+            log "Carrying over --extra-san ${name} from ${EXISTING_LEAF}."
+        done <<< "$CARRIED"
+    fi
+
+    MISSING=""
+    while read -r node ip; do
+        [[ -n "$node" ]] || continue
+        if [[ -f "${node}.crt" || -f "${node}.key" ]]; then continue; fi
+        MISSING="${MISSING}${node} ${ip}"$'\n'
+    done <<< "$HOSTS"
+
+    if [[ -z "${MISSING//[[:space:]]/}" ]]; then
+        log "Every host in the inventory already has a certificate. Nothing to do."
+        exit 0
+    fi
+    HOSTS="${MISSING%$'\n'}"
+    log "Issuing for $(grep -c . <<< "$HOSTS") host(s) without one."
+fi
 
 # ---------------------------------------------------------------------------
 # Leaf certificates
@@ -236,11 +343,28 @@ done <<< "$HOSTS"
 rm -f ca.srl
 
 log ""
-log "Wrote ${OUT_DIR}:"
-log "  ca.crt / ca.key           the bootstrap CA"
-log "  <instance-id>.crt / .key  one leaf per node"
+if [[ "$ADD_MISSING" == true ]]; then
+    log "Added to ${OUT_DIR}, signed by the CA already there:"
+    while read -r node _; do
+        [[ -n "$node" ]] || continue
+        log "  ${node}.crt / .key"
+    done <<< "$HOSTS"
+else
+    log "Wrote ${OUT_DIR}:"
+    log "  ca.crt / ca.key           the bootstrap CA"
+    log "  <instance-id>.crt / .key  one leaf per node"
+fi
 log ""
 log "Every leaf carries ${CLUSTER_SERVERNAME}, the name a follower verifies"
 log "a leader against. Nothing forms a cluster without it."
 log ""
-log "Next: cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml"
+if [[ "$ADD_MISSING" == true ]]; then
+    log "Next, for the new host only -- the others are configured already:"
+    while read -r node _; do
+        [[ -n "$node" ]] || continue
+        log "  cd ansible && ansible-playbook -i inventory/aws_ec2.yml \\"
+        log "      playbooks/site.yml --limit ${node}"
+    done <<< "$HOSTS"
+else
+    log "Next: cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml"
+fi

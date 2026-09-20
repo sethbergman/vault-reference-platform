@@ -67,6 +67,24 @@ ignoring a failed reload. Each turned between two and five assertions
 red. Restore the file afterwards; a mutation left in the working tree is
 indistinguishable from a real regression.
 
+Six more cover `generate-cloud-certs.sh --add-missing`, the mode that
+issues a certificate for a node an autoscaling group has just created.
+Each was watched to fail:
+
+| Mutation | Caught by |
+|---|---|
+| The skip removed, so existing leaves are rewritten too | `and rewrites nothing that was already there`, and the second-run assertion |
+| The carried-over extra SANs dropped | `it inherits the extra SANs of the leaves beside it` |
+| The CA subject guard removed | `it refuses a CA belonging to a different cluster` |
+| The nothing-to-do exit removed | `a second run issues nothing and says so` |
+| `--force` no longer refused alongside `--add-missing` | `--add-missing with --force is refused rather than resolved` |
+| The plain refusal stops naming `--add-missing` | `a plain re-run still refuses, and points at --add-missing` |
+
+The first is the one worth keeping. A mode that rewrote the other leaves
+would be `--force` with a gentler name: a new CA reaches one node, the
+others still present the old one, and a cluster that was working stops
+forming.
+
 ## What these do not cover
 
 The bootstrap ordering. Vault PKI cannot issue the certificate the

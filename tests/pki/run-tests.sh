@@ -659,6 +659,147 @@ else
     bad "every leaf carries the cluster servername a follower verifies" "$SERVERNAME"
 fi
 
+# ---------------------------------------------------------------------------
+printf '\n=== A certificate for a replacement node ===\n'
+# ---------------------------------------------------------------------------
+# An autoscaling group replaces a node without asking, and the replacement
+# boots with nothing at /etc/vault.d/tls. The first real apply watched
+# that happen: a terminated leader was replaced in 75 seconds by an
+# instance whose Vault exited with `error loading TLS cert` until systemd
+# stopped retrying, while the cluster carried on with two voters.
+#
+# The script kept the CA key for this case and had no mode that used it.
+# Its only other option was --force, which mints a new CA -- reaching for
+# that to fix one node is how a cluster stops forming. So: --add-missing
+# signs one more leaf with the CA already trusted, and the assertions
+# below are as much about what it leaves alone as what it writes.
+ADD_JSON="${WORK}/inventory-plus-one.json"
+sed 's/"vault_nodes": {"hosts": \["i-0aaa", "i-0bbb", "i-0nope"\]}/"vault_nodes": {"hosts": ["i-0aaa", "i-0bbb", "i-0nope", "i-0new"]}/; s/"i-0nope": {}/"i-0nope": {}, "i-0new": {"private_ip_address": "10.0.1.99"}/' \
+    "$INV_JSON" > "$ADD_JSON"
+
+if jq -e '.vault_nodes.hosts | index("i-0new")' "$ADD_JSON" >/dev/null 2>&1 \
+   && jq -e '._meta.hostvars["i-0new"].private_ip_address' "$ADD_JSON" >/dev/null 2>&1; then
+    ok "the replacement appears in the inventory the script reads"
+else
+    bad "the replacement appears in the inventory the script reads" \
+        "the fixture edit produced no i-0new; every assertion below would be vacuous"
+fi
+
+BEFORE_ADD="$(cd "$CERTS" && sha256sum ./*.crt ./*.key | sort)"
+
+ADD_RC=0
+ADD_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$ADD_JSON" \
+    --out "$CERTS" --add-missing 2>&1)" || ADD_RC=$?
+
+if [[ "$ADD_RC" == "0" && -f "${CERTS}/i-0new.crt" && -f "${CERTS}/i-0new.key" ]]; then
+    ok "--add-missing issues for the host that has no certificate"
+else
+    bad "--add-missing issues for the host that has no certificate" \
+        "exit ${ADD_RC}: ${ADD_OUT}"
+fi
+
+# The whole point. A mode that rewrote the others would be --force with a
+# gentler name: every node then needs material it has not been given.
+AFTER_ADD="$(cd "$CERTS" && sha256sum ./*.crt ./*.key | sort | grep -v i-0new)"
+if [[ "$AFTER_ADD" == "$BEFORE_ADD" ]]; then
+    ok "and rewrites nothing that was already there, CA included"
+else
+    bad "and rewrites nothing that was already there, CA included" \
+        "$(diff <(printf '%s\n' "$BEFORE_ADD") <(printf '%s\n' "$AFTER_ADD") | head -4)"
+fi
+
+if openssl verify -CAfile "${CERTS}/ca.crt" "${CERTS}/i-0new.crt" >/dev/null 2>&1; then
+    ok "the new leaf verifies against the CA the running nodes already trust"
+else
+    bad "the new leaf verifies against the CA the running nodes already trust"
+fi
+
+NEW_SN="$(openssl x509 -in "${CERTS}/i-0new.crt" -noout \
+    -checkhost vault-reference.vault.internal 2>&1 || true)"
+if [[ "$NEW_SN" == *"does match"* && "$NEW_SN" != *"NOT match"* ]]; then
+    ok "it carries the cluster servername, so it can join"
+else
+    bad "it carries the cluster servername, so it can join" "$NEW_SN"
+fi
+
+NEW_IP="$(openssl x509 -in "${CERTS}/i-0new.crt" -noout "$CHECK_FLAG" 10.0.1.99 2>&1 || true)"
+if [[ "$NEW_IP" == *"does match"* && "$NEW_IP" != *"NOT match"* ]]; then
+    ok "and its own address, so the role will deliver it"
+else
+    bad "and its own address, so the role will deliver it" "$NEW_IP"
+fi
+
+# Nobody passed --extra-san on this run. The load balancer's name was
+# given once, on the first run, and a replacement without it fails for
+# clients arriving through the load balancer and nowhere else -- which
+# reads as that node being broken rather than as a missing SAN.
+NEW_LB="$(openssl x509 -in "${CERTS}/i-0new.crt" -noout \
+    -checkhost vault.example.com 2>&1 || true)"
+if [[ "$NEW_LB" == *"does match"* && "$NEW_LB" != *"NOT match"* ]]; then
+    ok "it inherits the extra SANs of the leaves beside it, unprompted"
+else
+    bad "it inherits the extra SANs of the leaves beside it, unprompted" \
+        "vault.example.com: ${NEW_LB}"
+fi
+
+# Idempotent, because the operator running it does not know which hosts
+# have material -- that is the question they are asking.
+IDEM_STATE="$(cd "$CERTS" && sha256sum ./*.crt ./*.key | sort)"
+IDEM_RC=0
+IDEM_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$ADD_JSON" \
+    --out "$CERTS" --add-missing 2>&1)" || IDEM_RC=$?
+if [[ "$IDEM_RC" == "0" && "$IDEM_OUT" == *"Nothing to do"* \
+   && "$(cd "$CERTS" && sha256sum ./*.crt ./*.key | sort)" == "$IDEM_STATE" ]]; then
+    ok "a second run issues nothing and says so"
+else
+    bad "a second run issues nothing and says so" "exit ${IDEM_RC}: ${IDEM_OUT}"
+fi
+
+# A leaf's servername comes from --cluster-name. Signed against another
+# cluster's CA it is a certificate for a name nobody verifies, delivered
+# to a node that then joins nothing while reporting healthy.
+WRONG_RC=0
+WRONG_OUT="$("$GEN" --cluster-name other-cluster --hosts-json "$ADD_JSON" \
+    --out "$CERTS" --add-missing 2>&1)" || WRONG_RC=$?
+if [[ "$WRONG_RC" != "0" && "$WRONG_OUT" == *"is not other-cluster's"* ]]; then
+    ok "it refuses a CA belonging to a different cluster"
+else
+    bad "it refuses a CA belonging to a different cluster" "exit ${WRONG_RC}: ${WRONG_OUT}"
+fi
+
+# With no CA there is nothing to add to, and the caller means a first run.
+# Minting one silently would hand out material no node trusts.
+NO_CA_RC=0
+NO_CA_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$ADD_JSON" \
+    --out "${WORK}/no-ca" --add-missing 2>&1)" || NO_CA_RC=$?
+if [[ "$NO_CA_RC" != "0" && "$NO_CA_OUT" == *"ca.crt"* && ! -f "${WORK}/no-ca/ca.crt" ]]; then
+    ok "and refuses to add to a directory with no CA in it"
+else
+    bad "and refuses to add to a directory with no CA in it" "exit ${NO_CA_RC}: ${NO_CA_OUT}"
+fi
+
+BOTH_RC=0
+BOTH_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$ADD_JSON" \
+    --out "$CERTS" --add-missing --force 2>&1)" || BOTH_RC=$?
+if [[ "$BOTH_RC" != "0" && -f "${CERTS}/i-0aaa.crt" ]]; then
+    ok "--add-missing with --force is refused rather than resolved"
+else
+    bad "--add-missing with --force is refused rather than resolved" \
+        "exit ${BOTH_RC}: ${BOTH_OUT}"
+fi
+
+# The refusal a first-timer meets should name the mode that does what they
+# want, or they reach for --force and replace the CA of a running cluster.
+PLAIN_RC=0
+PLAIN_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$ADD_JSON" \
+    --out "$CERTS" 2>&1)" || PLAIN_RC=$?
+if [[ "$PLAIN_RC" != "0" && "$PLAIN_OUT" == *"--add-missing"* ]]; then
+    ok "a plain re-run still refuses, and points at --add-missing"
+else
+    bad "a plain re-run still refuses, and points at --add-missing" \
+        "exit ${PLAIN_RC}: ${PLAIN_OUT}"
+fi
+
 SANS="$(openssl x509 -in "${CERTS}/i-0aaa.crt" -noout -ext subjectAltName 2>&1)"
 
 if [[ "$SANS" == *"vault.example.com"* ]]; then
