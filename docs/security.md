@@ -75,8 +75,10 @@ renewal process and the Vault process are not the same user.
 in order to start.** Vault will not serve without TLS, so the first
 certificate on every node has to come from somewhere else:
 
-1. Bootstrap certificates from `generate-dev-certs.sh` (local) or your
-   own CA / ACM Private CA (cloud) bring the cluster up.
+1. Bootstrap certificates from `generate-dev-certs.sh` (local) or
+   `generate-cloud-certs.sh` (cloud) bring the cluster up. On the cloud
+   profiles the same CA then signs any replacement node's certificate at
+   boot — see below.
 2. `bootstrap-pki.sh` configures the PKI engine on the running cluster.
 3. Nodes renew from Vault PKI from then on, including nodes that join
    later.
@@ -86,6 +88,56 @@ from Vault PKI and reloaded, and it has to remain in the trust bundle
 until then. There is no way around that ordering. The `vault_pki` Ansible
 role is off by default and refuses to run on a node with no existing
 certificate, rather than producing a timer that fails quietly every night.
+
+### A node the autoscaling group replaces
+
+The ordering above describes a cluster being built. A cluster being
+*repaired* has the same problem in a sharper form: the autoscaling group
+launches a replacement without asking, and the replacement needs a
+certificate before Vault will start. On the first real AWS apply it got
+none — certificates came only from an Ansible run, named after an
+instance id that did not exist until the launch — and it sat there while
+the cluster ran one voter short.
+
+The design chosen, of three considered:
+
+| Design | Why or why not |
+|---|---|
+| **The node signs its own leaf from the bootstrap CA, read from SSM at boot** (chosen) | No new service, nothing to pay for, the same shape on Azure with a Key Vault secret, and it works on a cold start with every node down |
+| The node asks the running cluster, authenticating with its instance role, and takes a leaf from Vault's PKI | The CA key never leaves Vault. But it needs the PKI migration done, two cloud auth methods nothing here has tested, and a quorate cluster to ask — so it cannot help a cold start, and would still need the first design beneath it |
+| ACM Private CA | The key never leaves an HSM. About $400 a month per CA, more than the cluster, and AWS-only — Azure has no managed private CA to mirror it |
+
+**What the chosen design gives up**, stated where it is granted: every
+node can read the bootstrap CA key, so a compromised node can mint a leaf
+its peers accept. A compromised node already holds the seal key's
+`Decrypt` and the Raft data on its own disk, so the added exposure is
+peer impersonation inside a boundary that has already gone. The key is
+on a node for seconds, in a private temporary directory, and never in
+Terraform state.
+
+The mechanics:
+
+- `terraform/aws/tls.tf` creates two SSM parameters with a placeholder.
+  `scripts/publish-bootstrap-ca.sh` overwrites them after
+  `generate-cloud-certs.sh`, putting the key back under the volume KMS key
+  it was created with — `put-parameter` without `--key-id` re-encrypts
+  under the account's `aws/ssm` key, which the node role cannot decrypt,
+  and reports success. It reads both back before saying so.
+- `scripts/issue-bootstrap-cert.sh`, embedded in user-data, runs before
+  Vault starts. A node with a certificate is left alone; a placeholder
+  means "first apply" and defers to Ansible, as before; otherwise it
+  refuses a CA that is not this cluster's, signs a leaf with exactly the
+  SANs `generate-cloud-certs.sh` would, and verifies it before writing.
+- The node role may call `ssm:GetParameter` on those two parameters, and
+  `kms:Decrypt` on the volume key only through SSM.
+
+**What is not proven:** a node on AWS doing it. `tests/bootstrap-cert`
+drives both scripts with real `openssl` against shims that model SSM and
+IMDSv2, and `terraform/aws/tests` asserts the parameters, the grant and
+the embedded script. No replacement has been watched issuing its own
+certificate on a real cluster. Once the PKI migration is done, the
+second design is the one that takes the key off the nodes — with this
+one kept beneath it for a cold start.
 
 ### Doing the migration
 

@@ -226,9 +226,16 @@ The blockers are, in order:
      the cluster already trusts, then the playbook runs `--limit` that
      host — and it is still two commands somebody has to run. See
      [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing).
-     Unattended recovery means a node fetching its own material at boot,
-     which is a design decision nobody here has made. The same gap blocks
-     item 5's instance refresh.
+
+     Unattended recovery is now built: a replacement signs its own leaf
+     at boot from the bootstrap CA published to SSM, with the SANs its
+     peers carry (`scripts/issue-bootstrap-cert.sh`; the tradeoff is in
+     [security.md](security.md#a-node-the-autoscaling-group-replaces)).
+     It is tested with shims and real `openssl` and asserted in
+     `terraform test`, and it has not been watched on a real node. The
+     blocker closes when item 10 is run again and the replacement joins
+     with nobody touching it — which is also what item 5's instance
+     refresh was waiting for.
 
    What that session did not reach: snapshots to the bucket, PKI
    certificates and audit devices on a real node, and the refresh. Those

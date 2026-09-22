@@ -198,13 +198,25 @@ Substitute `inventory/azure_rm.yml` for the Azure profile.
 ### When the group replaces a node
 
 An autoscaling group or scale set replaces an instance without asking,
-and the replacement boots with no TLS material — so Vault does not start
-on it, and the cluster carries on without it. The first real AWS apply
-watched that happen, and
-[cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing) records
-it as the reason blocker 1 is still open.
+and the replacement boots with no TLS material. The first real AWS apply
+watched Vault refuse to start on it while the cluster carried on without
+it — [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing).
 
-Until a node can fetch its own certificate, recovery is two commands:
+**On AWS, publish the bootstrap CA once, after the first playbook run:**
+
+```bash
+./scripts/publish-bootstrap-ca.sh --cluster-name <cluster>
+```
+
+From then on a node the group launches reads the CA from SSM at boot,
+signs its own leaf with the same SANs its peers carry, and starts Vault
+— `scripts/issue-bootstrap-cert.sh`, embedded in user-data. Nodes already
+running are untouched. This is designed and tested, and has **not** been
+watched working on a real cluster; see
+[security.md](security.md#a-node-the-autoscaling-group-replaces) for the
+tradeoff it makes. Azure has no equivalent yet.
+
+If the CA was never published, or on Azure, recovery is two commands:
 
 ```bash
 ./scripts/generate-cloud-certs.sh --cluster-name <cluster> --add-missing
