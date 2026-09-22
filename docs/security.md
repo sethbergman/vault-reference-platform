@@ -117,7 +117,12 @@ Terraform state.
 
 The mechanics:
 
-- `terraform/aws/tls.tf` creates two SSM parameters with a placeholder.
+- `terraform/aws/tls.tf` creates two SSM parameters with a placeholder,
+  the key's as a write-only argument. `ignore_changes = [value]` is not
+  enough and was the first version: the provider reads a SecureString
+  back with decryption on every refresh, so the apply after publication
+  wrote the decrypted key into state while reporting "No changes".
+  `tests/cloud-apply-emulated` publishes a key and re-applies to hold it.
   `scripts/publish-bootstrap-ca.sh` overwrites them after
   `generate-cloud-certs.sh`, putting the key back under the volume KMS key
   it was created with — `put-parameter` without `--key-id` re-encrypts

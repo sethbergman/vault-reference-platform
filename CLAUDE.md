@@ -457,7 +457,11 @@ re-reading state is context unavailable for the work.
 `-s bash`. See "Scripts" above for the script shape.
 
 **Terraform** — `terraform fmt -recursive` before committing; CI runs
-`fmt -check`. `required_version >= 1.7`, providers pinned with `~>`.
+`fmt -check`. `required_version >= 1.7`, providers pinned with `~>` —
+except `terraform/aws`, at `>= 1.11` for S3 native locking and for the
+write-only argument that keeps the bootstrap CA key out of state. Never
+rely on `ignore_changes = [value]` to keep a secret out of state: it
+hides the diff, and the provider still reads the value back on refresh.
 `.terraform.lock.hcl` is committed deliberately (see `.gitignore`);
 regenerate with `terraform providers lock`, never by hand — and pass
 every platform, not just the one you are on:

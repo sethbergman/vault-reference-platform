@@ -26,8 +26,9 @@ jobs:
           # the network on every run; that lookup returned a 504 on
           # 2026-08-25 and failed the job before any Terraform ran.
           #
-          # terraform/aws declares required_version >= 1.10, because its
-          # backend uses `use_lockfile`; terraform/azure and both
+          # terraform/aws declares required_version >= 1.11, because its
+          # backend uses `use_lockfile` and the bootstrap CA key is a
+          # write-only argument; terraform/azure and both
           # bootstrap modules are still >= 1.7. This pin satisfies all of
           # them, and the floor that matters is the highest one.
           terraform_version: "1.15.9"

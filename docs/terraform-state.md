@@ -78,11 +78,13 @@ that is tested.
 ## Locking, and why the providers differ
 
 AWS uses `use_lockfile = true`, the S3 backend's native locking. It is
-the reason [`terraform/aws/main.tf`](../terraform/aws/main.tf) requires
-Terraform 1.10 rather than 1.7: on an older version the attribute is
-rejected at `init`. That is a better failure than the alternative — a
-version that ignores it and applies without a lock, which is the exact
-corruption the backend exists to prevent, arriving silently.
+one reason [`terraform/aws/main.tf`](../terraform/aws/main.tf) requires
+more than 1.7: on an older version the attribute is rejected at `init`.
+That is a better failure than the alternative — a version that ignores
+it and applies without a lock, which is the exact corruption the backend
+exists to prevent, arriving silently. The floor is now 1.11, for the
+write-only argument that keeps the bootstrap CA key out of state
+([security.md](security.md#a-node-the-autoscaling-group-replaces)).
 
 It is not a DynamoDB table. The `dynamodb_table` argument still works
 and is deprecated, and it is a second resource to create, pay for, and

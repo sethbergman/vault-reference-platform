@@ -29,8 +29,9 @@
 #
 #   - It overwrites parameters Terraform created; it never creates them.
 #     Terraform owns their lifecycle, so a teardown removes them, and
-#     Terraform never holds the key: it wrote a placeholder and ignores the
-#     value from then on. The key stays out of Terraform state.
+#     Terraform never holds the key: it wrote the placeholder as a
+#     write-only argument, so a refresh does not read the key back into
+#     state (tls.tf says why ignore_changes alone did).
 #   - The secret parameter is overwritten with an explicit --key-id, read
 #     from the parameter itself. `put-parameter --overwrite` without one
 #     re-encrypts a SecureString under the account's aws/ssm key, which
