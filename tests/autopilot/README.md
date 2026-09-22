@@ -65,8 +65,10 @@ of three, so it adds the `vault-3` spare and watches the count go to four
 and back to three.
 
 **None of them proves the fix works on a cloud profile.** No ASG instance
-refresh has ever run against this configuration, because no cloud profile
-has ever been applied. What the local suites establish is that autopilot
+refresh has ever run against this configuration. The AWS apply of
+2026-09-17 ran `configure-autopilot.sh` against a live cluster once and
+watched it prune a terminated leader's voter, but a refresh was never
+reached. What the local suites establish is that autopilot
 behaves as documented when a replacement arrives; whether an autoscaling
 group produces that sequence — in that order, with its own warmup and
 health checks in the way — is the checklist item in

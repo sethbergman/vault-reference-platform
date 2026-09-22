@@ -135,9 +135,11 @@ resource "aws_autoscaling_group" "vault" {
   # and that is not timidity -- it is the only value under which a bare
   # `terraform apply` terminates.
   #
-  # This profile deliberately does not issue TLS certificates; user-data
-  # says so and defers to the Ansible layer. Vault will not start without
-  # them, so the load balancer's health check cannot pass, so with
+  # On a first apply no node has a TLS certificate: the bootstrap CA does
+  # not exist until generate-cloud-certs.sh runs after the apply, so
+  # user-data defers to the Ansible layer (it issues one itself only once
+  # the CA is published -- see tls.tf). Vault will not start without one,
+  # so the load balancer's health check cannot pass, so with
   # health_check_type = "ELB" the group marks every instance unhealthy at
   # the end of the grace period, terminates it, launches a replacement,
   # and repeats -- billing EC2, NAT and EBS the whole time while looking
