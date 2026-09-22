@@ -304,6 +304,65 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== A published CA key stays out of state ==="
+# ---------------------------------------------------------------------------
+# tls.tf creates the key parameter with a placeholder, and
+# publish-bootstrap-ca.sh overwrites it. The first version relied on
+# `ignore_changes = [value]` to keep the real key out of state, which it
+# does not: the provider reads a SecureString back with decryption on every
+# refresh, so the next apply -- reporting "No changes" -- wrote the
+# decrypted key into state. A mock cannot see that; only the real
+# provider's refresh can.
+#
+# So: publish a key the way the script does (same parameter, same KMS key,
+# overwrite), apply again, and look for it. And check SSM still holds it
+# afterwards, because the obvious fix for the first problem -- a
+# write-only value without ignore_changes -- makes a later apply overwrite
+# the published key, or fail, instead.
+KEY_PARAM="$(attr_of aws_ssm_parameter bootstrap_ca_key name)"
+MARKER="-----BEGIN PRIVATE KEY-----
+emulated-ca-key-$$-$RANDOM
+-----END PRIVATE KEY-----"
+# The value travels in the environment: the heredoc is python's stdin.
+ssm() {
+    SSM_VALUE="$MARKER" python3 - "$ENDPOINT" "$@" <<'PY'
+import os, sys, boto3
+endpoint, op, name = sys.argv[1:4]
+c = boto3.client("ssm", endpoint_url=endpoint, region_name="us-east-1",
+                 aws_access_key_id="testing", aws_secret_access_key="testing")
+if op == "put":
+    c.put_parameter(Name=name, Type="SecureString", KeyId=sys.argv[4],
+                    Value=os.environ["SSM_VALUE"], Overwrite=True)
+else:
+    print(c.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"])
+PY
+}
+
+if [[ -n "$KEY_PARAM" ]] && ssm put "$KEY_PARAM" "$DATA_ARN" 2>"${WORK}/put.log"; then
+    if terraform -chdir="$TF_DIR" apply -auto-approve -input=false >"${WORK}/apply2.log" 2>&1; then
+        ok "the profile applies again after the key is published"
+    else
+        bad "the profile applies again after the key is published" \
+            "$(grep -iE 'error|Error:' "${WORK}/apply2.log" | head -8)"
+    fi
+    if grep -q "emulated-ca-key-$$" "${TF_DIR}/terraform.tfstate"; then
+        bad "the published key is not in state after that apply" "tls.tf is writing the CA key into terraform.tfstate"
+    else
+        ok "the published key is not in state after that apply"
+    fi
+    if [[ "$(ssm get "$KEY_PARAM" 2>/dev/null)" == "$MARKER" ]]; then
+        ok "and SSM still holds the published key, not the placeholder"
+    else
+        bad "and SSM still holds the published key, not the placeholder" \
+            "the apply overwrote what publish-bootstrap-ca.sh wrote"
+    fi
+else
+    bad "a key can be published to the parameter tls.tf created" \
+        "parameter '${KEY_PARAM}': $(tail -3 "${WORK}/put.log" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== And it can be taken back down ==="
 # ---------------------------------------------------------------------------
 # A profile that applies but cannot be destroyed is a profile that bills

@@ -414,12 +414,15 @@ run "a_new_node_can_read_the_bootstrap_ca_and_nothing_more" {
   # Terraform writes a placeholder and never the key; the boot script reads
   # that placeholder as "first apply". tests/bootstrap-cert holds the value
   # to the script's.
+  #
+  # Only the certificate's is readable here. The key's is written with
+  # value_wo, which is null in plan and state by design -- which is the
+  # point of it. Whether the published key then stays out of state is a
+  # question about the real provider's refresh, which a mock cannot
+  # answer; tests/cloud-apply-emulated publishes one and re-applies.
   assert {
-    condition = alltrue([
-      aws_ssm_parameter.bootstrap_ca_cert.value == local.bootstrap_ca_placeholder,
-      aws_ssm_parameter.bootstrap_ca_key.value == local.bootstrap_ca_placeholder,
-    ])
-    error_message = "Both parameters must start as the placeholder the boot script recognises."
+    condition     = aws_ssm_parameter.bootstrap_ca_cert.value == local.bootstrap_ca_placeholder
+    error_message = "The certificate parameter must start as the placeholder the boot script recognises."
   }
 
   assert {
