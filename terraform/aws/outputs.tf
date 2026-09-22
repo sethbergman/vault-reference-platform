@@ -53,6 +53,11 @@ output "vault_cluster_tag" {
   value       = "VaultCluster=${var.cluster_name}"
 }
 
+output "bootstrap_ca_parameter_prefix" {
+  value       = local.bootstrap_ca_prefix
+  description = "SSM path scripts/publish-bootstrap-ca.sh writes the bootstrap CA to, and new nodes read it from."
+}
+
 output "aws_region" {
   description = "Region the cluster is deployed in. Consumed by scripts/terraform-to-ansible.sh for Raft auto-join."
   value       = var.aws_region

@@ -190,14 +190,14 @@ it is still two commands: something has to notice the node exists.
 Until a replacement can get its material without a person,
 **blocker 1 stays open** and item 9 cannot be attempted.
 
-Doing that properly means a node fetching its own certificate at boot,
-from something that will issue one to an instance that cannot yet prove
-much about itself. That is a design decision — an internal CA reachable
-from the subnet, ACM Private CA with the instance role authorising the
-request, or Vault's own PKI once a first cluster exists, which is
-`scripts/migrate-to-vault-pki.sh`'s territory and has the same
-chicken-and-egg problem at the start. None of the three is written here
-yet.
+The fix since: a replacement signs its own leaf at boot, from the
+bootstrap CA published to SSM, with the same SANs its peers carry —
+`scripts/issue-bootstrap-cert.sh` in user-data, fed by
+`scripts/publish-bootstrap-ca.sh`. The design and what it gives up are in
+[security.md](security.md#a-node-the-autoscaling-group-replaces). It is
+tested with shims and real `openssl`, and it has **not** been watched on
+a real cluster: blocker 1 closes when item 10 is run again and the
+replacement joins with nobody touching it.
 
 ---
 
@@ -356,6 +356,11 @@ terraform -chdir=terraform/aws apply
 ./scripts/generate-cloud-certs.sh --cluster-name vault-reference
 
 cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
+cd ..
+
+# So a node the autoscaling group launches later signs its own
+# certificate at boot. Item 10 is where that gets watched.
+./scripts/publish-bootstrap-ca.sh --cluster-name vault-reference
 ```
 
 ### Azure
@@ -774,9 +779,12 @@ aws ec2 terminate-instances --instance-ids <leader-instance-id>
   remaining nodes
 - the load balancer drops the dead target
 - the Auto Scaling group launches a replacement
-- **the replacement auto-unseals and joins Raft with no human
-  involvement** — which is items 2 and 3 proving themselves under the
-  only conditions that matter
+- **the replacement issues its own certificate at boot**, from the CA
+  `publish-bootstrap-ca.sh` put in SSM — `grep bootstrap-cert
+  /var/log/user-data.log` on it should end in `Wrote /etc/vault.d/tls/
+  vault.crt` — and then **auto-unseals and joins Raft with no human
+  involvement**, which is items 2 and 3 proving themselves under the only
+  conditions that matter
 
 This is the check that justifies the whole architecture. If the
 replacement node joins on its own, the cluster is self-healing. If it

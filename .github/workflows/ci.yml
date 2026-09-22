@@ -940,6 +940,18 @@ jobs:
       - name: Exercise scripts/bootstrap-pki.sh and scripts/issue-node-cert.sh
         run: ./tests/pki/run-tests.sh
 
+  bootstrap-cert-test:
+    name: Replacement node certificate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # openssl and jq ship on the runner. SSM and instance metadata are
+      # shims; the CA and every leaf are real openssl output, and the
+      # fixture CAs come from generate-cloud-certs.sh itself.
+      - name: Exercise scripts/issue-bootstrap-cert.sh and publish-bootstrap-ca.sh
+        run: ./tests/bootstrap-cert/run-tests.sh
+
   integration-test:
     name: Integration (real cluster)
     runs-on: ubuntu-latest

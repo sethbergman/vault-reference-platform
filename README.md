@@ -460,7 +460,9 @@ What stands between here and v1.0, in order:
    terminated leader is replaced by a node that never starts Vault**,
    because certificates reach a node only through an Ansible run named
    after an instance id that does not exist until the launch. Recovery by
-   hand works; unattended recovery does not exist. Ten defects were fixed
+   hand works, and a replacement now signs its own certificate at boot
+   from a CA published to SSM — built and tested, never yet watched on a
+   real node, which is what closes this item. Ten defects were fixed
    getting that far, four of them in code no test here could reach.
    Snapshots to the bucket, PKI and audit on a real node, and an instance
    refresh were never reached. See

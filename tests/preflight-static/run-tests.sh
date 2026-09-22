@@ -137,6 +137,15 @@ printf '\n=== The rendered cloud-init is valid shell ===\n'
 # is collapsed last, once no ${lower} remains.
 # The single quotes are deliberate: sed must receive ${x} literally,
 # not the empty expansion the shell would give it.
+#
+# ${bootstrap_cert_script} becomes a stub rather than the script. What
+# templatefile() inserts there is a value, not template text, so its own
+# lower-case ${tool} and ${extra} are never interpolated -- but this
+# leftover check cannot tell them from a real one. The embedded code is
+# checked where it lives: the shellcheck job lints
+# scripts/issue-bootstrap-cert.sh, tests/bootstrap-cert runs it, and
+# terraform/aws/tests/cluster.tftest.hcl asserts that stripping its
+# comments for the 16 KB limit kept the code.
 # shellcheck disable=SC2016
 render() {
     sed -e 's|\${aws_region}|us-east-1|g' \
@@ -149,6 +158,9 @@ render() {
         -e 's|\${vm_scale_set}|vault-ref-vmss|g' \
         -e 's|\${subscription_id}|00000000-0000-0000-0000-000000000000|g' \
         -e 's|\${tenant_id}|11111111-1111-1111-1111-111111111111|g' \
+        -e 's|\${bootstrap_ca_prefix}|/vault-ref/tls|g' \
+        -e 's|\${lb_dns_name}|vault-ref-nlb-0123456789.elb.us-east-1.amazonaws.com|g' \
+        -e 's|^\${bootstrap_cert_script}$|echo "embedded: scripts/issue-bootstrap-cert.sh"|' \
         -e 's|\$\${|${|g' \
         "$1"
 }

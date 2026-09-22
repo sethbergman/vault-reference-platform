@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Stand-in for curl, answering only the instance metadata service.
+#
+# IMDSv2 as the launch template enforces it: a PUT for a token first, then
+# GETs carrying it. A GET without the token header is refused with 401,
+# as the real service does under http_tokens = "required" -- so a script
+# that skips the token fails here the way it would on a node.
+set -uo pipefail
+
+printf 'curl %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+
+[[ "${FAKE_IMDS_RC:-0}" == "0" ]] || { echo "curl: (7) Failed to connect" >&2; exit "${FAKE_IMDS_RC}"; }
+
+METHOD=GET URL="" TOKEN_HEADER=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -X)  METHOD="$2"; shift 2 ;;
+        -H)  [[ "$2" == X-aws-ec2-metadata-token:* ]] && TOKEN_HEADER=true; shift 2 ;;
+        http*) URL="$1"; shift ;;
+        *)   shift ;;
+    esac
+done
+
+case "$URL" in
+    */latest/api/token)
+        [[ "$METHOD" == PUT ]] || { echo "405 Method Not Allowed" >&2; exit 22; }
+        printf '%s' "fake-imds-token"
+        exit 0
+        ;;
+esac
+
+[[ "$TOKEN_HEADER" == true ]] || { echo "401 Unauthorized" >&2; exit 22; }
+
+case "$URL" in
+    */meta-data/instance-id)     printf '%s' "${FAKE_INSTANCE_ID:-i-0replacement}" ;;
+    */meta-data/local-ipv4)      printf '%s' "${FAKE_LOCAL_IPV4:-10.0.1.99}" ;;
+    */meta-data/placement/region) printf '%s' "${FAKE_REGION:-us-east-1}" ;;
+    *) echo "404 Not Found" >&2; exit 22 ;;
+esac

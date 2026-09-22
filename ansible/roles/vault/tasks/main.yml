@@ -27,11 +27,13 @@
 # ---------------------------------------------------------------------------
 # TLS material
 # ---------------------------------------------------------------------------
-# The cloud user-data deliberately does not issue certificates — it writes
-# a config with a TLS listener and lets Vault refuse to start until they
-# exist. This is the step that satisfies that, and it is why the handoff
-# from Terraform to Ansible matters: Terraform builds hosts that cannot
-# serve until something delivers their identity.
+# On a first apply the cloud user-data issues no certificate -- the
+# bootstrap CA does not exist yet -- so it writes a config with a TLS
+# listener and lets Vault refuse to start until one arrives. This is the
+# step that delivers it, and it is why the handoff from Terraform to
+# Ansible matters. On AWS, once scripts/publish-bootstrap-ca.sh has run, a
+# node the autoscaling group launches issues its own at boot instead
+# (scripts/issue-bootstrap-cert.sh) and this role finds one in place.
 - name: Create the TLS directory
   ansible.builtin.file:
     path: "{{ vault_tls_dir }}"
@@ -86,7 +88,8 @@
 # way to pass was to issue a wrong one.
 #
 # It had never run: the local profile is Docker Compose and does not use
-# this role, and neither cloud profile has been applied.
+# this role, and at the time no cloud profile had been applied. The AWS
+# apply of 2026-09-17 then ran it on three real nodes, with this fix in.
 - name: Verify the certificate matches this host
   ansible.builtin.command:
     cmd: >-

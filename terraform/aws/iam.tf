@@ -122,6 +122,61 @@ resource "aws_iam_role_policy_attachment" "vault_snapshots" {
   policy_arn = aws_iam_policy.vault_snapshots.arn
 }
 
+# The bootstrap CA, for a node the autoscaling group has just launched
+# (tls.tf, scripts/issue-bootstrap-cert.sh). Read-only, the two parameters
+# and nothing else under SSM, and decrypt on the volume key only when SSM
+# is the one asking -- so the role cannot use that key for anything but
+# reading this parameter.
+#
+# This is the tradeoff design A accepts, stated where it is granted: every
+# node can read the CA key, so a compromised node can mint a leaf any peer
+# will accept. It already holds the seal key's Decrypt and the Raft data on
+# its disk, so that adds little to a boundary that has already gone -- and
+# the alternative was a cluster that stays one node short until a person
+# notices. Vault's own PKI, authenticated with the instance role, is the
+# design that takes the key off the nodes; see docs/security.md.
+locals {
+  # Named rather than inlined, like the snapshot lists above: the policy
+  # JSON comes from a data source, which terraform test mocks.
+  bootstrap_ca_ssm_actions = ["ssm:GetParameter"]
+  bootstrap_ca_parameter_arns = [
+    aws_ssm_parameter.bootstrap_ca_cert.arn,
+    aws_ssm_parameter.bootstrap_ca_key.arn,
+  ]
+  bootstrap_ca_kms_actions = ["kms:Decrypt"]
+}
+
+data "aws_iam_policy_document" "vault_bootstrap_ca" {
+  statement {
+    effect    = "Allow"
+    actions   = local.bootstrap_ca_ssm_actions
+    resources = local.bootstrap_ca_parameter_arns
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = local.bootstrap_ca_kms_actions
+    resources = [aws_kms_key.vault_data.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "vault_bootstrap_ca" {
+  name        = "${var.cluster_name}-vault-bootstrap-ca"
+  description = "Allows a new Vault node to read the bootstrap CA and sign its own certificate"
+  policy      = data.aws_iam_policy_document.vault_bootstrap_ca.json
+}
+
+resource "aws_iam_role_policy_attachment" "vault_bootstrap_ca" {
+  role       = aws_iam_role.vault.name
+  policy_arn = aws_iam_policy.vault_bootstrap_ca.arn
+}
+
 # SSM Session Manager, so operators can reach a node without SSH, an open
 # port 22, or a bastion. Sessions are logged in CloudTrail, which SSH key
 # access is not.

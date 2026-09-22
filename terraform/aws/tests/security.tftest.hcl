@@ -360,3 +360,83 @@ run "nodes_cannot_delete_snapshots" {
     error_message = "Snapshot uploads need kms:GenerateDataKey; the bucket enforces SSE-KMS."
   }
 }
+
+# A replacement node reads the bootstrap CA from SSM and signs its own
+# leaf (tls.tf, scripts/issue-bootstrap-cert.sh). The first real apply
+# watched a replacement sit with no certificate until a person noticed.
+#
+# Asserted on the resources' own arguments and on named locals, never on
+# the policy JSON: that comes from a data source, which is mocked here.
+run "a_new_node_can_read_the_bootstrap_ca_and_nothing_more" {
+  command = apply
+
+  # Every aws_kms_key gets the same ARN from the shared mock, so without
+  # the overrides below the key_id assertion compares a value with itself
+  # and passes whichever key the parameter names. It did: encrypting the
+  # CA key under the seal key passed.
+  #
+  # And the overrides alone were not enough, because runs in one file
+  # share state. Earlier apply runs had already created both keys with the
+  # shared ARN; this run saw nothing to change, kept them, and still
+  # passed with the seal key. state_key gives it state of its own, so the
+  # keys are created here, with the ARNs below.
+  state_key = "bootstrap_ca"
+  override_resource {
+    target = aws_kms_key.vault_data
+    values = {
+      arn    = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-00000000da7a"
+      key_id = "00000000-0000-0000-0000-00000000da7a"
+    }
+  }
+
+  override_resource {
+    target = aws_kms_key.vault_autounseal
+    values = {
+      arn    = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-0000000053a1"
+      key_id = "00000000-0000-0000-0000-0000000053a1"
+    }
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.bootstrap_ca_key.type == "SecureString"
+    error_message = "The CA key must be a SecureString."
+  }
+
+  # The cluster's own volume key: not the seal key, which should do nothing
+  # it does not have to, and not the account's aws/ssm key, which the node
+  # role would then need decrypt on -- admitting every SecureString in the
+  # account.
+  assert {
+    condition     = aws_ssm_parameter.bootstrap_ca_key.key_id == aws_kms_key.vault_data.arn
+    error_message = "The CA key must be encrypted under the node volume key."
+  }
+
+  # Terraform writes a placeholder and never the key; the boot script reads
+  # that placeholder as "first apply". tests/bootstrap-cert holds the value
+  # to the script's.
+  assert {
+    condition = alltrue([
+      aws_ssm_parameter.bootstrap_ca_cert.value == local.bootstrap_ca_placeholder,
+      aws_ssm_parameter.bootstrap_ca_key.value == local.bootstrap_ca_placeholder,
+    ])
+    error_message = "Both parameters must start as the placeholder the boot script recognises."
+  }
+
+  assert {
+    condition     = local.bootstrap_ca_ssm_actions == ["ssm:GetParameter"]
+    error_message = "The node role may read the CA parameters, and do nothing else in SSM."
+  }
+
+  assert {
+    condition = toset(local.bootstrap_ca_parameter_arns) == toset([
+      aws_ssm_parameter.bootstrap_ca_cert.arn,
+      aws_ssm_parameter.bootstrap_ca_key.arn,
+    ]) && length(local.bootstrap_ca_parameter_arns) == 2
+    error_message = "The read grant must name exactly the two CA parameters."
+  }
+
+  assert {
+    condition     = local.bootstrap_ca_kms_actions == ["kms:Decrypt"]
+    error_message = "The node role needs Decrypt on the volume key through SSM, and nothing more."
+  }
+}

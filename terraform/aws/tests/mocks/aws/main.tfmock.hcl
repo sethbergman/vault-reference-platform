@@ -69,6 +69,12 @@ mock_resource "aws_kms_key" {
   }
 }
 
+mock_resource "aws_ssm_parameter" {
+  defaults = {
+    arn = "arn:aws:ssm:us-east-1:123456789012:parameter/mock"
+  }
+}
+
 mock_resource "aws_s3_bucket" {
   defaults = {
     arn = "arn:aws:s3:::mock-vault-snapshots"

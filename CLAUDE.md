@@ -58,7 +58,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            28 suites; each is a self-contained run-tests.sh
+tests/            29 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -149,9 +149,13 @@ one-way door and a restart of vault-unseal an unrecoverable one.
 working or proven. `docs/cloud-apply.md` records what that session
 settled — auto-unseal, peer discovery, health checks, the handoff, a
 restore — what it observed failing, and what it never reached. Its
-headline finding is that **the cluster is not self-healing**: a
-replacement node's certificates come only from an Ansible run keyed to an
-instance id that does not exist until launch, so blocker 1 stays open.
+headline finding was that **the cluster is not self-healing**: a
+replacement node's certificates came only from an Ansible run keyed to an
+instance id that does not exist until launch. A replacement now signs its
+own leaf at boot from a bootstrap CA published to SSM
+(`scripts/issue-bootstrap-cert.sh`) — designed, tested with shims and
+real openssl, and **never observed on a real node**, so blocker 1 stays
+open until item 10 of `docs/cloud-apply.md` is watched again.
 `scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
 `terraform destroy` fails partway on both profiles.
 
@@ -237,6 +241,10 @@ almost nothing else), `snapshot.sh`,
 failure as data loss), `revoke-root-token.sh` / `generate-root-token.sh`
 (retire the root token, and mint one from recovery keys when a task needs
 it), `vault-upgrade.sh`, `issue-node-cert.sh`,
+`issue-bootstrap-cert.sh` / `publish-bootstrap-ca.sh` (a node the
+autoscaling group launches signs its own certificate at boot, from the
+bootstrap CA published to SSM — and the one KMS key it must go back
+under),
 `migrate-to-vault-pki.sh`, `migrate-seal.sh` (between seal types, which
 is the operation most likely to leave a cluster nobody can unseal),
 `verify-audit-chain.sh`,
@@ -337,6 +345,7 @@ Per-suite requirements:
 | lint | bash, python3; a checkout carrying its tags |
 | preflight-static | bash, python3; shellcheck if present |
 | pki | bash, jq, openssl |
+| bootstrap-cert | bash, openssl, jq, sha256sum |
 | pki-migration | bash, jq, python3, openssl |
 | ansible | bash, jq, python3 with jinja2 + pyyaml, the `ansible` package |
 | alert-routing | bash, python3 + PyYAML; Docker for the amtool cases |
@@ -358,7 +367,7 @@ Per-suite requirements:
 
 ## CI
 
-`.github/workflows/ci.yml` runs 38 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 39 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`

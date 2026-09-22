@@ -30,10 +30,13 @@ See [`docs/auto-unseal.md`](auto-unseal.md) for the full picture.
 
 ## Before either cloud profile
 
-**Neither has ever been applied to a real account.** The AWS profile is
+**`terraform/aws` has been applied to a real account once, on
+2026-09-17; `terraform/azure` never has.** The AWS profile is also
 applied and destroyed against an emulated AWS API on every PR, which
 settles that it applies at all; nothing in that run boots, so it says
-nothing about the cluster. Run the pre-flight first — it checks
+nothing about the cluster. What the real apply settled, and what it did
+not, is in [cloud-apply.md](cloud-apply.md). Run the pre-flight first — it
+checks
 credentials, the inputs that fail late, quota and cost, and applies
 nothing:
 
@@ -99,15 +102,18 @@ pool and writes get forwarded to the leader.
 
 ### Nodes need TLS certificates before they will start
 
-The user-data writes a Vault config with a TLS listener but does **not**
-issue certificates — how you get them is deployment-specific (an internal
-CA, ACM Private CA, or Vault's own PKI engine once a first cluster
-exists). Until they are in place at `/etc/vault.d/tls/`, Vault will not
-start. That is deliberate: a Vault serving plaintext is worse than one
-that refuses to boot.
+The user-data writes a Vault config with a TLS listener, and Vault will
+not start until certificates are in place at `/etc/vault.d/tls/`. That is
+deliberate: a Vault serving plaintext is worse than one that refuses to
+boot.
 
-Delivering them is what the Ansible layer is for; see
-[Handing off to Ansible](#handing-off-to-ansible) below.
+On a first apply nothing issues them at boot — the bootstrap CA does not
+exist until `generate-cloud-certs.sh` runs after the apply — so every node
+waits, and delivering them is what the Ansible layer is for; see
+[Handing off to Ansible](#handing-off-to-ansible) below. Once the CA has
+been published with `publish-bootstrap-ca.sh`, a node the autoscaling
+group launches issues its own at boot; see
+[When the group replaces a node](#when-the-group-replaces-a-node).
 
 ### AWS running costs
 
@@ -198,13 +204,25 @@ Substitute `inventory/azure_rm.yml` for the Azure profile.
 ### When the group replaces a node
 
 An autoscaling group or scale set replaces an instance without asking,
-and the replacement boots with no TLS material — so Vault does not start
-on it, and the cluster carries on without it. The first real AWS apply
-watched that happen, and
-[cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing) records
-it as the reason blocker 1 is still open.
+and the replacement boots with no TLS material. The first real AWS apply
+watched Vault refuse to start on it while the cluster carried on without
+it — [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing).
 
-Until a node can fetch its own certificate, recovery is two commands:
+**On AWS, publish the bootstrap CA once, after the first playbook run:**
+
+```bash
+./scripts/publish-bootstrap-ca.sh --cluster-name <cluster>
+```
+
+From then on a node the group launches reads the CA from SSM at boot,
+signs its own leaf with the same SANs its peers carry, and starts Vault
+— `scripts/issue-bootstrap-cert.sh`, embedded in user-data. Nodes already
+running are untouched. This is designed and tested, and has **not** been
+watched working on a real cluster; see
+[security.md](security.md#a-node-the-autoscaling-group-replaces) for the
+tradeoff it makes. Azure has no equivalent yet.
+
+If the CA was never published, or on Azure, recovery is two commands:
 
 ```bash
 ./scripts/generate-cloud-certs.sh --cluster-name <cluster> --add-missing

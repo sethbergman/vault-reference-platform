@@ -60,8 +60,30 @@ fails. These have been checked that way:
 | Raft egress between nodes narrowed to 8200 | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
 | Node API egress pointed at the load balancer's group | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
 | Raft egress opened to the VPC by CIDR | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
+| Bootstrap CA key encrypted under the seal key | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
+| Bootstrap CA key's `key_id` removed, so SSM falls back to `aws/ssm` | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
+| Node role granted `ssm:GetParametersByPath` as well | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
+| User-data stops passing the load balancer as an extra SAN | `user_data_carries_the_boot_script_and_fits` |
+| Embedded script's comments no longer stripped | `user_data_carries_the_boot_script_and_fits` |
+| Stripping regex deletes every line containing `#` | `user_data_carries_the_boot_script_and_fits` |
 
 Worth repeating for any assertion added later.
+
+Two of the rows above survived their first run, and both are the
+mocked-value trap in a new place:
+
+- **The seal-key row passed** — every `aws_kms_key` gets the same ARN
+  from the shared mock, so `key_id == aws_kms_key.vault_data.arn` compared
+  a value with itself. The run now overrides the two keys with distinct
+  ARNs. That was *still* not enough: runs in one file share state, the
+  keys already existed from earlier `apply` runs, and the overrides
+  changed nothing. `state_key = "bootstrap_ca"` gives the run state of
+  its own. Removing `key_id` altogether was then caught too, which had
+  not been planned as a row.
+- **The `#` row passed** — the three code lines the assertion looked for
+  contain no `#`, so a regex deleting every line with one left them
+  standing. It now also pins `while [[ $# -gt 0 ]]; do`, a code line that
+  has one.
 
 ## `plan` vs `apply`
 

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI's SSM calls: get-parameter, put-parameter and
+# describe-parameters, against a directory of files.
+#
+# Modelled on what SSM actually does rather than on what the scripts want,
+# because that is where a shim goes wrong (tests/integration/README.md):
+#
+#   - A SecureString read without --with-decryption returns ciphertext,
+#     not the value. A script that forgets the flag gets a blob, and must
+#     fail on it the way it would against AWS.
+#   - put-parameter --type SecureString with no --key-id encrypts under
+#     alias/aws/ssm, the account default -- not under whatever key the
+#     parameter used before. That is recorded, so a test can see it.
+#   - A missing parameter is ParameterNotFound, exit 254.
+#
+# Store: $FAKE_SSM_DIR/<name with / as _>, and <that>.keyid, <that>.type.
+# Scenarios: FAKE_SSM_RC forces every call to fail; FAKE_SSM_CORRUPT_NAME
+# makes get-parameter return something other than what was stored, for
+# parameters whose name contains it -- one at a time, so a check on the
+# certificate cannot stand in for a check on the key.
+set -uo pipefail
+
+printf 'aws %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+
+[[ "${FAKE_SSM_RC:-0}" == "0" ]] || { echo "An error occurred (AccessDeniedException)" >&2; exit "${FAKE_SSM_RC}"; }
+
+[[ "${1:-}" == "ssm" ]] || { echo "fake aws: only ssm is modelled" >&2; exit 2; }
+op="${2:-}"; shift 2
+
+NAME="" VALUE="" TYPE="" KEY_ID="" QUERY="" DECRYPT=false FILTER=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --name)              NAME="$2"; shift 2 ;;
+        --value)             VALUE="$2"; shift 2 ;;
+        --type)              TYPE="$2"; shift 2 ;;
+        --key-id)            KEY_ID="$2"; shift 2 ;;
+        --query)             QUERY="$2"; shift 2 ;;
+        --with-decryption)   DECRYPT=true; shift ;;
+        --parameter-filters) FILTER="$2"; shift 2 ;;
+        --region|--output)   shift 2 ;;
+        --overwrite)         shift ;;
+        *)                   shift ;;
+    esac
+done
+
+slot() { printf '%s/%s' "$FAKE_SSM_DIR" "$(printf '%s' "$1" | tr '/' '_')"; }
+
+case "$op" in
+    get-parameter)
+        f="$(slot "$NAME")"
+        [[ -f "$f" ]] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+        if [[ "$(cat "${f}.type" 2>/dev/null)" == "SecureString" && "$DECRYPT" != true ]]; then
+            echo "AQICAHhciphertextnotthevalueAAAAfw=="
+            exit 0
+        fi
+        if [[ -n "${FAKE_SSM_CORRUPT_NAME:-}" && "$NAME" == *"${FAKE_SSM_CORRUPT_NAME}"* ]]; then
+            echo "not what was stored"
+            exit 0
+        fi
+        cat "$f"
+        ;;
+    put-parameter)
+        f="$(slot "$NAME")"
+        [[ "$VALUE" == file://* ]] && VALUE="$(cat "${VALUE#file://}")"
+        printf '%s\n' "$VALUE" > "$f"
+        printf '%s' "${TYPE:-String}" > "${f}.type"
+        if [[ "$TYPE" == "SecureString" ]]; then
+            printf '%s' "${KEY_ID:-alias/aws/ssm}" > "${f}.keyid"
+        fi
+        echo '{"Version": 2, "Tier": "Standard"}'
+        ;;
+    describe-parameters)
+        want="${FILTER#*Values=}"
+        f="$(slot "$want")"
+        case "$QUERY" in
+            *KeyId*)  [[ -f "${f}.keyid" ]] && cat "${f}.keyid" || echo "None" ;;
+            *length*) [[ -f "$f" ]] && echo 1 || echo 0 ;;
+            *)        echo "fake aws: unmodelled query ${QUERY}" >&2; exit 2 ;;
+        esac
+        ;;
+    *)
+        echo "fake aws: ssm ${op} is not modelled" >&2; exit 2 ;;
+esac

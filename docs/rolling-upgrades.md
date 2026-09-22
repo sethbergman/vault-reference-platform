@@ -176,8 +176,13 @@ trying them: `min_quorum` must be at least 3 when cleanup is on, and
 `dead_server_last_contact_threshold` cannot go below `1m`.
 
 **Not proven: any of this on a cloud profile.** No ASG instance refresh
-has ever run against this configuration, because no cloud profile has
-ever been applied. What the arithmetic above establishes is that the
+has ever run against this configuration. The AWS profile was applied once,
+on 2026-09-17, and the refresh was never reached — a replacement node
+could not then get a certificate, which blocks a refresh the same way it
+blocked replacing one node. What that session did show is
+`configure-autopilot.sh` against a live cluster: after the leader was
+terminated and its replacement recovered by hand, the dead voter was
+pruned. What the arithmetic above establishes is that the
 refresh was unsafe and why; what it does not establish is that it is now
 safe. That needs the apply in [cloud-apply.md](cloud-apply.md), and it
 belongs on the verification checklist there: bump `vault_version`, apply,
