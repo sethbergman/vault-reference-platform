@@ -24,7 +24,10 @@ KMS_KEY_ID="${kms_key_id}"
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-dnf install -y dnf-plugins-core unzip jq
+# awscli-2 and openssl for scripts/issue-bootstrap-cert.sh below. Both
+# ship on the standard AL2023 image; named so a minimal image fails here,
+# loudly, rather than at certificate time.
+dnf install -y dnf-plugins-core unzip jq awscli-2 openssl
 dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
 dnf install -y "vault-$${VAULT_VERSION}-1"
 
@@ -102,12 +105,27 @@ chmod 0640 /etc/vault.d/vault.hcl
 # ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
-# The listener above expects certificates that this script does not create.
-# Issuing them is deployment-specific — an internal CA, ACM Private CA, or
-# certificates delivered by the Ansible layer (see ansible/roles/vault).
-# Until they exist Vault will refuse to start, which is the correct
-# failure: a Vault serving plaintext is worse than one that does not
-# start. docs/deployment.md covers the options.
+# A node the autoscaling group launched after the bootstrap CA was
+# published signs its own leaf here, from the CA in SSM (see tls.tf and
+# scripts/publish-bootstrap-ca.sh). Before publication -- every node of a
+# first apply -- the script says so and leaves the certificate to the
+# Ansible layer, as it always was. The script is embedded verbatim; the
+# quoted heredoc stops the shell expanding anything in it.
+cat > /usr/local/sbin/vault-bootstrap-cert <<'BOOTSTRAP_CERT_SCRIPT'
+${bootstrap_cert_script}
+BOOTSTRAP_CERT_SCRIPT
+chmod 0755 /usr/local/sbin/vault-bootstrap-cert
+
+/usr/local/sbin/vault-bootstrap-cert \
+  --cluster-name "$${CLUSTER_NAME}" \
+  --ca-parameter-prefix "${bootstrap_ca_prefix}" \
+  --region "$${AWS_REGION}" \
+  --extra-san "${lb_dns_name}" \
+  || echo "Issuing a bootstrap certificate failed; see the lines above."
+
+# Whatever happened above, Vault refuses to start without a certificate,
+# which is the correct failure: a Vault serving plaintext is worse than one
+# that does not start.
 if [[ ! -f /etc/vault.d/tls/vault.crt ]]; then
   echo "No TLS certificate present at /etc/vault.d/tls/vault.crt."
   echo "Vault will not start until one is provisioned — see docs/deployment.md."

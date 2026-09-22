@@ -41,6 +41,28 @@ resource "aws_launch_template" "vault" {
     cluster_name  = var.cluster_name
     aws_region    = var.aws_region
     kms_key_id    = aws_kms_key.vault_autounseal.key_id
+
+    # The boot script travels inside user-data rather than being fetched,
+    # so a node needs nothing reachable but SSM to issue its certificate --
+    # and the version that runs is the version this commit tested.
+    #
+    # With its comment lines removed. EC2 refuses user data over 16 KB, and
+    # the script with its documentation took the rendered total to 15,947
+    # bytes: one more paragraph anywhere and no instance would launch, with
+    # the error arriving at apply time. The documented copy is the one in
+    # scripts/, which is the one anyone reads; the node gets the code. The
+    # shebang survives, and tests/cluster asserts the rendered size.
+    bootstrap_cert_script = replace(
+      file("${path.module}/../../scripts/issue-bootstrap-cert.sh"),
+      "/(?m)^[ \\t]*#(?:[^!\\n][^\\n]*)?\\n/",
+      ""
+    )
+    bootstrap_ca_prefix = local.bootstrap_ca_prefix
+
+    # Every leaf carries the load balancer's name, as generate-cloud-certs.sh
+    # --extra-san puts it on the leaves it issues. A self-issued leaf
+    # without it fails only for clients arriving through the load balancer.
+    lb_dns_name = aws_lb.vault.dns_name
   }))
 
   block_device_mappings {

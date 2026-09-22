@@ -51,6 +51,7 @@ provider "aws" {
     kms         = "http://localhost:5000"
     logs        = "http://localhost:5000"
     s3          = "http://localhost:5000"
+    ssm         = "http://localhost:5000"
     sts         = "http://localhost:5000"
   }
 }

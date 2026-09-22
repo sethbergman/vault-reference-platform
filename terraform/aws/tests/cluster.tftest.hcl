@@ -199,3 +199,46 @@ run "five_nodes_are_accepted" {
     error_message = "Five nodes should be a valid cluster size."
   }
 }
+
+# The boot script is embedded in user-data, and EC2 refuses user data over
+# 16 KB. With its documentation the rendered total came to 15,947 bytes,
+# so compute.tf strips the embedded copy's comment lines. This holds it
+# well under the limit, and checks the stripping took the prose and kept
+# the code -- a regex that ate a line of shell would still render.
+run "user_data_carries_the_boot_script_and_fits" {
+  command = apply
+
+  assert {
+    condition     = length(base64decode(aws_launch_template.vault.user_data)) < 14336
+    error_message = "Rendered user-data must stay well under EC2's 16 KB limit; strip or move something before adding to it."
+  }
+
+  assert {
+    condition = alltrue([
+      strcontains(base64decode(aws_launch_template.vault.user_data), "PLACEHOLDER=\"${local.bootstrap_ca_placeholder}\""),
+      strcontains(base64decode(aws_launch_template.vault.user_data), "--with-decryption"),
+      strcontains(base64decode(aws_launch_template.vault.user_data), "openssl verify -CAfile"),
+      # A code line with a # in it. The three above have none, so a regex
+      # deleting every line containing # left them all standing and passed.
+      strcontains(base64decode(aws_launch_template.vault.user_data), "while [[ $# -gt 0 ]]; do"),
+    ])
+    error_message = "The embedded boot script lost code in the comment stripping."
+  }
+
+  assert {
+    condition     = !strcontains(base64decode(aws_launch_template.vault.user_data), "DELIBERATE BEHAVIOURS")
+    error_message = "The embedded boot script still carries its documentation, which is what pushed user-data to the limit."
+  }
+
+  assert {
+    condition = strcontains(base64decode(aws_launch_template.vault.user_data),
+    "--ca-parameter-prefix \"${local.bootstrap_ca_prefix}\"")
+    error_message = "User-data must run the boot script against this cluster's CA parameters."
+  }
+
+  assert {
+    condition = strcontains(base64decode(aws_launch_template.vault.user_data),
+    "--extra-san \"${aws_lb.vault.dns_name}\"")
+    error_message = "A self-issued leaf must carry the load balancer's name, as the operator's leaves do."
+  }
+}
