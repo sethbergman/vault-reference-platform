@@ -453,6 +453,118 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== Every inventory a command names is a file that exists ===\n'
+# ---------------------------------------------------------------------------
+# The same seam as the section above, walked the other way. There the
+# question was whether the inventory can tell the nodes apart; here it is
+# whether anything telling a reader to run ansible-playbook names an
+# inventory Ansible will actually open.
+#
+# The file name is load-bearing, and it is not the cloud's name:
+# amazon.aws's aws_ec2 plugin reads only *aws_ec2.yml, and
+# azure.azcollection's azure_rm only *azure_rm.yml. Each rejects any
+# other name before looking inside it, so a wrong name is not a typo that
+# fails loudly -- it is a run that configures zero hosts and exits 0.
+# That is bug 6 in docs/roadmap.md, and it cost a real apply to find.
+#
+# It came back in a softer form. scripts/terraform-to-ansible.sh built
+# its own next-step hint by interpolating the cloud, so it printed
+# `inventory/aws.yml` -- a file that has never existed -- at the moment a
+# reader is most likely to copy the line it prints. Two inventory headers
+# carried the same dead names in their Usage blocks.
+#
+# Scanning every tracked file rather than a list of the ones known to
+# carry such a line: the defect is a name going stale, and the file that
+# goes stale unnoticed is by definition the one nobody thought to check.
+INV_OUT="$(python3 - "$REPO_ROOT" <<'PY'
+import os, re, subprocess, sys
+
+root = sys.argv[1]
+present = set(os.listdir(os.path.join(root, "ansible", "inventory")))
+
+# The form a reader copies: an -i flag naming something under inventory/.
+# Anchored on -i rather than on the bare path so that prose recording a
+# name that used to be wrong is not read as an instruction to use it.
+ref = re.compile(r'-i\s+(?:\S*/)?inventory/(\S+)')
+var = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?')
+
+# Tracked files, not a walk of the directory: a walk would wander into
+# .terraform's provider binaries and a developer's untracked scratch.
+# If git cannot answer, say so -- a zero-file scan otherwise reads as
+# "nothing names an inventory", which is the vacuous pass this whole
+# section exists to avoid.
+listing = subprocess.run(["git", "-C", root, "ls-files"],
+                         capture_output=True, text=True)
+if listing.returncode != 0:
+    print("COUNT 0")
+    print("PROBLEM could not list tracked files: "
+          + (listing.stderr.strip().splitlines() or ["git ls-files failed"])[-1])
+    sys.exit(0)
+files = listing.stdout.split()
+
+total = 0
+problems = []
+for rel in files:
+    try:
+        text = open(os.path.join(root, rel), encoding="utf-8").read()
+    except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+        continue
+    for m in ref.finditer(text):
+        # Trailing punctuation belongs to the prose around the name,
+        # not to the name itself: a markdown backtick, a quote, a line
+        # continuation, the comma that ends a sentence.
+        raw = re.sub(r"""[`"'\\,;)]+$""", "", m.group(1))
+        line = text.count("\n", 0, m.start()) + 1
+        total += 1
+
+        # A shell variable in the path is resolved from every literal
+        # assignment to it in the same file, and every value it can take
+        # has to name a real file. That is what lets this see through
+        # `inventory/${CLOUD}.yml`, which resolves to nothing that
+        # exists, instead of waving it through as unexaminable.
+        names = [raw]
+        for name in var.findall(raw):
+            values = re.findall(r'\b' + name + r'=(["\']?)([^"\'\s;]+)\1', text)
+            if not values:
+                problems.append(f"{rel}:{line}: names inventory/{raw}, and "
+                                f"${name} is never given a literal value in that file")
+                names = []
+                break
+            names = [n.replace("${" + name + "}", v).replace("$" + name, v)
+                     for n in names for _, v in values]
+
+        for name in names:
+            if "$" in name:
+                problems.append(f"{rel}:{line}: names inventory/{name}, which no "
+                                "value of the variables in it resolves")
+            elif name not in present:
+                problems.append(f"{rel}:{line}: names inventory/{name}, which is not "
+                                f"in ansible/inventory/ ({', '.join(sorted(present))})")
+
+print(f"COUNT {total}")
+for p in problems:
+    print("PROBLEM " + p)
+PY
+)"
+
+INV_TOTAL="$(grep '^COUNT ' <<< "$INV_OUT" | cut -d' ' -f2)"
+if [[ "${INV_TOTAL:-0}" -ge 10 ]]; then
+    ok "${INV_TOTAL} commands across the repository name an inventory"
+else
+    bad "the repository's inventory references were found" \
+        "only ${INV_TOTAL:-0}; either the pattern stopped matching or the files were never read, so this section is asserting nothing"
+fi
+
+INV_PROBLEMS="$(grep '^PROBLEM ' <<< "$INV_OUT" | sed 's/^PROBLEM //')"
+if [[ -z "$INV_PROBLEMS" ]]; then
+    ok "and every one of them resolves to a file in ansible/inventory/"
+else
+    while IFS= read -r line; do
+        bad "an inventory is named that does not exist" "$line"
+    done <<< "$INV_PROBLEMS"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"

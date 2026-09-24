@@ -1,6 +1,6 @@
 # Dynamic inventory for the Azure profile.
 #
-# Mirrors inventory/aws.yml, for the same reason: the VM scale set
+# Mirrors inventory/aws_ec2.yml, for the same reason: the VM scale set
 # replaces instances, so a static inventory is wrong as soon as one is
 # recycled — and wrong silently.
 #
@@ -15,8 +15,8 @@
 #
 # Usage:
 #   cd ansible
-#   ansible-inventory -i inventory/azure.yml --graph
-#   ansible-playbook -i inventory/azure.yml playbooks/site.yml
+#   ansible-inventory -i inventory/azure_rm.yml --graph
+#   ansible-playbook -i inventory/azure_rm.yml playbooks/site.yml
 #
 # Requires the azure.azcollection collection and credentials with reader
 # access to the resource group.

@@ -4,9 +4,11 @@
 # only a file whose name ends in aws_ec2.yml or aws_ec2.yaml, and rejects
 # any other before looking inside it. This file was aws.yml: Ansible
 # warned that the source "could not be verified", parsed nothing, and
-# every documented `ansible-playbook -i inventory/aws.yml` ran against no
-# hosts at all. The first real apply found it; tests/ansible now asks
-# ansible-inventory rather than trusting the name.
+# every documented `ansible-playbook` command pointed at the dead name
+# `aws.yml` and ran against no hosts at all. The first real apply found
+# it; tests/ansible now asks ansible-inventory rather than trusting the
+# name, and tests/preflight-static checks that nothing here still names
+# an inventory file that does not exist.
 #
 # Instances are discovered through the EC2 API by tag rather than listed
 # by address. That is not a convenience: the autoscaling group replaces
