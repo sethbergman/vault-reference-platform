@@ -63,6 +63,22 @@ done
 
 [[ -n "$CLOUD" ]] || die "--cloud is required (aws or azure)"
 [[ "$CLOUD" == "aws" || "$CLOUD" == "azure" ]] || die "--cloud must be aws or azure, got: ${CLOUD}"
+
+# The inventory file name is not the cloud's name and cannot be derived
+# from it. Each dynamic inventory plugin reads only a file named for
+# itself -- amazon.aws.aws_ec2 wants *aws_ec2.yml, azure.azcollection's
+# azure_rm wants *azure_rm.yml -- and rejects any other name before
+# looking inside it. The next-step hint at the end of this script used to
+# interpolate ${CLOUD} into the path and print inventory/aws.yml, which
+# is the dead name bug 6 in docs/roadmap.md is about: the plugin refuses
+# it unread, so the run reports success against zero hosts. Map the name
+# here rather than building it from the cloud, so the hint can only print
+# a name that has a file behind it.
+case "$CLOUD" in
+    aws)   INVENTORY_FILE="aws_ec2.yml" ;;
+    azure) INVENTORY_FILE="azure_rm.yml" ;;
+esac
+
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
 # Beside the inventory, because that is one of the two places Ansible
@@ -212,4 +228,4 @@ esac
 log "Wrote ${OUTPUT}"
 log ""
 log "Then run the playbook against the discovered nodes:"
-log "  cd ansible && ansible-playbook -i inventory/${CLOUD}.yml playbooks/site.yml"
+log "  cd ansible && ansible-playbook -i inventory/${INVENTORY_FILE} playbooks/site.yml"
