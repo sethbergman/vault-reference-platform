@@ -31,7 +31,8 @@ that part down.
   Key Vault auto-unseal, and a blob container. The AWS profile applies
   and destroys cleanly against an emulated AWS API on every PR, and was
   applied to a real account once, on 2026-09-17 — which found ten
-  defects and left the cluster not self-healing. `terraform/azure` has
+  defects; a second on 2026-09-24 watched a replacement node heal
+  itself. `terraform/azure` has
   never been applied. See [`docs/cloud-apply.md`](docs/cloud-apply.md)
   for what that session settled and what it did not.
 - **HA by default** — the reference topology is a multi-node Raft cluster
@@ -452,21 +453,19 @@ feature breaks, not that the code exists.
 
 What stands between here and v1.0, in order:
 
-1. **A real AWS apply.** Done once, on 2026-09-17 — and still open,
-   because of what it found. Settled: the instance profile, the KMS key
-   policy and the `seal` stanza do agree, peers find each other by tag,
-   the load balancer keeps standbys in the pool, the Ansible handoff
-   works, and a snapshot restores under the KMS seal. Not settled: **a
-   terminated leader is replaced by a node that never starts Vault**,
-   because certificates reach a node only through an Ansible run named
-   after an instance id that does not exist until the launch. Recovery by
-   hand works, and a replacement now signs its own certificate at boot
-   from a CA published to SSM — built and tested, never yet watched on a
-   real node, which is what closes this item. Ten defects were fixed
-   getting that far, four of them in code no test here could reach.
-   Snapshots to the bucket, PKI and audit on a real node, and an instance
-   refresh were never reached. See
-   [`docs/cloud-apply.md`](docs/cloud-apply.md).
+1. **A real AWS apply.** Done twice, 2026-09-17 and 2026-09-24, and
+   **closed** by the second. Settled: the instance profile, the KMS key
+   policy and the `seal` stanza agree, peers find each other by tag, the
+   load balancer keeps standbys in the pool, the Ansible handoff works, a
+   snapshot restores under the KMS seal, and — the one that kept this
+   item open — **a terminated leader's replacement now signs its own
+   certificate at boot, auto-unseals and rejoins Raft with nobody
+   touching it**, watched on a real node. An instance refresh was watched
+   too, keeping quorum across all three nodes. Thirteen defects were
+   fixed between the two sessions, seven of them in code no test here
+   could reach. Still never reached: snapshots to the bucket, PKI and
+   audit on a real node, and any identity narrower than an administrator.
+   See [`docs/cloud-apply.md`](docs/cloud-apply.md).
 2. **A real Azure apply.** A separate item, not the same job twice.
    `terraform/azure` discovers peers through a scale set rather than
    tags, has a health probe with no status-code matcher, and reconciles
