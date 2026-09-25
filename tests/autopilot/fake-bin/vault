@@ -64,6 +64,49 @@ if [[ "$*" == *"autopilot set-config"* ]]; then
     exit 0
 fi
 
+# autopilot state carries per-server health; list-peers does not. The
+# script reads this one to work out min_quorum.
+#
+# Shape: copied from a real Vault 1.17.2 on 2026-09-25, not from what the
+# script would find convenient. The CLI emits Go field names, bare --
+# "Servers", "Status", "Healthy", "NodeType" -- and a servers OBJECT keyed
+# by node id, not an array. The leader reports Status "leader" rather than
+# "voter". (The HTTP API spells all of it snake_case under .data; the
+# script accepts both, and that difference is the whole reason this block
+# exists.)
+#
+# The first version of this shim emitted the API's spelling because the
+# script had been written against the same guess. Both agreed, the suite
+# passed, and every real cluster refused: tests/autopilot-prune failed on
+# PR #108 with "autopilot state reported no voters at all".
+#
+# FAKE_UNHEALTHY_VOTERS of them report Healthy=false, which is what a
+# terminated node looks like until autopilot prunes it.
+if [[ "$*" == *"autopilot state"* ]]; then
+    if [[ "${FAKE_STATE_RC:-0}" != "0" ]]; then
+        echo "Error reading autopilot state" >&2
+        exit "${FAKE_STATE_RC}"
+    fi
+    n="${FAKE_VOTERS:-3}"
+    unhealthy="${FAKE_UNHEALTHY_VOTERS:-0}"
+    nonvoters="${FAKE_NONVOTERS:-0}"
+    servers=""
+    for ((i = 0; i < n; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        status="voter"
+        [[ "$i" == "0" ]] && status="leader"
+        healthy="true"
+        [[ "$i" -ge $((n - unhealthy)) ]] && healthy="false"
+        servers="${servers}\"vault-${i}\":{\"ID\":\"vault-${i}\",\"Name\":\"vault-${i}\",\"Address\":\"vault-${i}:8201\",\"NodeStatus\":\"alive\",\"LastContact\":\"0s\",\"Healthy\":${healthy},\"Status\":\"${status}\",\"Version\":\"1.17.2\",\"NodeType\":\"voter\"}"
+    done
+    for ((i = 0; i < nonvoters; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        servers="${servers}\"new-${i}\":{\"ID\":\"new-${i}\",\"Name\":\"new-${i}\",\"Address\":\"new-${i}:8201\",\"NodeStatus\":\"alive\",\"LastContact\":\"0s\",\"Healthy\":true,\"Status\":\"non-voter\",\"Version\":\"1.17.2\",\"NodeType\":\"non-voter\"}"
+    done
+    printf '{"Healthy":true,"FailureTolerance":1,"Leader":"vault-0","Servers":{%s}}\n' "$servers"
+    exit 0
+fi
+
 if [[ "$*" == *"list-peers"* ]]; then
     if [[ "${FAKE_LIST_PEERS_RC:-0}" != "0" ]]; then
         echo "Error listing peers" >&2

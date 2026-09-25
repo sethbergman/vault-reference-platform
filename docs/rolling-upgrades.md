@@ -122,9 +122,21 @@ The fix is
 which sets:
 
 - `cleanup_dead_servers = true`, so a departed voter is eventually pruned
-- `min_quorum` = the number of voters, so pruning has a floor
+- `min_quorum` = the number of **healthy** voters, so pruning has a floor
+  that a node already dead cannot raise (see below)
 - `dead_server_last_contact_threshold = 5m`, well inside the ASG's
   `instance_warmup` of 600s
+
+**The floor is derived from healthy voters, and that distinction cost a
+session.** Until 2026-09-24 the script counted every voter `list-peers`
+reported. On a cluster where a node had been terminated and not yet
+pruned -- the state an operator is in when they go looking for this
+script -- that count included the dead one, so `min_quorum` was set one
+too high and the prune it had just enabled became impossible. The script
+verified its own write and reported success; the dead voter was still
+there nine minutes later, and `--min-quorum 3` cleared it in about
+thirty. `autopilot state` carries the per-server health that `list-peers`
+does not, and is what the script reads now.
 
 **`min_quorum` is the safety, not the threshold.** Cleanup on its own
 would let autopilot prune a node during a network partition, taking the
