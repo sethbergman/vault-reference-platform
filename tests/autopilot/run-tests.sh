@@ -63,9 +63,12 @@ reset_scenario() {
     FAKE_GET_CONFIG_RC="0"
     FAKE_SET_CONFIG_RC="0"
     FAKE_LIST_PEERS_RC="0"
+    FAKE_UNHEALTHY_VOTERS="0"
+    FAKE_STATE_RC="0"
     export FAKE_LOG FAKE_STATE FAKE_CLEANUP FAKE_MIN_QUORUM FAKE_THRESHOLD \
            FAKE_VOTERS FAKE_NONVOTERS FAKE_SET_TAKES FAKE_GET_CONFIG_RC \
-           FAKE_SET_CONFIG_RC FAKE_LIST_PEERS_RC
+           FAKE_SET_CONFIG_RC FAKE_LIST_PEERS_RC FAKE_UNHEALTHY_VOTERS \
+           FAKE_STATE_RC
     export VAULT_ADDR="https://127.0.0.1:8200"
     export VAULT_TOKEN="fake-token"
 }
@@ -207,6 +210,51 @@ unset VAULT_TOKEN
 run_script
 assert_rc 1 "a missing token fails before anything is written"
 assert_log_lacks "set-config" "and writes nothing"
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== A dead voter must not raise the floor that would prune it ==="
+# ---------------------------------------------------------------------------
+# The 2026-09-24 apply: a node had been terminated and autopilot had not
+# pruned it -- pruning being what this script is run to enable -- so the
+# cluster reported four voters, three of them healthy. Counting all four set
+# min_quorum=4, the floor below which autopilot refuses to prune, making the
+# 4 -> 3 prune impossible. The script then verified its own write and
+# reported success. The dead voter was still there nine minutes later.
+reset_scenario
+FAKE_VOTERS="4"; FAKE_UNHEALTHY_VOTERS="1"; export FAKE_VOTERS FAKE_UNHEALTHY_VOTERS
+run_script
+assert_rc 0 "a cluster carrying a dead voter is still configured"
+assert_log_has "min-quorum=3" "the floor is the healthy voter count, not the raw one"
+assert_says "3 of them healthy" "and the disagreement is reported rather than swallowed"
+
+# Degraded past the point where a floor can be derived: three voters, two
+# healthy. Two is not a quorum worth protecting, so refuse and say so rather
+# than write a number that reads like a safety property and is not one.
+reset_scenario
+FAKE_VOTERS="3"; FAKE_UNHEALTHY_VOTERS="1"; export FAKE_VOTERS FAKE_UNHEALTHY_VOTERS
+run_script
+assert_rc 1 "a cluster with too few healthy voters is refused"
+assert_says "--min-quorum" "and the refusal names the override"
+assert_log_lacks "set-config" "with nothing written on the way out"
+
+# An explicit floor is honoured and skips the counting entirely, which is
+# how the 2026-09-24 cluster was recovered.
+reset_scenario
+FAKE_VOTERS="4"; FAKE_UNHEALTHY_VOTERS="1"; export FAKE_VOTERS FAKE_UNHEALTHY_VOTERS
+run_script --min-quorum 3
+assert_rc 0 "an explicit floor is honoured"
+assert_log_has "min-quorum=3" "and written as given"
+assert_log_lacks "autopilot state" "without asking the cluster to count"
+
+# The count has to come from something that knows about health. If autopilot
+# state cannot be read, stop: falling back to list-peers would reintroduce
+# the bug above, silently.
+reset_scenario
+FAKE_STATE_RC="2"; export FAKE_STATE_RC
+run_script
+assert_rc 1 "an unreadable autopilot state stops the script"
+assert_log_lacks "set-config" "and nothing is written"
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'

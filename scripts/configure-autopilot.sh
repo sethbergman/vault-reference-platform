@@ -135,12 +135,56 @@ log "Current: cleanup_dead_servers=$(jq -r '.cleanup_dead_servers' <<< "$CURRENT
 # ---------------------------------------------------------------------------
 # Step 2: Work out min_quorum, if it was not given
 # ---------------------------------------------------------------------------
+# HEALTHY voters, not every voter list-peers reports.
+#
+# This counted voters from list-peers until 2026-09-24, when a real
+# cluster showed what that does. A node had been terminated; autopilot had
+# not pruned it, because pruning is what this script is being run to
+# enable. So list-peers reported four voters, the script set min_quorum=4,
+# and min_quorum is the floor autopilot refuses to prune below -- forbidding
+# the 4 -> 3 prune it had just enabled. It then verified its own write and
+# reported success. The dead voter was still there nine minutes later; a
+# re-run with --min-quorum 3 cleared it in about thirty seconds.
+#
+# The ordering that produces this is the likeliest one in practice: what
+# sends an operator to this script is a peer list with a dead node in it.
+#
+# autopilot state carries a per-server health that list-peers does not, so
+# the dead voter is excluded from the count and the floor lands where it
+# belongs. A cluster too degraded for that to give a sane answer -- three
+# nodes with one dead gives two -- falls into the refusal below, which is
+# the right outcome: that operator needs to decide, not be guessed at.
 if [[ -z "$MIN_QUORUM" ]]; then
-    PEERS_JSON="$(vault operator raft list-peers -format=json 2>&1)" || die \
-        "Could not list Raft peers to count voters: ${PEERS_JSON}"
-    MIN_QUORUM="$(jq -r '[.data.config.servers[] | select(.voter == true)] | length' <<< "$PEERS_JSON")"
-    [[ "$MIN_QUORUM" =~ ^[0-9]+$ ]] || die "Could not count voters from list-peers output"
-    log "Counted ${MIN_QUORUM} voters; using that as min_quorum"
+    STATE_JSON="$(vault operator raft autopilot state -format=json 2>&1)" || die \
+        "Could not read autopilot state to count healthy voters: ${STATE_JSON}"
+
+    # (.data // .) because which of the two shapes this command emits has
+    # not been confirmed against a live cluster -- the 2026-09-24 session
+    # read it in text form only. Both are accepted rather than guessed at;
+    # confirm on the next apply and simplify this if it is settled.
+    COUNTS="$(jq -r '
+        ((.data // .).servers // {})
+        | [ to_entries[]
+            | select(.value.status == "voter" or .value.status == "leader") ]
+        | "\([ .[] | select(.value.healthy == true) ] | length) \(length)"
+    ' <<< "$STATE_JSON")" || die "Could not parse autopilot state output"
+
+    HEALTHY_VOTERS="${COUNTS%% *}"
+    ALL_VOTERS="${COUNTS##* }"
+    [[ "$HEALTHY_VOTERS" =~ ^[0-9]+$ && "$ALL_VOTERS" =~ ^[0-9]+$ ]] || die \
+        "Could not count voters from autopilot state output"
+    [[ "$ALL_VOTERS" -gt 0 ]] || die \
+        "autopilot state reported no voters at all, which is not a cluster this script can configure"
+
+    MIN_QUORUM="$HEALTHY_VOTERS"
+
+    if [[ "$HEALTHY_VOTERS" -ne "$ALL_VOTERS" ]]; then
+        log "WARNING: ${ALL_VOTERS} voters, ${HEALTHY_VOTERS} of them healthy." \
+            "Using ${HEALTHY_VOTERS} as min_quorum so the unhealthy ones can be pruned;" \
+            "pass --min-quorum to override."
+    else
+        log "Counted ${MIN_QUORUM} healthy voters; using that as min_quorum"
+    fi
 fi
 
 # Below three, a "quorum" is not one: a two-node cluster loses quorum when

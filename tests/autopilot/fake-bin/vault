@@ -64,6 +64,44 @@ if [[ "$*" == *"autopilot set-config"* ]]; then
     exit 0
 fi
 
+# autopilot state carries per-server health; list-peers does not. The
+# script reads this one to work out min_quorum.
+#
+# Shape: a servers OBJECT keyed by node id, not an array -- and the leader
+# reports status "leader" rather than "voter", which is why the script
+# accepts both. FAKE_UNHEALTHY_VOTERS of them report healthy=false, which
+# is what a terminated node looks like until autopilot prunes it.
+#
+# NOT CONFIRMED against a live cluster: the 2026-09-24 session read this
+# command in text form only, so whether the JSON arrives bare or wrapped in
+# .data is unsettled. The script accepts either; this shim emits the bare
+# form. Settle it on the next apply -- a shim agreeing with a wrong guess
+# is the failure tests/integration exists to catch.
+if [[ "$*" == *"autopilot state"* ]]; then
+    if [[ "${FAKE_STATE_RC:-0}" != "0" ]]; then
+        echo "Error reading autopilot state" >&2
+        exit "${FAKE_STATE_RC}"
+    fi
+    n="${FAKE_VOTERS:-3}"
+    unhealthy="${FAKE_UNHEALTHY_VOTERS:-0}"
+    nonvoters="${FAKE_NONVOTERS:-0}"
+    servers=""
+    for ((i = 0; i < n; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        status="voter"
+        [[ "$i" == "0" ]] && status="leader"
+        healthy="true"
+        [[ "$i" -ge $((n - unhealthy)) ]] && healthy="false"
+        servers="${servers}\"vault-${i}\":{\"id\":\"vault-${i}\",\"name\":\"vault-${i}\",\"address\":\"vault-${i}:8201\",\"node_status\":\"alive\",\"healthy\":${healthy},\"status\":\"${status}\"}"
+    done
+    for ((i = 0; i < nonvoters; i++)); do
+        [[ -n "$servers" ]] && servers="${servers},"
+        servers="${servers}\"new-${i}\":{\"id\":\"new-${i}\",\"name\":\"new-${i}\",\"address\":\"new-${i}:8201\",\"node_status\":\"alive\",\"healthy\":true,\"status\":\"non-voter\"}"
+    done
+    printf '{"healthy":true,"failure_tolerance":1,"servers":{%s}}\n' "$servers"
+    exit 0
+fi
+
 if [[ "$*" == *"list-peers"* ]]; then
     if [[ "${FAKE_LIST_PEERS_RC:-0}" != "0" ]]; then
         echo "Error listing peers" >&2

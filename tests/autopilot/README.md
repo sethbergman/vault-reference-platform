@@ -30,6 +30,12 @@ which is the fix.
 - the defaults it writes: cleanup on, `min_quorum` from the voters it
   counted, and a dead-server threshold short enough to fall inside the
   ASG's `instance_warmup`
+- that the floor it derives is the count of **healthy** voters: a
+  cluster reporting four voters with one dead must be configured with
+  `min_quorum = 3`, or the prune this script exists to enable is
+  forbidden by the floor it just wrote. That is not hypothetical --
+  it is what happened on 2026-09-24 against a real cluster, and the
+  script reported success while doing it
 - that it **counts** voters rather than assuming three, and that a
   non-voter which has joined but not been promoted does not raise the
   floor
