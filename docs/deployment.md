@@ -482,6 +482,34 @@ platform, which is why the command above exists. Committing an
 init-generated lock is the usual way this gets broken: it works locally
 and then fails everywhere else.
 
+## Two things the AWS inventory needs
+
+Both cost time on 2026-09-24, and neither failure names itself.
+
+**`boto3` in the same Python that runs Ansible.** The `aws_ec2` inventory
+plugin imports it in the controller's interpreter, not on the nodes. Where
+Ansible is a system package and `boto3` lives in a virtualenv, the plugin
+fails to parse the inventory and you get an *empty* one — so
+`ansible-inventory --graph` shows nothing under `vault_nodes`, and
+`generate-cloud-certs.sh` stops with "No host in the vault_nodes group has
+a private_ip_address". The cluster is fine; nothing can see it.
+
+```bash
+PYTHONPATH=/path/to/venv/lib/python3.12/site-packages \
+    ansible-inventory -i inventory/aws_ec2.yml --graph
+```
+
+**`--private-key` on the playbook.** Session Manager carries the SSH
+session; it does not authenticate you to `sshd`. Without the key every
+host fails with `Permission denied (publickey)` *after* the tunnel
+connects and the host key is accepted, which reads like a tunnel problem
+and is not:
+
+```bash
+ansible-playbook -i inventory/aws_ec2.yml \
+    --private-key ~/.ssh/<ssh_key_name>.pem playbooks/site.yml
+```
+
 ## Post-deployment
 
 1. Initialize Vault (`vault operator init`) — do this exactly once per

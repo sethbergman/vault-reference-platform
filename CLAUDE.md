@@ -140,22 +140,25 @@ one-way door and a restart of vault-unseal an unrecoverable one.
 | Profile | Provisioning | Seal | Proven by |
 |---|---|---|---|
 | local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
-| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and one real apply on 2026-09-17 — partly proven, see `docs/cloud-apply.md` |
+| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and two real applies (2026-09-17, 2026-09-24) — partly proven, see `docs/cloud-apply.md` |
 | Azure | `terraform/azure` | Azure Key Vault | `terraform test` with mocked providers only |
 | bare/other | Ansible alone | Shamir (role default) | not exercised |
 
-**`terraform/aws` has been applied to a real account once, on
-2026-09-17; `terraform/azure` never has.** Do not describe either as
-working or proven. `docs/cloud-apply.md` records what that session
+**`terraform/aws` has been applied to a real account twice, on
+2026-09-17 and 2026-09-24; `terraform/azure` never has.** Do not describe
+either as working or proven. `docs/cloud-apply.md` records what that session
 settled — auto-unseal, peer discovery, health checks, the handoff, a
 restore — what it observed failing, and what it never reached. Its
-headline finding was that **the cluster is not self-healing**: a
+headline finding was that **the cluster was not self-healing**: a
 replacement node's certificates came only from an Ansible run keyed to an
 instance id that does not exist until launch. A replacement now signs its
 own leaf at boot from a bootstrap CA published to SSM
-(`scripts/issue-bootstrap-cert.sh`) — designed, tested with shims and
-real openssl, and **never observed on a real node**, so blocker 1 stays
-open until item 10 of `docs/cloud-apply.md` is watched again.
+(`scripts/issue-bootstrap-cert.sh`), and on 2026-09-24 a second apply
+watched that work on a real node — blocker 1 is closed, and an instance
+refresh kept quorum across all three nodes. What neither session reached
+is listed in `docs/cloud-apply.md`: snapshots to the bucket, a restore,
+PKI and audit on a real node, and any identity narrower than an
+administrator.
 `scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
 `terraform destroy` fails partway on both profiles.
 

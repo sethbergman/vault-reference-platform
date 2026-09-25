@@ -113,9 +113,28 @@ otherwise be reckless.
 
 The floor counts **servers, not voters**, and the sequence is not the one
 you would guess. A replacement joins as a *non-voter*; that alone takes
-the server count to four and satisfies the floor; the dead voter is
-pruned; only then is the replacement promoted. The voter count never
-rises above three.
+the server count to four and satisfies the floor.
+
+What follows was watched against a real autoscaling group on 2026-09-24,
+and it is not what this page said. The replacement is **promoted before
+the dead voter is pruned**, so the voter count does reach four, and there
+is a window — about 50 seconds, bounded by
+`dead_server_last_contact_threshold` — where three live nodes face a
+quorum of three:
+
+```text
+live 4  peers 4  voters 3   replacement joined as a non-voter
+live 4  peers 4  voters 4   promoted, with four live nodes to carry it
+live 3  peers 4  voters 4   old instance gone: no margin
+live 3  peers 3  voters 3   pruned
+```
+
+The property still holds — the live count never fell below the quorum the
+voter count demanded, at any sample, across three replacements. But it
+holds with one node of margin and a timer, not because the voter count
+stays at three. This page has now had its mechanism corrected twice,
+first by `tests/autopilot-prune` and then by an ASG; the property has
+survived both.
 
 This page said the opposite until `tests/autopilot-prune` was written —
 that the count rises to four and falls back — and the suite's first

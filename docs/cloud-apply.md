@@ -194,10 +194,110 @@ The fix since: a replacement signs its own leaf at boot, from the
 bootstrap CA published to SSM, with the same SANs its peers carry —
 `scripts/issue-bootstrap-cert.sh` in user-data, fed by
 `scripts/publish-bootstrap-ca.sh`. The design and what it gives up are in
-[security.md](security.md#a-node-the-autoscaling-group-replaces). It is
-tested with shims and real `openssl`, and it has **not** been watched on
-a real cluster: blocker 1 closes when item 10 is run again and the
-replacement joins with nobody touching it.
+[security.md](security.md#a-node-the-autoscaling-group-replaces). It was
+tested with shims and real `openssl` before it was ever watched on a real
+cluster — and it was watched on 2026-09-24, which is the next section.
+
+---
+
+## What the second apply settled
+
+One session, 2026-09-24/25, same sandbox account and shape: `az_count=2`,
+`node_count=3`, `t3.small`, us-east-1, about two hours and a few dollars.
+It went in for item 10 and came out with items 9 and 10 both observed and
+three defects that no test here could reach.
+
+| Item | Result |
+|---|---|
+| 1–4 | **Observed again**, unchanged from 2026-09-17 and without a fix in between: cloud-init `done`, `sealed false` / `awskms` on all three, leader plus two voters, all three targets healthy |
+| 9. An instance refresh keeps quorum | **Observed.** All three nodes replaced; the live-node count never fell below the quorum the voter count demanded. The trigger, though, was broken — see below |
+| 10. Losing a node | **Observed passing.** The replacement signed its own certificate, auto-unsealed and joined Raft with nobody touching it |
+| The CA key stays out of Terraform state | **Observed** against real SSM: `bootstrap_ca_key.value` is empty in the state object and the state holds no private key material |
+| 5–8 | **Not reached**, as in 2026-09-17: snapshots to the bucket, a restore, PKI and audit on a real node |
+| The teardown | **Observed.** One pass; afterwards a sweep of every enabled region found no instances, NAT gateways, EIPs, load balancers, volumes, ASGs, endpoints, log groups or SSM parameters. The `BucketNotEmpty` path was again not exercised — no snapshot was ever written |
+
+### Item 10: the replacement healed itself
+
+The leader was terminated at 00:00:57Z. A survivor took leadership, the
+autoscaling group launched a replacement, and its boot log says the part
+that had never been watched:
+
+```text
+[bootstrap-cert] Wrote /etc/vault.d/tls/vault.crt for i-037621b16856600af,
+                 signed by the vault-reference bootstrap CA.
+[bootstrap-cert] The CA key was never written outside a private directory,
+                 and is now deleted.
+```
+
+It then auto-unsealed under `awskms`, joined Raft as a voter and went
+`healthy` in the target group — about four minutes end to end, no human
+step. In 2026-09-17 the same check needed `generate-cloud-certs.sh
+--add-missing` and an `ansible-playbook --limit`.
+
+**Blocker 1 closes here.** What it never reached is unchanged and is
+listed above; none of it is about whether a node can replace itself.
+
+### Item 9: quorum held, and the trigger did not fire
+
+The documented way to start a refresh — bump `vault_version` and apply —
+replaced nothing. `terraform/aws/compute.tf` referenced the launch
+template as `"$Latest"`, a constant, so the autoscaling group never
+changed and `instance_refresh` never fired. The apply reported `0 added,
+1 changed, 0 destroyed` and `describe-instance-refreshes` was empty. That
+is fixed; the refresh itself was then started with
+`aws autoscaling start-instance-refresh` and watched to completion.
+
+Sampling every 45 seconds, the third node's replacement is the whole
+story:
+
+```text
+live 3  peers 3  voters 3  quorum 2
+live 4  peers 4  voters 3  quorum 2   replacement joined as a NON-voter
+live 4  peers 4  voters 4  quorum 3   promoted, with 4 live to carry it
+live 3  peers 4  voters 4  quorum 3   old instance gone: no margin
+live 3  peers 3  voters 3  quorum 2   pruned
+```
+
+`Successful`, 100%, three entirely new instance ids, and at no sample did
+the live count fall below the quorum the voter count demanded.
+
+Note the fourth line. There is a window — about 50 seconds here, bounded
+by `dead_server_last_contact_threshold` — where three live nodes face a
+quorum of three and a second failure would stop the cluster. That is the
+mechanism working, not a defect, but it is not the "never rises above
+three" this repository claimed until this session; the promotion happens
+before the prune, not after.
+
+### What it found
+
+Three defects, all in code every existing test passes:
+
+1. **`configure-autopilot.sh` could lock out its own pruning.** It
+   derived `min_quorum` from every voter `list-peers` reported, including
+   a terminated one — setting the floor one too high and forbidding the
+   prune it had just enabled, then verifying its own write and reporting
+   success. The floor now comes from voters `autopilot state` reports
+   healthy.
+2. **A version bump replaced nothing**, as above.
+3. **This sequence never ran `configure-autopilot.sh`**, which is why the
+   cluster met item 10 with `cleanup_dead_servers = false` and a 24-hour
+   threshold. It does now.
+
+Two smaller ones cost about twenty minutes between them: the playbook
+command here omitted `--private-key`, and nothing said the AWS inventory
+plugin needs `boto3` in the same Python that runs Ansible.
+
+### What is still unproven
+
+- Snapshots to the bucket, a restore at the cloud destination, PKI and
+  audit on a real node — items 5 through 8 have now been skipped twice.
+- The `BucketNotEmpty` teardown path, for the same reason.
+- Any identity narrower than an administrator, on either profile.
+- Whether `vault operator raft autopilot state -format=json` arrives bare
+  or wrapped in `.data`: this session read that command in text form
+  only. The script accepts both and says so; settle it next time.
+- A refresh triggered the documented way, now that the trigger is fixed.
+  What was watched was a refresh started from the CLI.
 
 ---
 
@@ -355,12 +455,24 @@ terraform -chdir=terraform/aws apply
 # is an instance id. See deployment.md#certificates.
 ./scripts/generate-cloud-certs.sh --cluster-name vault-reference
 
-cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml
+# --private-key is not optional: the SSM tunnel carries the session, it
+# does not authenticate you. Without it every host fails with
+# "Permission denied (publickey)" after the tunnel connects, which reads
+# like a tunnel problem and is not. See deployment.md#reaching-the-nodes
+# for that and for the boto3 the inventory plugin needs.
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml \
+    --private-key ~/.ssh/<your-key>.pem playbooks/site.yml
 cd ..
 
 # So a node the autoscaling group launches later signs its own
 # certificate at boot. Item 10 is where that gets watched.
 ./scripts/publish-bootstrap-ca.sh --cluster-name vault-reference
+
+# Vault ships cleanup_dead_servers = false, so a replaced node stays a
+# voter forever and item 9's refresh walks the cluster out of quorum.
+# This sequence did not run it until 2026-09-24, which is why item 10
+# left a dead voter behind that afternoon. Once per cluster.
+./scripts/configure-autopilot.sh
 ```
 
 ### Azure

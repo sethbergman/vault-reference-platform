@@ -29,7 +29,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.17 | Seal migration in both directions, and the unseal-key rekey — plus the key the local root of trust had been discarding, which made restarting one container unrecoverable |
 | v0.18 | Rate limit quotas, and the three ways of setting one that write successfully and protect nothing — including the quota that refuses its own deletion |
 | v0.19 | The path from a running cluster to a configured one, which had three breaks in it: three nodes arriving as one Ansible host, no way to reach any of them, and a certificate check no correct certificate could pass |
-| v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which keeps blocker 1 open |
+| v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which kept blocker 1 open until the second apply closed it on 2026-09-24 |
 
 ## The honest gap
 
@@ -197,9 +197,9 @@ of them is about what happens after something boots.
 
 The blockers are, in order:
 
-1. **A real AWS apply.** Done once, on 2026-09-17, and **still open**.
-   Three of its four questions are settled and the fourth is settled in
-   the wrong direction:
+1. **A real AWS apply.** Done twice — 2026-09-17 and 2026-09-24 — and
+   **closed** by the second. All four of its questions are settled, the
+   fourth one positively, on the second attempt:
 
    - **The KMS triangle.** Settled. The instance profile, the key policy
      and the `seal "awskms"` stanza agree: all three nodes reported
@@ -216,26 +216,26 @@ The blockers are, in order:
    - **The profile whose default apply is broken.** Settled: the
      pre-flight now reads the variable an apply would use, so an empty
      `ssh_key_name` is caught before anything bills.
-   - **Auto Scaling group replacement.** Settled as **broken**, and this
-     is why the blocker stays open. The group replaced a terminated
-     leader in 75 seconds and the replacement never started Vault: its
-     certificates arrive only through an Ansible run, named after an
-     instance id that did not exist until the launch. Recovery is now two
-     commands rather than improvisation —
-     `generate-cloud-certs.sh --add-missing` signs one leaf from the CA
-     the cluster already trusts, then the playbook runs `--limit` that
-     host — and it is still two commands somebody has to run. See
-     [cloud-apply.md](cloud-apply.md#the-cluster-is-not-self-healing).
-
-     Unattended recovery is now built: a replacement signs its own leaf
-     at boot from the bootstrap CA published to SSM, with the SANs its
-     peers carry (`scripts/issue-bootstrap-cert.sh`; the tradeoff is in
+   - **Auto Scaling group replacement.** Settled as **broken** on
+     2026-09-17 and as **working** on 2026-09-24. The first session's
+     replacement never started Vault: certificates arrived only through
+     an Ansible run named after an instance id that did not exist until
+     the launch. A replacement now signs its own leaf at boot from the
+     bootstrap CA published to SSM, with the SANs its peers carry
+     (`scripts/issue-bootstrap-cert.sh`; the tradeoff is in
      [security.md](security.md#a-node-the-autoscaling-group-replaces)).
-     It is tested with shims and real `openssl` and asserted in
-     `terraform test`, and it has not been watched on a real node. The
-     blocker closes when item 10 is run again and the replacement joins
-     with nobody touching it — which is also what item 5's instance
-     refresh was waiting for.
+
+     On 2026-09-24 that was watched on a real node: the leader was
+     terminated, and the replacement wrote its own certificate,
+     auto-unsealed under KMS and joined Raft as a voter in about four
+     minutes with nobody touching it. See
+     [cloud-apply.md](cloud-apply.md#item-10-the-replacement-healed-itself).
+
+   What neither session reached is unchanged, and is why this item being
+   closed is not the same as the profile being finished: snapshots to the
+   bucket, a restore at the cloud destination, PKI and audit on a real
+   node, the `BucketNotEmpty` teardown path, and any identity narrower
+   than an administrator. Those sit under "After v1.0" below.
 
    What that session did not reach: snapshots to the bucket, PKI
    certificates and audit devices on a real node, and the refresh. Those
