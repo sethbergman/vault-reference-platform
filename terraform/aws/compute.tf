@@ -156,9 +156,18 @@ resource "aws_autoscaling_group" "vault" {
   # nodes mid-bootstrap in a loop.
   health_check_grace_period = 600
 
+  # latest_version, not "$Latest", and the difference is the whole upgrade
+  # path. instance_refresh below fires when this resource changes. With the
+  # literal "$Latest" nothing here changes when a new launch template
+  # version is created, so `terraform apply -var vault_version=<newer>`
+  # updated the template, left the group alone and replaced no nodes --
+  # while reporting success. Observed on 2026-09-24 against a real account:
+  # "0 added, 1 changed, 0 destroyed", and describe-instance-refreshes
+  # empty. Referencing latest_version puts a number here that moves, which
+  # is what the refresh is watching for.
   launch_template {
     id      = aws_launch_template.vault.id
-    version = "$Latest"
+    version = aws_launch_template.vault.latest_version
   }
 
   instance_refresh {

@@ -61,6 +61,7 @@ fails. These have been checked that way:
 | Node API egress pointed at the load balancer's group | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
 | Raft egress opened to the VPC by CIDR | `nodes_can_reach_each_other_and_nothing_else_on_cluster_ports` |
 | Bootstrap CA key encrypted under the seal key | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
+| ASG's launch template version set to the constant `$Latest` (or `$Default`) | `a_launch_template_change_can_actually_trigger_the_refresh` |
 | Bootstrap CA key's `key_id` removed, so SSM falls back to `aws/ssm` | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
 | Node role granted `ssm:GetParametersByPath` as well | `a_new_node_can_read_the_bootstrap_ca_and_nothing_more` |
 | User-data stops passing the load balancer as an extra SAN | `user_data_carries_the_boot_script_and_fits` |

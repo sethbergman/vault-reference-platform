@@ -37,6 +37,34 @@ run "rolling_refresh_preserves_quorum" {
     condition     = aws_autoscaling_group.vault.instance_refresh[0].preferences[0].min_healthy_percentage > 50
     error_message = "Instance refresh must keep more than half the nodes healthy or a rolling replacement breaks Raft quorum."
   }
+
+}
+
+run "a_launch_template_change_can_actually_trigger_the_refresh" {
+  command = apply
+
+  # A refresh that never starts keeps quorum trivially, which is why this
+  # sits next to the assertion above rather than somewhere tidier.
+  #
+  # instance_refresh fires when the ASG resource changes. "$Latest" is a
+  # constant, so a new launch template version -- a vault_version bump, a
+  # user-data edit -- changes nothing on the group and it is left alone.
+  # The 2026-09-24 apply did exactly that against a real account: the
+  # template updated ("0 added, 1 changed, 0 destroyed"),
+  # describe-instance-refreshes stayed empty, and all three nodes kept
+  # running the old version while the apply reported success.
+  #
+  # This is applied rather than planned because latest_version is computed:
+  # during plan it is unknown, and a condition on an unknown value errors
+  # identically whether the reference is right or wrong. The mock supplies
+  # 7, so what this really asserts is that the reference resolves -- which
+  # is the defect exactly. It does not prove AWS then starts a refresh;
+  # nothing here can, and item 9 of docs/cloud-apply.md is where that gets
+  # watched.
+  assert {
+    condition     = aws_autoscaling_group.vault.launch_template[0].version == "7"
+    error_message = "The ASG must reference the launch template's latest_version. A constant like \"$Latest\" never changes, so instance_refresh never fires and a version bump replaces nothing."
+  }
 }
 
 run "health_check_defaults_to_ec2_so_a_bare_apply_terminates" {

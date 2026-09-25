@@ -101,8 +101,14 @@ mock_resource "aws_cloudwatch_log_group" {
 }
 
 # Not an ARN, but the provider still checks the prefix.
+#
+# latest_version is here because cluster.tftest.hcl asserts the ASG
+# references it rather than the constant "$Latest". 7 is arbitrary and
+# deliberately not 1 or 0: a mock that agrees with a generated default by
+# accident is an assertion that cannot fail.
 mock_resource "aws_launch_template" {
   defaults = {
-    id = "lt-0123456789abcdef0"
+    id             = "lt-0123456789abcdef0"
+    latest_version = 7
   }
 }

@@ -94,6 +94,29 @@ is counting instances it can see, while the problem is the ones Raft
 still counts that the ASG cannot. The two are counting different things,
 which is exactly why the setting looks sufficient and is not.
 
+### The refresh has to start at all
+
+Autopilot is what makes a refresh survivable; it is not what makes one
+happen. Until 2026-09-24 nothing here did.
+
+`terraform/aws/compute.tf` referenced the launch template as `$Latest`, a
+constant. `instance_refresh` fires when the autoscaling group resource
+changes, and a constant never changes, so `terraform apply -var
+vault_version=<newer>` updated the template, left the group untouched and
+replaced nothing — reporting `0 added, 1 changed, 0 destroyed` on the way
+out. Observed against a real account that day: the apply succeeded,
+`describe-instance-refreshes` was empty, and all three nodes went on
+running the old version. New instances would have picked the change up
+whenever one happened to launch, so the cluster drifts rather than fails.
+
+The group now references `aws_launch_template.vault.latest_version`,
+which is a number that moves when the template does.
+`a_launch_template_change_can_actually_trigger_the_refresh` in
+`terraform/aws/tests/cluster.tftest.hcl` holds it there. That assertion
+proves the reference resolves, not that AWS then starts a refresh —
+item 9 of [cloud-apply.md](cloud-apply.md) is the only place that gets
+watched.
+
 The fix is
 [`scripts/configure-autopilot.sh`](../scripts/configure-autopilot.sh),
 which sets:
