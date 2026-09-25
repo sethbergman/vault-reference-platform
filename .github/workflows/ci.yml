@@ -1063,6 +1063,23 @@ jobs:
       - name: Exercise scripts/bootstrap-agent.sh
         run: ./tests/agent/run-tests.sh
 
+  bastion-proxy-test:
+    name: Azure Bastion proxy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Covers scripts/bastion-proxy.sh against a fake az CLI. That script
+      # is the Azure profile's only route to a node — the nodes have no
+      # public address and 22 is open from the Bastion subnet alone — so
+      # every Ansible connection is a ProxyCommand through it.
+      #
+      # Whether Azure Bastion then carries the session is not asserted
+      # anywhere: terraform/azure has never been applied. See
+      # docs/cloud-apply.md.
+      - name: Exercise scripts/bastion-proxy.sh
+        run: ./tests/bastion-proxy/run-tests.sh
+
   autopilot-test:
     name: Autopilot configuration tests
     runs-on: ubuntu-latest

@@ -21,7 +21,7 @@ tested.
 | [Auto-unseal](auto-unseal.md) | Local: Transit auto-unseal · AWS / Azure: cloud KMS auto-unseal · Changing seal type · Why this isn't fully automated end to end |
 | [CI authentication (GitHub Actions OIDC)](ci-authentication.md) | Versus AppRole · Setup · Bound claims are the security boundary · Using it in a workflow · Troubleshooting |
 | [The cloud apply](cloud-apply.md) | Which profile this is written for · Why Azure has no emulated apply · What the first apply settled · What the second apply settled · Before you apply · What it costs · The apply sequence · The verification checklist · Tearing down · After the session |
-| [Deployment](deployment.md) | Local (Docker Compose) · Before either cloud profile · AWS · Azure · Handing off to Ansible · Provider lock files · Two things the AWS inventory needs · Post-deployment |
+| [Deployment](deployment.md) | Local (Docker Compose) · Before either cloud profile · AWS · Azure · Handing off to Ansible · Provider lock files · Reaching the Azure nodes · Two things the AWS inventory needs · Post-deployment |
 | [Disaster Recovery](disaster-recovery.md) | Backups · Restore procedure · Loss-of-quorum scenario · The snapshot is only half of a backup · Reading the backup back out · Testing |
 | [Dynamic Secrets](dynamic-secrets.md) | Try it · What the bootstrap script sets up · Three details that matter more than they look · Choosing an engine · Root rotation · TLS to the database · What is tested · What this does not cover |
 | [Human authentication (OIDC)](human-authentication.md) | Trying it locally · Groups do not map themselves · Where the policies show up · Why /etc/hosts · Logging in through the web UI · Pointing at a real identity provider · CI coverage · Troubleshooting |

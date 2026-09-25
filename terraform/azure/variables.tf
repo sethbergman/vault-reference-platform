@@ -97,3 +97,21 @@ variable "flow_log_retention_days" {
   description = "Days to retain NSG flow logs."
   default     = 90
 }
+
+variable "bastion_enabled" {
+  type        = bool
+  description = <<-EOT
+    Deploy an Azure Bastion host, and open 22 to the nodes from its subnet
+    alone. On by default: the nodes have no public address and no other
+    inbound path, so without it nothing can reach them -- the playbook
+    cannot run, and a node that fails to start cannot be looked at. That is
+    the same shape of failure terraform/aws shipped with an empty
+    ssh_key_name, which produced a cluster nobody could log into.
+
+    Set it false only when you already have a route into the VNet (a VPN,
+    ExpressRoute, or your own jump host) and have pointed the inventory at
+    it. Standard SKU, about $0.19/hour plus egress, destroyed with the
+    cluster.
+  EOT
+  default     = true
+}

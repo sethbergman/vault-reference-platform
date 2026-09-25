@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Stand-in for the az CLI. Records every invocation and behaves like
+# `az network bastion tunnel`: it opens a local listener and keeps running
+# until killed.
+#
+# Modelled on what the real command does, not on what the script wants:
+# the tunnel is a long-lived process holding a port, which is the entire
+# reason scripts/bastion-proxy.sh exists rather than a plain ProxyCommand.
+set -uo pipefail
+printf 'az %s\n' "$*" >> "${FAKE_LOG}"
+
+PORT=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --port) PORT="$2"; shift 2 ;;
+        *)      shift ;;
+    esac
+done
+
+if [[ "${FAKE_TUNNEL_RC:-0}" != "0" ]]; then
+    echo "ERROR: (ResourceNotFound) the Bastion host was not found" >&2
+    exit "${FAKE_TUNNEL_RC}"
+fi
+
+# A tunnel that never listens: the real failure when the Bastion is still
+# starting, or the target id names an instance that is gone.
+if [[ "${FAKE_TUNNEL_NEVER_LISTENS:-false}" == "true" ]]; then
+    sleep 60 &
+    wait $!
+    exit 0
+fi
+
+[[ -n "$PORT" ]] || { echo "no --port given" >&2; exit 64; }
+
+# A cold Bastion does not answer instantly: the session has to be set up
+# before anything listens locally. Seconds, not milliseconds, and the
+# first connection of a playbook run is the one that pays it.
+if [[ "${FAKE_TUNNEL_LISTEN_DELAY:-0}" != "0" ]]; then
+    sleep "${FAKE_TUNNEL_LISTEN_DELAY}"
+fi
+
+python3 - "$PORT" <<'PY' &
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(8)
+while True:
+    try:
+        conn, _ = s.accept()
+        conn.close()
+    except OSError:
+        time.sleep(0.05)
+PY
+LISTENER=$!
+trap 'kill "$LISTENER" 2>/dev/null' EXIT TERM INT
+wait "$LISTENER"
