@@ -67,16 +67,21 @@ fi
 # autopilot state carries per-server health; list-peers does not. The
 # script reads this one to work out min_quorum.
 #
-# Shape: a servers OBJECT keyed by node id, not an array -- and the leader
-# reports status "leader" rather than "voter", which is why the script
-# accepts both. FAKE_UNHEALTHY_VOTERS of them report healthy=false, which
-# is what a terminated node looks like until autopilot prunes it.
+# Shape: copied from a real Vault 1.17.2 on 2026-09-25, not from what the
+# script would find convenient. The CLI emits Go field names, bare --
+# "Servers", "Status", "Healthy", "NodeType" -- and a servers OBJECT keyed
+# by node id, not an array. The leader reports Status "leader" rather than
+# "voter". (The HTTP API spells all of it snake_case under .data; the
+# script accepts both, and that difference is the whole reason this block
+# exists.)
 #
-# NOT CONFIRMED against a live cluster: the 2026-09-24 session read this
-# command in text form only, so whether the JSON arrives bare or wrapped in
-# .data is unsettled. The script accepts either; this shim emits the bare
-# form. Settle it on the next apply -- a shim agreeing with a wrong guess
-# is the failure tests/integration exists to catch.
+# The first version of this shim emitted the API's spelling because the
+# script had been written against the same guess. Both agreed, the suite
+# passed, and every real cluster refused: tests/autopilot-prune failed on
+# PR #108 with "autopilot state reported no voters at all".
+#
+# FAKE_UNHEALTHY_VOTERS of them report Healthy=false, which is what a
+# terminated node looks like until autopilot prunes it.
 if [[ "$*" == *"autopilot state"* ]]; then
     if [[ "${FAKE_STATE_RC:-0}" != "0" ]]; then
         echo "Error reading autopilot state" >&2
@@ -92,13 +97,13 @@ if [[ "$*" == *"autopilot state"* ]]; then
         [[ "$i" == "0" ]] && status="leader"
         healthy="true"
         [[ "$i" -ge $((n - unhealthy)) ]] && healthy="false"
-        servers="${servers}\"vault-${i}\":{\"id\":\"vault-${i}\",\"name\":\"vault-${i}\",\"address\":\"vault-${i}:8201\",\"node_status\":\"alive\",\"healthy\":${healthy},\"status\":\"${status}\"}"
+        servers="${servers}\"vault-${i}\":{\"ID\":\"vault-${i}\",\"Name\":\"vault-${i}\",\"Address\":\"vault-${i}:8201\",\"NodeStatus\":\"alive\",\"LastContact\":\"0s\",\"Healthy\":${healthy},\"Status\":\"${status}\",\"Version\":\"1.17.2\",\"NodeType\":\"voter\"}"
     done
     for ((i = 0; i < nonvoters; i++)); do
         [[ -n "$servers" ]] && servers="${servers},"
-        servers="${servers}\"new-${i}\":{\"id\":\"new-${i}\",\"name\":\"new-${i}\",\"address\":\"new-${i}:8201\",\"node_status\":\"alive\",\"healthy\":true,\"status\":\"non-voter\"}"
+        servers="${servers}\"new-${i}\":{\"ID\":\"new-${i}\",\"Name\":\"new-${i}\",\"Address\":\"new-${i}:8201\",\"NodeStatus\":\"alive\",\"LastContact\":\"0s\",\"Healthy\":true,\"Status\":\"non-voter\",\"Version\":\"1.17.2\",\"NodeType\":\"non-voter\"}"
     done
-    printf '{"healthy":true,"failure_tolerance":1,"servers":{%s}}\n' "$servers"
+    printf '{"Healthy":true,"FailureTolerance":1,"Leader":"vault-0","Servers":{%s}}\n' "$servers"
     exit 0
 fi
 

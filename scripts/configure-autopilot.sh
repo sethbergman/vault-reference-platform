@@ -158,15 +158,28 @@ if [[ -z "$MIN_QUORUM" ]]; then
     STATE_JSON="$(vault operator raft autopilot state -format=json 2>&1)" || die \
         "Could not read autopilot state to count healthy voters: ${STATE_JSON}"
 
-    # (.data // .) because which of the two shapes this command emits has
-    # not been confirmed against a live cluster -- the 2026-09-24 session
-    # read it in text form only. Both are accepted rather than guessed at;
-    # confirm on the next apply and simplify this if it is settled.
+    # Two spellings, both observed against Vault 1.17.2 on 2026-09-25:
+    #
+    #   vault operator raft autopilot state -format=json
+    #     -> bare, Go field names: {"Servers":{"vault-0":{"Status":"leader",
+    #        "Healthy":true,...}},"Voters":[...]}
+    #   GET /v1/sys/storage/raft/autopilot/state
+    #     -> wrapped, snake_case: {"data":{"servers":{"vault-0":
+    #        {"status":"leader","healthy":true,...}}}}
+    #
+    # The CLI's is the one this script gets. The first version of this code
+    # assumed the API's spelling for the CLI's output, found zero voters on
+    # every real cluster, and refused to configure anything --
+    # tests/autopilot-prune caught it, because the shim had been written
+    # from the same wrong assumption and agreed with it.
+    #
+    # The leader reports Status "leader" rather than "voter", so both count.
     COUNTS="$(jq -r '
-        ((.data // .).servers // {})
+        ((.data // .) | .Servers // .servers // {})
         | [ to_entries[]
-            | select(.value.status == "voter" or .value.status == "leader") ]
-        | "\([ .[] | select(.value.healthy == true) ] | length) \(length)"
+            | (.value.Status // .value.status) as $s
+            | select($s == "voter" or $s == "leader") ]
+        | "\([ .[] | select((.value.Healthy // .value.healthy) == true) ] | length) \(length)"
     ' <<< "$STATE_JSON")" || die "Could not parse autopilot state output"
 
     HEALTHY_VOTERS="${COUNTS%% *}"
