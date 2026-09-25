@@ -189,6 +189,18 @@ elif [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
     else
         bad "could not resolve an Azure subscription" "run: az login"
     fi
+
+    # The tunnel every Ansible connection goes through is an extension, not
+    # core az. Missing, it fails after the apply has built everything --
+    # and az's own answer is to install it mid-command, which cannot work
+    # inside a ProxyCommand: no tty to confirm on, and parallel connections
+    # racing to install the same thing.
+    if [[ "$(az extension show --name bastion --query name -o tsv 2>/dev/null)" == "bastion" ]]; then
+        ok "the az bastion extension is installed"
+    else
+        bad "the az bastion extension is missing" \
+            "run: az extension add --name bastion — ansible/inventory/azure_rm.yml reaches every node through 'az network bastion tunnel', which lives in it"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -307,9 +319,22 @@ else
     # Premium_LRS at the default 64 GB is a P6 per node, and the previous
     # estimate omitted disks entirely.
     AZ_DISK_MONTH=$((NODE_COUNT * 9))
-    AZ_TOTAL=$((AZ_NAT_MONTH + AZ_VM_MONTH + AZ_DISK_MONTH + 20))
+    # Azure Bastion, Standard: about $0.19/hour for the host, so ~$140 a
+    # month if left up. bastion_enabled defaults to true because without it
+    # nothing can reach a node, which makes this the largest line in the
+    # profile rather than a footnote -- and the one most worth destroying
+    # promptly.
+    AZ_BASTION_MONTH=140
+    [[ "${BASTION_ENABLED:-true}" == "false" ]] && AZ_BASTION_MONTH=0
+    AZ_TOTAL=$((AZ_NAT_MONTH + AZ_VM_MONTH + AZ_DISK_MONTH + AZ_BASTION_MONTH + 20))
+    if [[ "$AZ_BASTION_MONTH" != "0" ]]; then
+        info "        1 Azure Bastion (Standard) ~\$${AZ_BASTION_MONTH}/month  <-- the largest line"
+    else
+        info "        Azure Bastion             disabled (bastion_enabled = false)"
+        info "        NOTE: nothing can reach the nodes without another route into the VNet."
+    fi
     info "        1 NAT gateway             ~\$${AZ_NAT_MONTH}/month"
-    info "        ${NODE_COUNT} VM(s) (${VM_SIZE})  ~\$${AZ_VM_MONTH}/month   <-- usually the largest line"
+    info "        ${NODE_COUNT} VM(s) (${VM_SIZE})  ~\$${AZ_VM_MONTH}/month"
     info "        ${NODE_COUNT} OS disk(s) (${OS_DISK_GB}GB Premium) ~\$${AZ_DISK_MONTH}/month"
     info "        1 standard load balancer  ~\$18/month"
     info "        Key Vault, storage, flow logs  a few dollars"
@@ -320,8 +345,9 @@ else
     # obvious lever does nothing, or a reader will reach for it by analogy.
     info "        Zone spread is free here: the NAT gateway is regional, so"
     info "        fewer zones save nothing. node_count cannot go below 3 and"
-    info "        stay a Raft majority, which leaves vm_size and"
-    info "        os_disk_size_gb as the only levers."
+    info "        stay a Raft majority, which leaves vm_size,"
+    info "        os_disk_size_gb, and destroying the Bastion with the"
+    info "        cluster rather than leaving it up between sessions."
     if [[ "$VM_SIZE" != "Standard_B2s" ]]; then
         info ""
         info "        NOTE: the per-VM figure assumes the default Standard_B2s."

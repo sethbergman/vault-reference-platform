@@ -27,7 +27,9 @@
 #   4. Hands the socket to SSH on stdin/stdout, and tears the tunnel down
 #      when SSH goes away.
 #
-# Requirements: az CLI (logged in), and one of nc/ncat/socat.
+# Requirements: az CLI, logged in, with the bastion extension
+#               (`az extension add --name bastion`); and one of nc, ncat
+#               or socat.
 #
 # DELIBERATE BEHAVIOURS
 #
@@ -94,6 +96,20 @@ done
 
 command -v az >/dev/null 2>&1 || die "az CLI not found on PATH"
 
+# `az network bastion tunnel` is in the bastion EXTENSION, not core az
+# (checked against azure-cli 2.90.0, whose own warning says so). A fresh
+# install does not have it, and az's default answer is to install it
+# mid-command -- the worst possible place: there is no tty here to confirm
+# on, and Ansible opens several of these at once, so several az processes
+# race to install the same extension.
+#
+# Dynamic install is therefore switched off for this invocation. az fails
+# immediately and says what is missing, and the error below turns that into
+# the one command that fixes it. Installing software is not a
+# ProxyCommand's job. scripts/preflight-cloud.sh checks for the extension
+# before an apply, which is where this should be caught.
+export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
+
 # nc is not one program. BSD nc, GNU netcat and ncat all speak stdio to a
 # TCP port; socat does too with different spelling. Pick whichever exists
 # rather than requiring a particular one.
@@ -139,7 +155,7 @@ s = socket.socket()
 s.settimeout(1)
 sys.exit(0 if s.connect_ex(('127.0.0.1', ${LOCAL_PORT})) == 0 else 1)" 2>/dev/null; do
     if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-        die "the tunnel exited before it was listening (az failed; its output is above)"
+        die "the tunnel exited before it was listening (az failed; its output is above). If az named the bastion extension, run: az extension add --name bastion"
     fi
     if (( SECONDS >= DEADLINE )); then
         die "the tunnel did not listen on 127.0.0.1:${LOCAL_PORT} within ${TIMEOUT}s"
