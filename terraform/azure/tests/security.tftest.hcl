@@ -332,3 +332,81 @@ run "turning_the_bastion_off_removes_all_of_it" {
     error_message = "bastion_enabled = false must remove the host, its subnet, its public IP and the SSH rule together."
   }
 }
+
+# ---------------------------------------------------------------------------
+# The bootstrap CA a replacement node signs from
+# ---------------------------------------------------------------------------
+
+run "a_node_can_read_the_bootstrap_ca_and_nothing_more" {
+  command = plan
+
+  # Get, and nothing else. With Set a compromised node could replace the CA
+  # every later node will trust -- which is a cluster-wide trust decision
+  # taken by whichever box was unlucky. With List it could enumerate what
+  # else the vault holds. Publishing is a human's job, with human
+  # credentials (scripts/publish-bootstrap-ca.sh).
+  assert {
+    condition = (
+      length(azurerm_key_vault_access_policy.vault_nodes.secret_permissions) == 1 &&
+      contains(azurerm_key_vault_access_policy.vault_nodes.secret_permissions, "Get")
+    )
+    error_message = "The node identity must have Get on secrets and nothing else: Set would let a node replace the CA its peers trust, List would let it enumerate the vault."
+  }
+
+  # Reading a secret must not imply unwrapping the seal key. Keys and
+  # secrets are separate permission surfaces in an access policy, and that
+  # separation is the whole reason the CA can live in the same vault as the
+  # seal key rather than needing one of its own -- a second Key Vault would
+  # mean a second 90-day soft-delete window on every teardown.
+  assert {
+    condition = alltrue([
+      contains(azurerm_key_vault_access_policy.vault_nodes.key_permissions, "UnwrapKey"),
+      !contains(azurerm_key_vault_access_policy.vault_nodes.secret_permissions, "Set"),
+      !contains(azurerm_key_vault_access_policy.vault_nodes.secret_permissions, "List"),
+      !contains(azurerm_key_vault_access_policy.vault_nodes.secret_permissions, "Delete"),
+    ])
+    error_message = "Seal unwrap and CA read must stay separate grants, and the secret grant must be read-only."
+  }
+}
+
+run "the_boot_script_reaches_the_node_and_fits" {
+  # apply, not plan: custom_data embeds the load balancer's address, which
+  # is computed. During plan the whole rendered template is unknown and a
+  # condition on it errors whether the configuration is right or wrong --
+  # the trap that made an assertion in the AWS suite fail in every state
+  # until a mutation pass caught it.
+  command = apply
+
+  # The script travels inside custom_data rather than being fetched, so a
+  # node needs nothing reachable but Key Vault to issue its certificate,
+  # and the version that runs is the version this commit tested.
+  # Anchored to the start of a line, because strcontains matches a
+  # commented-out invocation exactly as well as a real one -- which it did,
+  # until a mutation pass commented the command out and nothing failed.
+  assert {
+    condition = alltrue([
+      length(regexall("(?m)^/usr/local/sbin/vault-bootstrap-cert", base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data))) > 0,
+      strcontains(base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data), "--cloud azure"),
+      strcontains(base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data), "--key-vault"),
+    ])
+    error_message = "cloud-init must invoke the bootstrap-cert script, not merely contain it: an invocation that is commented out still matches a substring search."
+  }
+
+  # Azure caps custom_data at 64 KB. The comment lines are stripped for
+  # this reason, and an assertion is cheaper than finding the ceiling at
+  # apply time, after the VNet is already billing -- which is how the AWS
+  # profile found its own 16 KB limit.
+  assert {
+    condition     = length(base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data)) < 49152
+    error_message = "Rendered cloud-init is within 16 KB of Azure's 64 KB custom_data ceiling; strip prose rather than raising this."
+  }
+
+  # Two shebangs: cloud-init's own and the embedded script's. Searching for
+  # one found cloud-init's whether or not the stripping had eaten the
+  # script's, which is how this assertion passed while a regex that removes
+  # every comment line -- shebang included -- was in place.
+  assert {
+    condition     = length(regexall("(?m)^#!/usr/bin/env bash", base64decode(azurerm_linux_virtual_machine_scale_set.vault.custom_data))) >= 2
+    error_message = "The embedded script lost its shebang to the comment stripping: the regex must spare #! lines."
+  }
+}

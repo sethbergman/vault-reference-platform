@@ -27,7 +27,13 @@
 #
 # DELIBERATE BEHAVIOURS
 #
-#   - It overwrites parameters Terraform created; it never creates them.
+#   - On Azure it CREATES the two secrets rather than overwriting
+#     Terraform's, because azurerm has no write-only argument for a
+#     secret's value: a Terraform-owned placeholder would carry the
+#     published key into state on the next refresh. They live in the
+#     cluster's own Key Vault and die with it. See the long note in
+#     scripts/issue-bootstrap-cert.sh.
+#   - On AWS it overwrites parameters Terraform created; it never creates them.
 #     Terraform owns their lifecycle, so a teardown removes them, and
 #     Terraform never holds the key: it wrote the placeholder as a
 #     write-only argument, so a refresh does not read the key back into
@@ -50,6 +56,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME=""
+CLOUD="aws"
+KEY_VAULT=""
+SECRET_PREFIX="bootstrap-ca"
 TLS_DIR="${REPO_ROOT}/ansible/files/tls"
 PREFIX=""
 REGION_ARGS=()
@@ -65,6 +74,9 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cluster-name) CLUSTER_NAME="$2"; shift 2 ;;
+        --cloud)        CLOUD="$2"; shift 2 ;;
+        --key-vault)    KEY_VAULT="$2"; shift 2 ;;
+        --secret-prefix) SECRET_PREFIX="$2"; shift 2 ;;
         --tls-dir)      TLS_DIR="$2"; shift 2 ;;
         --prefix)       PREFIX="${2%/}"; shift 2 ;;
         --region)       REGION_ARGS=(--region "$2"); shift 2 ;;
@@ -74,9 +86,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$CLUSTER_NAME" ]] || die "--cluster-name is required"
-[[ -n "$PREFIX" ]] || PREFIX="/${CLUSTER_NAME}/tls"
+case "$CLOUD" in
+    aws)
+        [[ -n "$PREFIX" ]] || PREFIX="/${CLUSTER_NAME}/tls"
+        REQUIRED_TOOLS=(openssl aws sha256sum)
+        ;;
+    azure)
+        [[ -n "$KEY_VAULT" ]] || die "--key-vault is required on azure (terraform output vault_autounseal_key_vault_name)"
+        REQUIRED_TOOLS=(openssl az sha256sum)
+        ;;
+    *) die "--cloud must be aws or azure, got: ${CLOUD}" ;;
+esac
 
-for tool in openssl aws sha256sum; do
+for tool in "${REQUIRED_TOOLS[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || die "${tool} is not on PATH"
 done
 
@@ -102,7 +124,59 @@ KEY_PUB="$(openssl pkey -in "${TLS_DIR}/ca.key" -pubout 2>/dev/null)" \
     || die "${TLS_DIR}/ca.key does not belong to ${TLS_DIR}/ca.crt"
 
 # ---------------------------------------------------------------------------
-# 2. The parameters Terraform created, and the key the secret one uses
+# 2. Publish, and read back
+# ---------------------------------------------------------------------------
+sum_local()  { sha256sum < "$1" | cut -d' ' -f1; }
+sum_remote() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
+
+if [[ "$CLOUD" == "azure" ]]; then
+    # Two secrets in the cluster's own Key Vault, created here rather than
+    # by Terraform: azurerm_key_vault_secret.value is required and read
+    # back on refresh, so a Terraform-owned placeholder would carry the
+    # published key into state on the next apply. See the note in
+    # scripts/issue-bootstrap-cert.sh. Destroying the vault destroys these
+    # with it, so nothing is orphaned by Terraform not owning them.
+    #
+    # --file, not --value: a PEM on a command line reaches the process
+    # table and any shell history in between.
+    CERT_SECRET="${SECRET_PREFIX}-crt"
+    KEY_SECRET="${SECRET_PREFIX}-key"
+
+    az keyvault show --name "$KEY_VAULT" --query name -o tsv >/dev/null 2>&1 \
+        || die "Key Vault ${KEY_VAULT} not found, or this identity cannot see it. Apply terraform/azure first."
+
+    log "Publishing the ${CLUSTER_NAME} bootstrap CA to Key Vault ${KEY_VAULT}..."
+
+    az keyvault secret set --vault-name "$KEY_VAULT" --name "$CERT_SECRET" \
+        --file "${TLS_DIR}/ca.crt" --content-type "application/x-pem-file" >/dev/null \
+        || die "Could not write secret ${CERT_SECRET}. The signed-in identity needs Set on secrets."
+    az keyvault secret set --vault-name "$KEY_VAULT" --name "$KEY_SECRET" \
+        --file "${TLS_DIR}/ca.key" --content-type "application/x-pem-file" >/dev/null \
+        || die "Could not write secret ${KEY_SECRET}. The signed-in identity needs Set on secrets."
+
+    # Read back rather than trust the write: a set that reports success
+    # and stores something else is the failure this repository is
+    # arranged around.
+    REMOTE_CERT="$(az keyvault secret show --vault-name "$KEY_VAULT" \
+        --name "$CERT_SECRET" --query value -o tsv)" || die "Could not read ${CERT_SECRET} back"
+    REMOTE_KEY="$(az keyvault secret show --vault-name "$KEY_VAULT" \
+        --name "$KEY_SECRET" --query value -o tsv)" || die "Could not read ${KEY_SECRET} back"
+
+    [[ "$(sum_remote "$REMOTE_CERT")" == "$(sum_local "${TLS_DIR}/ca.crt")" ]] \
+        || die "${CERT_SECRET} does not read back as ${TLS_DIR}/ca.crt"
+    [[ "$(sum_remote "$REMOTE_KEY")" == "$(sum_local "${TLS_DIR}/ca.key")" ]] \
+        || die "${KEY_SECRET} does not read back as ${TLS_DIR}/ca.key"
+    unset REMOTE_KEY
+
+    log "Published and read back: certificate $(sum_local "${TLS_DIR}/ca.crt" | cut -c1-12), key $(sum_local "${TLS_DIR}/ca.key" | cut -c1-12)."
+    log ""
+    log "Nodes launched from now on issue their own certificate at boot."
+    log "Nodes already running keep theirs; nothing on them changes."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 2a. AWS: the parameters Terraform created, and the key the secret one uses
 # ---------------------------------------------------------------------------
 KMS_KEY="$(aws ssm describe-parameters "${REGION_ARGS[@]}" \
     --parameter-filters "Key=Name,Values=${KEY_PARAM}" \
@@ -136,9 +210,6 @@ readback() {
     aws ssm get-parameter "${REGION_ARGS[@]}" --name "$1" "${@:2}" \
         --query Parameter.Value --output text
 }
-
-sum_local()  { sha256sum < "$1" | cut -d' ' -f1; }
-sum_remote() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
 
 REMOTE_CERT="$(readback "$CERT_PARAM")" || die "Could not read ${CERT_PARAM} back"
 REMOTE_KEY="$(readback "$KEY_PARAM" --with-decryption)" || die "Could not read ${KEY_PARAM} back"
