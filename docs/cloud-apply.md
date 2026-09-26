@@ -328,7 +328,7 @@ needs the bucket the bootstrap module creates, so a first run before
 bootstrap checks everything *except* whether the profile plans — and
 says so. Run it again after `init`, before the apply.
 
-Four failures it exists to catch, all of which cost money to discover
+The failures it exists to catch, all of which cost money to discover
 otherwise:
 
 | Check | Why it is worth catching early |
@@ -338,6 +338,9 @@ otherwise:
 | The key pair does not exist in this region | The apply fails at instance launch — after the VPC and NAT gateways are already billing. |
 | Elastic IP quota | One EIP per NAT gateway, one NAT gateway per AZ, default limit 5. Three zones plus anything already in the account can exceed it. |
 | Azure role assignment permission | The profile creates a role assignment, which needs Owner or User Access Administrator. Contributor applies most of the profile and *then* fails. |
+| The Azure subscription is not offered `vm_size` | `NotAvailableForSubscription` is about the subscription, not the region, and a `Location` restriction rules out every zone in it. The apply fails creating the scale set, after the VNet, NAT gateway, load balancer and Bastion are billing. A quota increase does not lift it. |
+| Azure vCPU quota, regionally and per family | Two separate ceilings. A fresh subscription gets 4 vCPUs for the whole region against a profile wanting 6, and several families capped at 0 — which looks like plenty of room right up to the request. |
+| Azure Standard public IP quota | The NAT gateway takes one and the Bastion takes one, and a fresh subscription is given three. A third goes to the load balancer if `internal_lb` is false. |
 
 The `ssh_key_name` one is not hypothetical: `terraform/aws/variables.tf`
 ships it empty, so the default AWS apply produces an unreachable cluster.
@@ -346,8 +349,40 @@ Reaching the nodes at all is worth reading before the session rather than
 during it — the nodes are in private subnets with no inbound 22, and the
 AWS inventory tunnels SSH through Session Manager to get to them. See
 [deployment.md](deployment.md#reaching-the-nodes) for what that needs.
-Azure's inventory does not tunnel, so reaching those nodes is still
-unsolved.
+Azure's inventory tunnels too, through `az network bastion tunnel` and
+`scripts/bastion-proxy.sh`; that path has sixteen shim assertions behind it
+and has never carried a connection to a real Bastion.
+
+### A fresh Azure subscription is the hostile case
+
+Preparing the Azure apply on 2026-09-25 found that a new subscription
+cannot run this profile at its defaults, and that none of it was visible
+until the pre-flight was taught to look:
+
+- **4 vCPUs for the whole region.** `node_count = 3` at the default
+  `Standard_B2s` wants 6.
+- **The B-series was `NotAvailableForSubscription`** in every region
+  checked — `Location` *and* `Zone` restrictions, so no zone was left to
+  try. `Standard_B1ms`, `Standard_A1_v2`, `Standard_F1s` and
+  `Standard_DS1_v2` were all restricted in `westus2`.
+- **Two VM families were capped at 0** while the regional total showed
+  headroom, which is why the two ceilings are checked separately.
+- **Three Standard public IPv4 addresses**, which is exactly enough for
+  the NAT gateway and the Bastion and nothing else.
+
+What fit was three nodes of `Standard_F1als_v7` in `westus2` — 1 vCPU and
+2 GiB each, zonal in 1, 2 and 3, premium disks supported, its family
+limit 4:
+
+```bash
+export TF_VAR_location=westus2 TF_VAR_vm_size=Standard_F1als_v7
+```
+
+Read those as an example of what to check, not as settings to copy: which
+sizes a subscription is offered varies by subscription and changes over
+time. The pre-flight reports the current answer for whatever `vm_size` and
+`location` are set, and fails rather than warns when the apply cannot
+succeed.
 
 ---
 

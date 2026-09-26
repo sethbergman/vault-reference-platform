@@ -12,6 +12,10 @@ if [[ "$ARGS" == *"account show"* ]]; then
         printf '%s\n' "${FAKE_AZ_USER:-preflight@example.com}"
         exit 0
     fi
+    if [[ "$ARGS" == *"--query id"* ]]; then
+        printf '%s\n' "${FAKE_AZ_SUB_ID:-00000000-1111-2222-3333-444444444444}"
+        exit 0
+    fi
     printf '{"name": "%s", "id": "%s"}\n' \
         "${FAKE_AZ_SUB_NAME:-Pay-As-You-Go}" \
         "${FAKE_AZ_SUB_ID:-00000000-1111-2222-3333-444444444444}"
@@ -31,9 +35,95 @@ if [[ "$ARGS" == *"extension show"* ]]; then
     exit 0
 fi
 
+if [[ "$ARGS" == *"ad signed-in-user show"* ]]; then
+    [[ "${FAKE_AZ_OID_RC:-0}" == "0" ]] || exit "${FAKE_AZ_OID_RC}"
+    printf '%s\n' "${FAKE_AZ_OID:-52448b5d-fee6-4109-a9d3-816b9a98899a}"
+    exit 0
+fi
+
 if [[ "$ARGS" == *"role assignment list"* ]]; then
-    [[ "${FAKE_AZ_ROLE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ROLE_RC}"
-    printf '%s\n' "${FAKE_AZ_ROLES:-Contributor}"
+    # Note the order: --assignee-object-id contains --assignee, so the
+    # narrower spelling has to be tested first.
+    if [[ "$ARGS" == *"--assignee-object-id"* ]]; then
+        [[ "${FAKE_AZ_ROLE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ROLE_RC}"
+        printf '%s\n' "${FAKE_AZ_ROLES:-Owner}"
+        exit 0
+    fi
+    if [[ "$ARGS" == *"--assignee"* ]]; then
+        # What the real CLI does when handed a sign-in name rather than a
+        # directory name, which is every guest identity. The shim used to
+        # answer this happily, which is why the suite passed while the
+        # check could not succeed on a real account.
+        echo "ERROR: Cannot find user or service principal in graph database for 'preflight@example.com'." >&2
+        exit 1
+    fi
+fi
+
+# --- quota and SKU availability -------------------------------------------
+# The three az rest queries are told apart by what they ask for, since
+# implementing JMESPath here would be implementing the thing under test.
+if [[ "$ARGS" == *"Microsoft.Compute/skus"* ]]; then
+    # An unknown size returns an empty selection from all three queries,
+    # exactly as the API does.
+    if [[ -z "${FAKE_AZ_SKU_FAMILY-StandardFalsv7Family}" ]]; then
+        exit 0
+    fi
+    if [[ "$ARGS" == *"family, restrictions"* ]]; then
+        # Two lines: the family, then the restrictions. az prints an empty
+        # line for the null second field rather than omitting it.
+        printf '%s\n' "${FAKE_AZ_SKU_FAMILY-StandardFalsv7Family}"
+        printf '%s\n' "${FAKE_AZ_SKU_RESTRICTIONS:-}"
+        exit 0
+    fi
+    if [[ "$ARGS" == *"locationInfo[0].zones"* ]]; then
+        # A plain array, so one zone per line -- not tab-separated. And
+        # not in order: the real API returned 1, 3, 2.
+        # shellcheck disable=SC2086  # word splitting is how one zone per line happens
+        printf '%s\n' ${FAKE_AZ_SKU_ZONES-1 3 2}
+        exit 0
+    fi
+    if [[ "$ARGS" == *"capabilities[].[name,value]"* ]]; then
+        # Self-labelling, and deliberately not in the order the script
+        # reads them.
+        printf 'MaxResourceVolumeMB\t0\n'
+        printf 'PremiumIO\t%s\n' "${FAKE_AZ_SKU_PREMIUM:-True}"
+        printf 'MemoryGB\t2\n'
+        printf 'vCPUs\t%s\n' "${FAKE_AZ_SKU_VCPUS:-1}"
+        printf 'CpuArchitectureType\tx64\n'
+        exit 0
+    fi
+    exit 0
+fi
+
+if [[ "$ARGS" == *"vm list-usage"* ]]; then
+    [[ "${FAKE_AZ_VM_USAGE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_VM_USAGE_RC}"
+    # Decoys first, and every one of them a row a careless match would
+    # take instead: lowPriorityCores contains "cores", and two families
+    # sit at a limit of 0.
+    printf 'lowPriorityCores\t0\t99\n'
+    printf 'cores\t%s\t%s\n' "${FAKE_AZ_CORES_USED:-0}" "${FAKE_AZ_CORES_LIMIT:-4}"
+    printf 'standardBSFamily\t0\t99\n'
+    printf 'standardHBSFamily\t0\t0\n'
+    # Spelled in a different case from the SKU's own `family`, which is
+    # how Azure returns it: standardBSFamily beside StandardFalsv7Family.
+    printf '%s\t%s\t%s\n' \
+        "$(tr '[:upper:]' '[:lower:]' <<< "${FAKE_AZ_SKU_FAMILY-StandardFalsv7Family}")" \
+        "${FAKE_AZ_FAMILY_USED:-0}" "${FAKE_AZ_FAMILY_LIMIT:-4}"
+    exit 0
+fi
+
+if [[ "$ARGS" == *"network list-usages"* ]]; then
+    [[ "${FAKE_AZ_NET_USAGE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_NET_USAGE_RC}"
+    # PublicIPAddresses is the total across SKUs and is not the ceiling
+    # the profile hits. It is given a roomy limit here so that reading it
+    # instead of the Standard row shows up as a pass where the answer
+    # should be a failure.
+    printf 'PublicIpPrefixes\t0\t2147483647\n'
+    printf 'PublicIPAddresses\t0\t99\n'
+    printf 'IPv4BasicSkuPublicIpAddresses\t0\t0\n'
+    printf 'IPv4StandardSkuPublicIpAddresses\t%s\t%s\n' \
+        "${FAKE_AZ_IP_USED:-0}" "${FAKE_AZ_IP_LIMIT:-3}"
+    printf 'IPv6StandardSkuPublicIpAddresses\t0\t3\n'
     exit 0
 fi
 
