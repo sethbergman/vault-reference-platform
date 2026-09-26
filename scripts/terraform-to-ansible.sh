@@ -225,6 +225,28 @@ EOF
         ;;
 esac
 
+# The Bastion host, for scripts/bastion-proxy.sh. Written here rather than
+# typed into the inventory because the name is Terraform's to know: the
+# inventory would go stale the moment a cluster is rebuilt under a
+# different name, and it would go stale silently -- every host would fail
+# to connect, which reads as a broken tunnel rather than a wrong name.
+if [[ "$CLOUD" == "azure" ]]; then
+    BASTION_NAME="$(jq -r '.bastion_name.value // ""' <<< "$OUTPUTS")"
+    BASTION_RG="$(jq -r '.bastion_resource_group.value // ""' <<< "$OUTPUTS")"
+    if [[ -n "$BASTION_NAME" ]]; then
+        {
+            echo ""
+            echo "# Azure Bastion, read by scripts/bastion-proxy.sh through the"
+            echo "# inventory's ProxyCommand. See terraform/azure/bastion.tf."
+            echo "vault_bastion_name: \"${BASTION_NAME}\""
+            echo "vault_bastion_resource_group: \"${BASTION_RG}\""
+        } >> "$OUTPUT"
+    else
+        log "No bastion in the outputs (bastion_enabled = false)."
+        log "  The inventory cannot reach these nodes unless you have another route into the VNet."
+    fi
+fi
+
 log "Wrote ${OUTPUT}"
 log ""
 log "Then run the playbook against the discovered nodes:"

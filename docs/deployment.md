@@ -482,6 +482,50 @@ platform, which is why the command above exists. Committing an
 init-generated lock is the usual way this gets broken: it works locally
 and then fails everywhere else.
 
+## Reaching the Azure nodes
+
+Azure Bastion, and one wrapper script, because the two clouds differ in a
+way that matters here.
+
+`aws ssm start-session` speaks the session on its own stdin and stdout, so
+`ansible/inventory/aws_ec2.yml` names it directly as a `ProxyCommand`.
+`az network bastion tunnel` does not: it opens a local TCP port and keeps
+running. That is a daemon, not a proxy, and SSH cannot use it as one.
+
+[`scripts/bastion-proxy.sh`](../scripts/bastion-proxy.sh) closes the gap.
+Per connection it picks a free local port, starts the tunnel on it, waits
+for the port to accept a connection, relays stdin and stdout to it, and
+kills the tunnel on the way out. Each of those four is load-bearing:
+
+- **A free port, not a fixed one.** Ansible opens several connections at
+  once, and a fixed port makes every one after the first either fail to
+  bind or reach whichever node bound first.
+- **Waiting, not sleeping.** A cold Bastion takes seconds. A fixed sleep
+  is either too short — SSH is handed a socket nobody is listening on, and
+  the tunnel is blamed for being broken rather than slow — or wasted on
+  every connection after it.
+- **Killing the tunnel.** An `az` left running holds a port and a Bastion
+  session. A three-node playbook leaks three per run, invisibly, until a
+  later run cannot bind. The relay therefore runs in the foreground: under
+  `exec` the shell is replaced and its `EXIT` trap never fires, which is
+  how the first version of the script leaked.
+- **stderr for messages, stdout for the session.** SSH is reading stdout;
+  a stray log line there is protocol data, and the failure looks like a
+  corrupt banner rather than a message.
+
+You need `az login` in the shell running the playbook, not just Terraform
+credentials, and the Bastion's name and resource group in `group_vars` —
+`terraform-to-ansible.sh` writes both from the Terraform outputs.
+
+Reaching them another way (a VPN, ExpressRoute, your own jump host) is
+`bastion_enabled = false`, plus pointing `ansible_host` back at
+`private_ipv4_addresses[0]` and dropping `ansible_ssh_common_args`.
+
+**None of this has been applied.** `terraform/azure` has never run against
+a real subscription; the script is covered by `tests/bastion-proxy`
+against a fake `az`, which proves what it issues and nothing about what
+Azure does with it.
+
 ## Two things the AWS inventory needs
 
 Both cost time on 2026-09-24, and neither failure names itself.

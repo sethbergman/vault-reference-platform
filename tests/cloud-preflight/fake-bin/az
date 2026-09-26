@@ -18,6 +18,19 @@ if [[ "$ARGS" == *"account show"* ]]; then
     exit 0
 fi
 
+# `az network bastion tunnel` lives in this extension, so the pre-flight
+# checks for it. Installed by default here: a scenario that wants it
+# missing sets FAKE_AZ_BASTION_EXT=absent, which is what a fresh az looks
+# like (azure-cli 2.90.0 ships no extensions at all).
+if [[ "$ARGS" == *"extension show"* ]]; then
+    if [[ "${FAKE_AZ_BASTION_EXT:-installed}" == "absent" ]]; then
+        echo "ERROR: The extension bastion is not installed." >&2
+        exit 1
+    fi
+    printf 'bastion\n'
+    exit 0
+fi
+
 if [[ "$ARGS" == *"role assignment list"* ]]; then
     [[ "${FAKE_AZ_ROLE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ROLE_RC}"
     printf '%s\n' "${FAKE_AZ_ROLES:-Contributor}"

@@ -241,6 +241,11 @@ only surfaces under `apply`.
 | `cluster.tftest.hcl` | Scale set pinning, zones, repair, probe, LB, node_count validation, Raft discovery |
 | `security.tftest.hcl` | Key Vault purge protection and naming, NSG scope and rule order, storage exposure, TLS, flow logs |
 | `mocks/azure/` | Shared provider mocks, referenced by both files via `source` |
+| Bastion set to the Basic SKU | `bastion_can_tunnel_or_it_is_only_a_browser_session` |
+| `tunneling_enabled` left off | `bastion_can_tunnel_or_it_is_only_a_browser_session` |
+| SSH allowed from `VirtualNetwork` rather than the Bastion subnet | `bastion_reaches_the_nodes_and_nothing_else_does` |
+| The SSH rule left behind when `bastion_enabled = false` | `turning_the_bastion_off_removes_all_of_it` |
+| The Bastion host kept when `bastion_enabled = false` | `turning_the_bastion_off_removes_all_of_it` |
 
 There is no `setup.tftest.hcl` here, unlike the AWS suite — the shipped
 defaults are asserted inline instead. Worth adding one if the default

@@ -45,9 +45,32 @@ exclude_host_filters:
   # otherwise appear as unreachable hosts and fail the run.
   - "powerstate != 'running'"
 
-# Private addresses only, matching the AWS profile: nodes have no public
-# IP, so reaching them needs a bastion, VPN, or Azure Bastion.
+# Nodes have no public IP and 22 is open only from the Bastion subnet
+# (terraform/azure/bastion.tf), so every connection goes through
+# `az network bastion tunnel`.
 plain_host_names: true
 
 hostvar_expressions:
-  ansible_host: private_ipv4_addresses[0]
+  # The resource id, not an address. Bastion addresses a target by resource
+  # id, and SSH passes %h to the ProxyCommand untouched, so this is what the
+  # tunnel needs. aws_ec2.yml plays the same trick with the instance id, for
+  # the same reason: what SSH would resolve is not what the tunnel takes.
+  #
+  # Reaching these nodes another way (bastion_enabled = false, plus a VPN or
+  # your own jump host): set this back to private_ipv4_addresses[0] and drop
+  # ansible_ssh_common_args below.
+  ansible_host: id
+  ansible_user: "'azureuser'"
+
+# scripts/bastion-proxy.sh wraps the tunnel into a ProxyCommand, because
+# `az network bastion tunnel` opens a local port and keeps running rather
+# than speaking stdio the way `aws ssm start-session` does. The two names
+# come from group_vars, written by terraform-to-ansible.sh from the
+# Terraform outputs -- typing them here would go stale the moment a cluster
+# is rebuilt, and would go stale silently.
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=accept-new
+  -o ProxyCommand="{{ playbook_dir }}/../scripts/bastion-proxy.sh
+  --target-resource-id %h --resource-port %p
+  --bastion-name {{ vault_bastion_name }}
+  --resource-group {{ vault_bastion_resource_group }}"

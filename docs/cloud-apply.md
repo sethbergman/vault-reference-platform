@@ -489,13 +489,38 @@ terraform -chdir=terraform/azure/bootstrap output -raw backend_config \
 terraform -chdir=terraform/azure init -backend-config=backend.hcl
 terraform -chdir=terraform/azure apply \
     -var "ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)"
-./scripts/terraform-to-ansible.sh --cloud azure  # outputs -> group_vars
-cd ansible && ansible-playbook -i inventory/azure_rm.yml playbooks/site.yml
+
+# Writes group_vars, including the Bastion's name and resource group --
+# which is what the inventory's ProxyCommand reads. Without this step
+# every connection fails on an undefined variable.
+./scripts/terraform-to-ansible.sh --cloud azure
+
+# Every connection tunnels through Azure Bastion: the nodes have no
+# public address and 22 is open from the Bastion subnet alone. Needs
+# `az login` in this shell, not just Terraform credentials.
+cd ansible && ansible-playbook -i inventory/azure_rm.yml \
+    --private-key ~/.ssh/id_ed25519 playbooks/site.yml
+cd ..
+
+# Vault ships cleanup_dead_servers = false, so a reconciled instance
+# stays a voter forever. Once per cluster; see rolling-upgrades.md.
+./scripts/configure-autopilot.sh
 ```
 
 `ssh_public_key` has no default and Azure will not create a Linux scale
 set without either a key or a password, so this profile cannot produce
 the unreachable cluster its AWS counterpart can.
+
+Until 2026-09-25 it produced a differently unreachable one: the nodes have
+no public address, and nothing routed to them. The inventory resolved a
+private IP with no path to it, so the playbook could not run from outside
+the VNet and a node that failed to start could not be looked at.
+`terraform/azure/bastion.tf` adds the way in — Azure Bastion, Standard
+SKU, tunnelling enabled, with 22 open to the nodes from the Bastion subnet
+alone — and `scripts/bastion-proxy.sh` wraps it into a ProxyCommand. It
+costs about $0.19/hour and is on by default, on the grounds that an apply
+producing a cluster nobody can configure is the more expensive mistake.
+None of it has been applied.
 
 `terraform/aws/audit-anchors` is a third root module, applied the same
 way and equally once — but only if you want the audit anchors shipped off

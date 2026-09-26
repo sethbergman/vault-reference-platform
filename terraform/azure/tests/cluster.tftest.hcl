@@ -11,6 +11,23 @@ mock_provider "azurerm" {
 
 mock_provider "random" {}
 
+# The azurerm provider reads the subnet NAME out of the subnet id and
+# rejects a Bastion host whose subnet is called anything but
+# AzureBastionSubnet -- at plan time, before any API call. Mocked ids are
+# random strings, so without this every run that plans the configuration
+# fails on a rule the configuration actually satisfies.
+#
+# Only the id is overridden. The assertion that the subnet is named
+# correctly (security.tftest.hcl) reads the resource's own name argument,
+# which this does not touch.
+override_resource {
+  target = azurerm_subnet.bastion[0]
+  values = {
+    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/mock/providers/Microsoft.Network/virtualNetworks/mock/subnets/AzureBastionSubnet"
+  }
+}
+
+
 variables {
   # A throwaway keypair generated for these tests and discarded — the
   # provider parses this field, so a placeholder string fails with

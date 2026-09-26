@@ -9,6 +9,23 @@ mock_provider "azurerm" {
 
 mock_provider "random" {}
 
+# The azurerm provider reads the subnet NAME out of the subnet id and
+# rejects a Bastion host whose subnet is called anything but
+# AzureBastionSubnet -- at plan time, before any API call. Mocked ids are
+# random strings, so without this every run that plans the configuration
+# fails on a rule the configuration actually satisfies.
+#
+# Only the id is overridden. The assertion that the subnet is named
+# correctly (security.tftest.hcl) reads the resource's own name argument,
+# which this does not touch.
+override_resource {
+  target = azurerm_subnet.bastion[0]
+  values = {
+    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/mock/providers/Microsoft.Network/virtualNetworks/mock/subnets/AzureBastionSubnet"
+  }
+}
+
+
 variables {
   # See the note in cluster.tftest.hcl — a throwaway key, since the
   # provider parses this field.
@@ -238,5 +255,80 @@ run "flow_logs_are_enabled" {
   assert {
     condition     = azurerm_network_watcher_flow_log.vault.retention_policy[0].enabled == true
     error_message = "Flow log retention must be enabled or logs are discarded immediately."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Reaching the nodes, without opening them
+# ---------------------------------------------------------------------------
+
+run "bastion_can_tunnel_or_it_is_only_a_browser_session" {
+  command = plan
+
+  # Tunnelling is a Standard SKU feature and the only reason this host is
+  # here: Basic gives a browser session, which no playbook can drive. A
+  # Bastion that cannot tunnel leaves the profile exactly as unreachable as
+  # it was before, while billing about $0.19/hour -- the most expensive way
+  # possible to change nothing.
+  assert {
+    condition = (
+      azurerm_bastion_host.vault[0].sku == "Standard" &&
+      azurerm_bastion_host.vault[0].tunneling_enabled == true
+    )
+    error_message = "Bastion must be Standard with tunneling_enabled: Basic cannot tunnel, so ansible cannot reach a node through it."
+  }
+
+  # Azure rejects the host outright if its subnet is named anything else.
+  # Worth pinning because the error arrives at apply time, after the VNet
+  # and the NAT gateway are already billing.
+  assert {
+    condition     = azurerm_subnet.bastion[0].name == "AzureBastionSubnet"
+    error_message = "The Bastion subnet must be named AzureBastionSubnet; Azure refuses any other name."
+  }
+}
+
+run "bastion_reaches_the_nodes_and_nothing_else_does" {
+  command = plan
+
+  # 22 comes from the Bastion subnet, not from the VNet. The difference is
+  # every other workload in the address space: with a VirtualNetwork source
+  # a compromised container three subnets away can reach sshd on a Vault
+  # node, and the rule still reads as "SSH is locked down".
+  assert {
+    condition = (
+      azurerm_network_security_rule.bastion_ssh[0].source_address_prefix == cidrsubnet(var.vnet_cidr, 8, 2) &&
+      azurerm_network_security_rule.bastion_ssh[0].destination_port_range == "22" &&
+      azurerm_network_security_rule.bastion_ssh[0].access == "Allow"
+    )
+    error_message = "SSH must be allowed from the Bastion subnet prefix alone, not from the VNet or anywhere wider."
+  }
+
+  # The deny-all rule still has to sit below it, or the allow is decoration.
+  assert {
+    condition = (
+      azurerm_network_security_rule.bastion_ssh[0].priority < azurerm_network_security_rule.deny_all_inbound.priority
+    )
+    error_message = "The Bastion SSH rule must have a lower priority number than deny_all_inbound, or it never applies."
+  }
+}
+
+run "turning_the_bastion_off_removes_all_of_it" {
+  command = plan
+
+  variables {
+    bastion_enabled = false
+  }
+
+  # Off means off: no host, no public address, and no SSH rule left behind
+  # pointing at a subnet that no longer exists. A stranded allow-rule is the
+  # kind of leftover that reads as harmless and is not.
+  assert {
+    condition = (
+      length(azurerm_bastion_host.vault) == 0 &&
+      length(azurerm_public_ip.bastion) == 0 &&
+      length(azurerm_subnet.bastion) == 0 &&
+      length(azurerm_network_security_rule.bastion_ssh) == 0
+    )
+    error_message = "bastion_enabled = false must remove the host, its subnet, its public IP and the SSH rule together."
   }
 }

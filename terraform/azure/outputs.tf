@@ -52,3 +52,13 @@ output "subscription_id" {
   description = "Subscription the cluster is deployed in. Raft auto-join requires it explicitly; go-discover has no MSI fallback for this one value."
   value       = data.azurerm_client_config.current.subscription_id
 }
+
+output "bastion_name" {
+  description = "Azure Bastion host carrying SSH to the nodes; empty when bastion_enabled is false."
+  value       = var.bastion_enabled ? azurerm_bastion_host.vault[0].name : ""
+}
+
+output "bastion_resource_group" {
+  description = "Resource group the Bastion host lives in; empty when bastion_enabled is false."
+  value       = var.bastion_enabled ? azurerm_resource_group.vault.name : ""
+}

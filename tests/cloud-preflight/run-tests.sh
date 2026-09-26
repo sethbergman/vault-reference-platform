@@ -87,6 +87,7 @@ reset_scenario() {
     export FAKE_AWS_DeleteMarkers_PAGES=0
 
     export FAKE_AZ_ACCOUNT_RC=0
+    export FAKE_AZ_BASTION_EXT=installed
     export FAKE_AZ_ROLE_RC=0
     export FAKE_AZ_ROLES="Contributor"
 
@@ -459,11 +460,55 @@ fi
 # with an escape sequence rather than whitespace. Matching the VM count
 # through to the marker is what makes this about the line rather than
 # about the marker existing somewhere.
-if grep -qE '[0-9]+ VM\(s\).*largest line' <<< "$OUT"; then
-    ok "and marks the VMs as the largest line, not the NAT"
+# This asserted the VMs were the largest line until 2026-09-25, when
+# bastion.tf added a Standard Bastion at about $140/month -- more than
+# three B2s VMs and four times the NAT gateway. The marker moved because
+# the profile changed, not because the assertion was wrong; what it is
+# for is unchanged, which is that the reader's eye lands on the line worth
+# cutting rather than on the one they cannot cut.
+if grep -qE 'Azure Bastion.*largest line' <<< "$OUT"; then
+    ok "and marks the Bastion as the largest line, not the NAT or the VMs"
 else
-    bad "and marks the VMs as the largest line, not the NAT" \
+    bad "and marks the Bastion as the largest line, not the NAT or the VMs" \
         "$(grep -i 'largest line' <<< "$OUT" || true)"
+fi
+
+printf '
+=== Pre-flight: the extension the tunnel lives in ===
+'
+# ansible/inventory/azure_rm.yml reaches every node through
+# `az network bastion tunnel`, which lives in the bastion extension rather
+# than in core az -- azure-cli 2.90.0 ships with no extensions at all.
+# Missing, every connection fails after the apply has built and started
+# billing for everything, and az's own answer is to install it mid-command,
+# which cannot work inside a ProxyCommand: no tty to confirm on, and
+# parallel connections racing to install the same thing.
+reset_scenario
+export FAKE_AZ_BASTION_EXT=absent
+run_preflight --cloud azure
+if [[ "$RC" != "0" ]]; then
+    ok "a missing bastion extension fails the pre-flight"
+else
+    bad "a missing bastion extension fails the pre-flight" "exit was 0"
+fi
+if grep -q 'az extension add --name bastion' <<< "$OUT"; then
+    ok "and gives the command that fixes it"
+else
+    bad "and gives the command that fixes it" "$(grep -i bastion <<< "$OUT" | head -2)"
+fi
+if grep -q 'azure_rm.yml' <<< "$OUT"; then
+    ok "and names what needs it"
+else
+    bad "and names what needs it" "no mention of the inventory that depends on the tunnel"
+fi
+
+reset_scenario
+run_preflight --cloud azure
+if grep -q 'the az bastion extension is installed' <<< "$OUT"; then
+    ok "an installed extension is reported rather than passed over in silence"
+else
+    bad "an installed extension is reported rather than passed over in silence" \
+        "$(grep -i extension <<< "$OUT" | head -2)"
 fi
 
 # --az-count drives the AWS EIP check, so the flag stays -- but it must say
