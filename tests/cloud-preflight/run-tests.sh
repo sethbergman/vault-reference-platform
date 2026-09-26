@@ -89,13 +89,37 @@ reset_scenario() {
     export FAKE_AZ_ACCOUNT_RC=0
     export FAKE_AZ_BASTION_EXT=installed
     export FAKE_AZ_ROLE_RC=0
-    export FAKE_AZ_ROLES="Contributor"
+    export FAKE_AZ_OID_RC=0
+    export FAKE_AZ_OID="52448b5d-fee6-4109-a9d3-816b9a98899a"
+    # Owner, not Contributor. The default scenario should be a subscription
+    # that can run the profile, so that a case which changes one thing is
+    # testing that thing rather than inheriting a second failure.
+    export FAKE_AZ_ROLES="Owner"
+
+    # A fresh subscription in westus2 on 2026-09-25, which is where these
+    # numbers come from: 4 vCPUs regionally, 4 in the family, 3 Standard
+    # public IPs, and the one small size it was offered without a
+    # restriction.
+    export FAKE_AZ_SKU_FAMILY="StandardFalsv7Family"
+    export FAKE_AZ_SKU_RESTRICTIONS=""
+    export FAKE_AZ_SKU_ZONES="1 3 2"
+    export FAKE_AZ_SKU_VCPUS=1
+    export FAKE_AZ_SKU_PREMIUM=True
+    export FAKE_AZ_CORES_USED=0
+    export FAKE_AZ_CORES_LIMIT=4
+    export FAKE_AZ_FAMILY_USED=0
+    export FAKE_AZ_FAMILY_LIMIT=4
+    export FAKE_AZ_IP_USED=0
+    export FAKE_AZ_IP_LIMIT=3
+    export FAKE_AZ_VM_USAGE_RC=0
+    export FAKE_AZ_NET_USAGE_RC=0
 
     # The pre-flight reads these now, so one leaking out of a case -- or
     # out of the shell of whoever runs the suite, who may well be mid-apply
     # -- would decide cases that never set it.
     unset TF_VAR_ssh_key_name TF_VAR_az_count TF_VAR_node_count \
-          TF_VAR_vm_size TF_VAR_os_disk_size_gb
+          TF_VAR_vm_size TF_VAR_os_disk_size_gb TF_VAR_location \
+          TF_VAR_internal_lb TF_VAR_availability_zones
 }
 
 # run_preflight <args...>
@@ -599,13 +623,30 @@ fi
 
 printf '\n=== Pre-flight: Azure permissions ===\n'
 
+# --assignee takes the name the directory holds, and a guest identity's
+# sign-in name is not it: someone@outlook.com is stored as
+# someone_outlook.com#EXT#@tenant.onmicrosoft.com, so the lookup fails
+# outright. The old check swallowed that error and warned "could not
+# confirm" on an account holding Owner twice -- and warned identically on
+# a Contributor, so it could not tell the two apart. The shim answered the
+# old spelling happily, which is why this suite passed throughout.
+reset_scenario
+run_preflight --cloud azure
+if logged "--assignee-object-id" && ! grep -qE 'role assignment list --assignee ' "$FAKE_LOG"; then
+    ok "roles are looked up by object id, never by the sign-in name"
+else
+    bad "roles are looked up by object id, never by the sign-in name" \
+        "$(grep 'role assignment' "$FAKE_LOG" || true)"
+fi
+
 reset_scenario
 export FAKE_AZ_ROLES="Contributor"
 run_preflight --cloud azure
-if grep -q "could not confirm Owner" <<< "$OUT"; then
-    ok "Contributor alone is flagged"
+if grep -q "has neither Owner nor User Access Administrator" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "Contributor alone fails, and the exit code says so"
 else
-    bad "Contributor alone is flagged" "the role assignment fails late and confusingly"
+    bad "Contributor alone fails, and the exit code says so" \
+        "exit ${RC}; the role assignment fails late and confusingly"
 fi
 
 reset_scenario
@@ -615,6 +656,210 @@ if grep -q "can create role assignments" <<< "$OUT"; then
     ok "Owner passes"
 else
     bad "Owner passes"
+fi
+
+# The three outcomes have to stay apart. Both of these are "not checked",
+# which is a warning; only a successful read returning neither role is a
+# failure. Collapsing them is what made the old check useless.
+reset_scenario
+export FAKE_AZ_OID_RC=1
+run_preflight --cloud azure
+if grep -q "could not resolve the signed-in identity's object id" <<< "$OUT" \
+    && ! grep -q "has neither Owner" <<< "$OUT"; then
+    ok "an identity that cannot be resolved is unchecked, not condemned"
+else
+    bad "an identity that cannot be resolved is unchecked, not condemned"
+fi
+
+reset_scenario
+export FAKE_AZ_ROLE_RC=1
+run_preflight --cloud azure
+if grep -q "could not read the signed-in identity's role assignments" <<< "$OUT" \
+    && ! grep -q "has neither Owner" <<< "$OUT"; then
+    ok "role assignments that cannot be read are unchecked, not condemned"
+else
+    bad "role assignments that cannot be read are unchecked, not condemned"
+fi
+
+printf '\n=== Pre-flight: Azure quota and SKU availability ===\n'
+
+# This whole section reported nothing before: the block under the "Quota
+# that bites" heading was guarded `if [[ "$CLOUD" == "aws" ]]`, so a
+# subscription that could not run the profile at any size passed the
+# pre-flight and failed the apply twenty minutes in, with the VNet, NAT
+# gateway, load balancer and Bastion already billing. Every case below is
+# a state a real subscription was in on 2026-09-25.
+
+reset_scenario
+run_preflight --cloud azure
+if grep -q "is offered to this subscription" <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "a size the subscription can have passes"
+else
+    bad "a size the subscription can have passes" "exit ${RC}"
+fi
+
+# az vm list-skus filters client-side: it downloads every SKU in every
+# region and took 6m15s against a real subscription, even with --size
+# naming one. A pre-flight nobody waits for is a pre-flight nobody runs.
+reset_scenario
+run_preflight --cloud azure
+if logged "Microsoft.Compute/skus" && ! logged "vm list-skus"; then
+    ok "SKUs are read through the filtered API, not by downloading all of them"
+else
+    bad "SKUs are read through the filtered API, not by downloading all of them" \
+        "$(grep -c . "$FAKE_LOG") az calls logged"
+fi
+
+reset_scenario
+export FAKE_AZ_SKU_RESTRICTIONS=$'Location:NotAvailableForSubscription\tZone:NotAvailableForSubscription'
+run_preflight --cloud azure
+if grep -q "is restricted in" <<< "$OUT" \
+    && grep -q "NotAvailableForSubscription" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a restricted size fails before anything is created"
+else
+    bad "a restricted size fails before anything is created" "exit ${RC}"
+fi
+
+# Both restriction types are worth printing: Location rules out every zone
+# in the region, Zone leaves the others. Naming only the reason code would
+# not tell them apart, and both say NotAvailableForSubscription.
+reset_scenario
+export FAKE_AZ_SKU_RESTRICTIONS=$'Location:NotAvailableForSubscription\tZone:NotAvailableForSubscription'
+run_preflight --cloud azure
+if grep -q "Location:NotAvailableForSubscription" <<< "$OUT" \
+    && grep -q "Zone:NotAvailableForSubscription" <<< "$OUT"; then
+    ok "and says which kind of restriction it is"
+else
+    bad "and says which kind of restriction it is" \
+        "$(grep 'restricted' <<< "$OUT" || true)"
+fi
+
+reset_scenario
+export FAKE_AZ_SKU_FAMILY=""
+run_preflight --cloud azure
+if grep -q "is not offered" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a size the subscription has never been offered fails"
+else
+    bad "a size the subscription has never been offered fails" "exit ${RC}"
+fi
+
+# The exact arithmetic that blocked 2026-09-25: three nodes at 2 vCPUs
+# against a fresh subscription's regional limit of 4.
+reset_scenario
+export TF_VAR_vm_size=Standard_B2s
+export FAKE_AZ_SKU_VCPUS=2
+export FAKE_AZ_CORES_LIMIT=4
+run_preflight --cloud azure
+if grep -q "needs 6 vCPUs" <<< "$OUT" \
+    && grep -q "total regional vCPUs" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "three nodes needing 6 vCPUs against a regional limit of 4 fails"
+else
+    bad "three nodes needing 6 vCPUs against a regional limit of 4 fails" \
+        "exit ${RC}; $(grep -i vcpu <<< "$OUT" || true)"
+fi
+
+# The reason the family limit is checked separately. Regional headroom of
+# 99 says there is plenty of room, and the apply still cannot have any.
+reset_scenario
+export FAKE_AZ_CORES_LIMIT=99
+export FAKE_AZ_FAMILY_LIMIT=0
+run_preflight --cloud azure
+if grep -q "StandardFalsv7Family vCPUs" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a family capped at 0 fails even with regional headroom to spare"
+else
+    bad "a family capped at 0 fails even with regional headroom to spare" \
+        "exit ${RC}; $(grep -i family <<< "$OUT" || true)"
+fi
+
+# The family row comes back in a different case from the SKU's own
+# `family` field -- standardBSFamily beside StandardFalsv7Family -- so the
+# match has to ignore case or it silently checks nothing and warns.
+reset_scenario
+export FAKE_AZ_FAMILY_LIMIT=0
+run_preflight --cloud azure
+if ! grep -q "could not read StandardFalsv7Family" <<< "$OUT"; then
+    ok "the family quota row is matched regardless of case"
+else
+    bad "the family quota row is matched regardless of case" \
+        "it fell through to the could-not-read branch and warned instead of failing"
+fi
+
+reset_scenario
+export FAKE_AZ_IP_LIMIT=1
+run_preflight --cloud azure
+if grep -q "Standard public IPs" <<< "$OUT" && grep -q "2 needed" <<< "$OUT" \
+    && [[ "$RC" != "0" ]]; then
+    ok "one free Standard public IP fails: the NAT gateway and the Bastion need two"
+else
+    bad "one free Standard public IP fails: the NAT gateway and the Bastion need two" \
+        "exit ${RC}; $(grep -i 'public ip' <<< "$OUT" || true)"
+fi
+
+# internal_lb defaults true, so azurerm_public_ip.lb has count 0 and the
+# apply needs two addresses. Flipping it adds a third, and a limit of 2
+# that passed a moment ago must now fail -- which is the only way to show
+# the number is computed rather than written down.
+reset_scenario
+export FAKE_AZ_IP_LIMIT=2
+run_preflight --cloud azure
+RC_INTERNAL="$RC"
+reset_scenario
+export FAKE_AZ_IP_LIMIT=2
+export TF_VAR_internal_lb=false
+run_preflight --cloud azure
+if [[ "$RC_INTERNAL" == "0" && "$RC" != "0" ]] && grep -q "3 needed" <<< "$OUT"; then
+    ok "an internet-facing load balancer needs a third address, and that is counted"
+else
+    bad "an internet-facing load balancer needs a third address, and that is counted" \
+        "internal exit ${RC_INTERNAL}, public exit ${RC}"
+fi
+
+reset_scenario
+export FAKE_AZ_SKU_ZONES=""
+run_preflight --cloud azure
+if grep -q "no availability zone" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a size with no zones in the region fails: zone_balance cannot be satisfied"
+else
+    bad "a size with no zones in the region fails" "exit ${RC}"
+fi
+
+reset_scenario
+export FAKE_AZ_SKU_ZONES="1"
+run_preflight --cloud azure
+if grep -q "only 1 zone" <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "fewer zones than the profile pins is a warning, not a failure"
+else
+    bad "fewer zones than the profile pins is a warning, not a failure" "exit ${RC}"
+fi
+
+reset_scenario
+export FAKE_AZ_SKU_PREMIUM=False
+run_preflight --cloud azure
+if grep -q "does not support premium storage" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a size without premium storage fails: os_disk is Premium_LRS"
+else
+    bad "a size without premium storage fails: os_disk is Premium_LRS" "exit ${RC}"
+fi
+
+# A quota call that fails is not a quota that is short. Reporting the
+# second for the first sends the reader to raise a limit that is fine.
+reset_scenario
+export FAKE_AZ_VM_USAGE_RC=1
+run_preflight --cloud azure
+if grep -q "could not read total regional vCPUs" <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "quota that cannot be read is a warning, not a shortfall"
+else
+    bad "quota that cannot be read is a warning, not a shortfall" "exit ${RC}"
+fi
+
+# None of this belongs to the AWS profile, which has its own ceiling in
+# Elastic IPs. A stray az call there would mean the guard is wrong.
+reset_scenario
+run_preflight --cloud aws
+if ! logged "Microsoft.Compute/skus" && ! logged "list-usage"; then
+    ok "the AWS profile asks Azure nothing"
+else
+    bad "the AWS profile asks Azure nothing" "$(grep '^az' "$FAKE_LOG" || true)"
 fi
 
 printf '\n=== Pre-flight: plan ===\n'
