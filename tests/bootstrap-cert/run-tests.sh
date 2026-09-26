@@ -98,6 +98,13 @@ reset_scenario() {
     export FAKE_LOG; FAKE_LOG="$(mktemp "${WORK}/log.XXXXXXXX")"
     export FAKE_SSM_RC=0 FAKE_SSM_CORRUPT_NAME="" FAKE_IMDS_RC=0
     export FAKE_INSTANCE_ID="i-0replacement" FAKE_LOCAL_IPV4="10.0.1.99" FAKE_REGION="us-east-1"
+    # Azure: a VM name rather than an instance id, a location rather than a
+    # region, and the CA in Key Vault secrets that may be present, absent
+    # (never published) or denied (the identity lacks Get).
+    export FAKE_AZ_VM_NAME="vault-reference_3" FAKE_AZ_LOCATION="eastus"
+    export FAKE_AZ_TOKEN="fake-kv-token" FAKE_AZ_TOKEN_RC=0
+    export FAKE_AZ_CRT_SECRET="present" FAKE_AZ_KEY_SECRET="present"
+    export FAKE_CA_CERT_FILE="" FAKE_CA_KEY_FILE=""
     TLS="$(mktemp -d "${WORK}/tls.XXXXXXXX")"
     rmdir "$TLS"   # the script creates it, as on a fresh node
     export TMPDIR; TMPDIR="$(mktemp -d "${WORK}/tmp.XXXXXXXX")"
@@ -130,6 +137,24 @@ run_issue() {
         --ca-parameter-prefix "$PREFIX" --extra-san "$LB" --tls-dir "$TLS" \
         --owner "$ME" 2>&1)" || RC=$?
     LOG="$(cat "$FAKE_LOG")"
+}
+
+# The same script, the other cloud. --key-vault replaces the SSM prefix,
+# and the CA comes from whatever FAKE_CA_*_FILE point at.
+run_issue_azure() {
+    RC=0
+    OUT="$(PATH="${FAKE_BIN}:${PATH}" "$ISSUE" --cloud azure \
+        --cluster-name "$CLUSTER" --key-vault "vault-ref-kv" \
+        --extra-san "10.1.1.7" --tls-dir "$TLS" --owner "$ME" 2>&1)" || RC=$?
+    LOG="$(cat "$FAKE_LOG")"
+}
+
+# Azure's "published" is two secrets that exist; its "unpublished" is a
+# secret that does not, because nothing creates one before publication.
+published_azure() {  # published_azure <ca-dir>
+    export FAKE_CA_CERT_FILE="${1}/ca.crt"
+    export FAKE_CA_KEY_FILE="${1}/ca.key"
+    export FAKE_AZ_CRT_SECRET="present" FAKE_AZ_KEY_SECRET="present"
 }
 
 run_publish() {
@@ -403,6 +428,176 @@ for which in bootstrap-ca.crt bootstrap-ca.key; do
 done
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+printf '\n=== Azure: the same CA, reached through Key Vault ===\n'
+# ---------------------------------------------------------------------------
+# The Azure profile had no self-issued certificate at all until 2026-09-25:
+# cloud-init said so in a comment and left a replacement waiting for a
+# person. This is the same script, the same openssl recipe and the same SAN
+# set; only where the CA comes from differs.
+reset_scenario
+published_azure "$CA_OURS"
+run_issue_azure
+if [[ "$RC" == "0" ]]; then
+    ok "a published CA in Key Vault issues a leaf"
+else
+    bad "a published CA in Key Vault issues a leaf" "$(tail -3 <<< "$OUT")"
+fi
+if [[ -s "${TLS}/vault.crt" && -s "${TLS}/vault.key" ]]; then
+    ok "and writes both halves"
+else
+    bad "and writes both halves" "$(ls -l "$TLS" 2>&1)"
+fi
+if openssl verify -CAfile "${CA_OURS}/ca.crt" "${TLS}/vault.crt" >/dev/null 2>&1; then
+    ok "the leaf verifies against that CA"
+else
+    bad "the leaf verifies against that CA" "$(openssl verify -CAfile "${CA_OURS}/ca.crt" "${TLS}/vault.crt" 2>&1)"
+fi
+
+# The CN has to be the VM name: cloud-init derives Raft's node_id from
+# compute/name, so a leaf naming anything else names a node the cluster
+# does not have -- and the failure is a node that starts and never joins.
+if openssl x509 -in "${TLS}/vault.crt" -noout -subject | grep -q "vault-reference_3"; then
+    ok "the CN is the VM name, which is also the Raft node_id"
+else
+    bad "the CN is the VM name, which is also the Raft node_id" \
+        "$(openssl x509 -in "${TLS}/vault.crt" -noout -subject 2>&1)"
+fi
+
+# The load balancer's address is an IP SAN, not a DNS entry holding an
+# address -- Azure's load balancer has no name to give. A DNS entry there
+# matches nothing, and the leaf would verify for every client except the
+# ones arriving through the load balancer.
+if openssl x509 -in "${TLS}/vault.crt" -noout -text | grep -q "IP Address:10.1.1.7"; then
+    ok "the load balancer's address is an IP SAN"
+else
+    bad "the load balancer's address is an IP SAN" \
+        "$(openssl x509 -in "${TLS}/vault.crt" -noout -text | grep -A2 'Alternative Name' || true)"
+fi
+
+# The cluster servername every follower verifies a leader against.
+if openssl x509 -in "${TLS}/vault.crt" -noout -checkhost "${CLUSTER}.vault.internal" >/dev/null 2>&1; then
+    ok "and the cluster servername a follower checks"
+else
+    bad "and the cluster servername a follower checks" "no ${CLUSTER}.vault.internal SAN"
+fi
+
+# The token is a managed identity's, asked of IMDS with the Metadata header
+# and scoped to vault.azure.net. No az CLI on the node, no credential on
+# disk.
+if grep -q "resource=https%3A%2F%2Fvault.azure.net" <<< "$LOG"; then
+    ok "the token is scoped to Key Vault"
+else
+    bad "the token is scoped to Key Vault" "$(grep -o 'oauth2[^ ]*' <<< "$LOG" | head -1)"
+fi
+if grep -q "az keyvault" <<< "$LOG"; then
+    bad "and nothing shells out to the az CLI" "the node would need az installed"
+else
+    ok "and nothing shells out to the az CLI"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== Azure: an unpublished CA is not an error ===\n'
+# ---------------------------------------------------------------------------
+# On a first apply no secret exists yet, which Key Vault answers with 404.
+# Failing here would bury the one message that matters -- certificates come
+# from the Ansible layer this time -- under a red one that does not.
+reset_scenario
+published_azure "$CA_OURS"
+export FAKE_AZ_CRT_SECRET="absent"
+run_issue_azure
+if [[ "$RC" == "0" ]]; then
+    ok "a missing secret exits 0 rather than failing the boot"
+else
+    bad "a missing secret exits 0 rather than failing the boot" "$(tail -2 <<< "$OUT")"
+fi
+if grep -q "has not been published" <<< "$OUT"; then
+    ok "and says so in the boot log"
+else
+    bad "and says so in the boot log" "$(tail -2 <<< "$OUT")"
+fi
+if [[ ! -e "${TLS}/vault.crt" ]]; then
+    ok "and writes no certificate"
+else
+    bad "and writes no certificate" "wrote one from a CA that is not published"
+fi
+
+# A published certificate with no key is a half-run publish, and signing is
+# impossible -- that one must fail loudly rather than exit 0 like the case
+# above, or the node waits forever for an Ansible run nobody is coming to do.
+reset_scenario
+published_azure "$CA_OURS"
+export FAKE_AZ_KEY_SECRET="absent"
+run_issue_azure
+if [[ "$RC" != "0" ]]; then
+    ok "a certificate published without its key fails"
+else
+    bad "a certificate published without its key fails" "exit was 0"
+fi
+if grep -qi "key is not" <<< "$OUT"; then
+    ok "and says which half is missing"
+else
+    bad "and says which half is missing" "$(tail -2 <<< "$OUT")"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== Azure: the failures that name what to fix ===\n'
+# ---------------------------------------------------------------------------
+# 403 rather than 404: the identity is missing Get on secrets. Distinct from
+# "not published", and the two are indistinguishable if the status is
+# dropped -- which is why the script asks curl for it.
+reset_scenario
+published_azure "$CA_OURS"
+export FAKE_AZ_CRT_SECRET="denied"
+run_issue_azure
+if [[ "$RC" != "0" ]]; then
+    ok "a refused read fails rather than looking unpublished"
+else
+    bad "a refused read fails rather than looking unpublished" "exit was 0, so the node waits for Ansible instead"
+fi
+if grep -qi "Get on secrets" <<< "$OUT"; then
+    ok "and names the permission the identity is missing"
+else
+    bad "and names the permission the identity is missing" "$(tail -3 <<< "$OUT")"
+fi
+
+reset_scenario
+published_azure "$CA_OURS"
+export FAKE_AZ_TOKEN_RC=22
+run_issue_azure
+if [[ "$RC" != "0" ]]; then
+    ok "no managed-identity token fails"
+else
+    bad "no managed-identity token fails" "exit was 0"
+fi
+if grep -qi "identity" <<< "$OUT"; then
+    ok "and points at the identity rather than at Key Vault"
+else
+    bad "and points at the identity rather than at Key Vault" "$(tail -2 <<< "$OUT")"
+fi
+
+# --key-vault is what --ca-parameter-prefix is on AWS: without it there is
+# nothing to ask.
+reset_scenario
+RC=0
+OUT="$(PATH="${FAKE_BIN}:${PATH}" "$ISSUE" --cloud azure --cluster-name "$CLUSTER" \
+    --tls-dir "$TLS" 2>&1)" || RC=$?
+if [[ "$RC" != "0" ]] && grep -q "key-vault" <<< "$OUT"; then
+    ok "azure without --key-vault fails and names it"
+else
+    bad "azure without --key-vault fails and names it" "rc=${RC}: $(tail -1 <<< "$OUT")"
+fi
+
+reset_scenario
+RC=0
+OUT="$(PATH="${FAKE_BIN}:${PATH}" "$ISSUE" --cloud gcp --cluster-name "$CLUSTER" \
+    --tls-dir "$TLS" 2>&1)" || RC=$?
+if [[ "$RC" != "0" ]] && grep -q "must be aws or azure" <<< "$OUT"; then
+    ok "an unknown --cloud is refused"
+else
+    bad "an unknown --cloud is refused" "rc=${RC}: $(tail -1 <<< "$OUT")"
+fi
+
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"

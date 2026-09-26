@@ -123,6 +123,44 @@ The mechanics:
   back with decryption on every refresh, so the apply after publication
   wrote the decrypted key into state while reporting "No changes".
   `tests/cloud-apply-emulated` publishes a key and re-applies to hold it.
+
+### The same problem on Azure, solved with different parts
+
+Azure reached 2026-09-25 with no self-issued certificate at all: cloud-init
+said so in a comment, and a replacement instance waited for a person. The
+mechanism now mirrors AWS's, with three differences worth knowing.
+
+**The CA lives in the cluster's Key Vault, as two secrets.** The node
+identity is granted `Get` on secrets and nothing else. Keys and secrets are
+separate permission surfaces in an access policy, which is what makes one
+vault enough: reading the CA does not imply unwrapping the seal key, and
+neither implies writing. `Set` is deliberately absent — with it, a
+compromised node could replace the CA every later node will trust, which is
+a cluster-wide trust decision taken by whichever box was unlucky. `List` is
+absent too, so a node cannot enumerate what else the vault holds.
+
+**Terraform does not own the secrets.** On AWS it creates both parameters
+with a placeholder, and a write-only argument keeps the published key out of
+state. `azurerm` has no such argument for `azurerm_key_vault_secret`:
+`value` is required and the provider reads it back on refresh, so a
+Terraform-owned placeholder would carry the CA key into state on the next
+apply — the defect fixed for AWS in #105, with no fix available here. So
+`publish-bootstrap-ca.sh --cloud azure` creates them. Nothing is orphaned:
+they live in the cluster's own Key Vault and die with it. What is lost is
+the placeholder's other job — `terraform plan` no longer shows whether a CA
+has been published.
+
+**The node authenticates with a managed identity, not a role.** The script
+asks IMDS for a token scoped to `vault.azure.net` and calls the Key Vault
+REST API with `curl`. No `az` CLI on the node, no credential on disk, and
+nothing installed that the image does not already carry.
+
+What is proven: `tests/bootstrap-cert` issues a leaf from a real CA through
+a fake Key Vault and checks it verifies, that its CN is the VM name Raft
+uses for `node_id`, that the load balancer's address is an **IP** SAN rather
+than a DNS entry holding an address, and that a 403 is not mistaken for "not
+published yet". What is not: any of it against a real subscription.
+`terraform/azure` has never been applied.
   `scripts/publish-bootstrap-ca.sh` overwrites them after
   `generate-cloud-certs.sh`, putting the key back under the volume KMS key
   it was created with — `put-parameter` without `--key-id` re-encrypts

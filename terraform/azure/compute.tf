@@ -24,6 +24,18 @@ resource "azurerm_key_vault_access_policy" "vault_nodes" {
   # Wrap and unwrap only — enough to seal and unseal, and not enough to
   # read the key material itself.
   key_permissions = ["Get", "WrapKey", "UnwrapKey"]
+
+  # Get on secrets, for the bootstrap CA a replacement node signs its own
+  # certificate from (scripts/issue-bootstrap-cert.sh). Keys and secrets
+  # are separate permission surfaces in an access policy, which is what
+  # makes putting the CA in this vault defensible: reading a secret does
+  # not imply unwrapping the seal key, and neither implies writing.
+  #
+  # Get and nothing else, deliberately. With Set a compromised node could
+  # replace the CA every later node will trust; with List it could
+  # enumerate what else the vault holds. Publishing is a human's job
+  # (scripts/publish-bootstrap-ca.sh, run with your own credentials).
+  secret_permissions = ["Get"]
 }
 
 # Raft auto-join enumerates the scale set's network interfaces through
@@ -105,6 +117,25 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
     subscription_id = data.azurerm_client_config.current.subscription_id
     resource_group  = azurerm_resource_group.vault.name
     vm_scale_set    = local.vault_scale_set_name
+
+    # The boot script travels inside cloud-init rather than being fetched,
+    # so a node needs nothing reachable but Key Vault to issue its
+    # certificate -- and the version that runs is the version this commit
+    # tested. Comment lines are stripped: the documented copy is the one in
+    # scripts/, which is the one anyone reads, and custom_data has a 64 KB
+    # ceiling that is worth staying well under.
+    bootstrap_cert_script = replace(
+      file("${path.module}/../../scripts/issue-bootstrap-cert.sh"),
+      "/(?m)^[ \t]*#(?:[^!\n][^\n]*)?\n/",
+      ""
+    )
+
+    # Every leaf carries the load balancer's address, as an IP SAN.
+    # generate-cloud-certs.sh puts the same value on the leaves it issues;
+    # a self-issued leaf without it fails only for clients arriving through
+    # the load balancer, which is the failure nobody notices until a client
+    # that is not on a node tries to connect.
+    lb_address = var.internal_lb ? azurerm_lb.vault.frontend_ip_configuration[0].private_ip_address : azurerm_public_ip.lb[0].ip_address
   }))
 
   network_interface {

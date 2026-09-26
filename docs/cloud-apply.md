@@ -502,6 +502,14 @@ cd ansible && ansible-playbook -i inventory/azure_rm.yml \
     --private-key ~/.ssh/id_ed25519 playbooks/site.yml
 cd ..
 
+# So an instance the scale set creates later signs its own certificate at
+# boot, from the CA in this cluster's Key Vault. Needs Set on secrets,
+# which your own identity has and the nodes' does not.
+KV="$(terraform -chdir=terraform/azure output -raw \
+    vault_autounseal_key_vault_name)"
+./scripts/publish-bootstrap-ca.sh --cloud azure \
+    --cluster-name vault-reference --key-vault "$KV"
+
 # Vault ships cleanup_dead_servers = false, so a reconciled instance
 # stays a voter forever. Once per cluster; see rolling-upgrades.md.
 ./scripts/configure-autopilot.sh

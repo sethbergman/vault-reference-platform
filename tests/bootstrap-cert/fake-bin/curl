@@ -1,25 +1,109 @@
 #!/usr/bin/env bash
-# Stand-in for curl, answering only the instance metadata service.
+# Stand-in for curl, answering the two clouds' metadata services and Azure
+# Key Vault.
 #
-# IMDSv2 as the launch template enforces it: a PUT for a token first, then
-# GETs carrying it. A GET without the token header is refused with 401,
-# as the real service does under http_tokens = "required" -- so a script
-# that skips the token fails here the way it would on a node.
+# AWS: IMDSv2 as the launch template enforces it -- a PUT for a token
+# first, then GETs carrying it. A GET without the token header is refused
+# with 401, as the real service does under http_tokens = "required", so a
+# script that skips the token fails here the way it would on a node.
+#
+# Azure: a different protocol, and modelled on the real one rather than on
+# what the script would find convenient. A `Metadata: true` header instead
+# of a PUT-issued token; one document per path with ?format=text returning
+# a bare string; the identity token as JSON with an access_token field; and
+# Key Vault answering JSON with a "value" whose PEM newlines are escaped --
+# which is the detail that makes jq the right tool and a sed the wrong one.
+#
+# Key Vault also answers 404 for a secret that has never been set, which is
+# how an unpublished CA looks on Azure. AWS has a placeholder string there
+# instead, because Terraform creates the parameters; nothing creates a
+# secret before it is published.
 set -uo pipefail
 
 printf 'curl %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
 
 [[ "${FAKE_IMDS_RC:-0}" == "0" ]] || { echo "curl: (7) Failed to connect" >&2; exit "${FAKE_IMDS_RC}"; }
 
-METHOD=GET URL="" TOKEN_HEADER=false
+METHOD=GET URL="" TOKEN_HEADER=false METADATA_HEADER=false AUTH_HEADER=false WRITE_OUT=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -X)  METHOD="$2"; shift 2 ;;
-        -H)  [[ "$2" == X-aws-ec2-metadata-token:* ]] && TOKEN_HEADER=true; shift 2 ;;
+        -w)  WRITE_OUT="$2"; shift 2 ;;
+        -H)
+            case "$2" in
+                X-aws-ec2-metadata-token:*) TOKEN_HEADER=true ;;
+                [Mm]etadata:*)              METADATA_HEADER=true ;;
+                Authorization:*)            AUTH_HEADER=true ;;
+            esac
+            shift 2
+            ;;
         http*) URL="$1"; shift ;;
         *)   shift ;;
     esac
 done
+
+# --- Azure -----------------------------------------------------------------
+# A PEM with escaped newlines, exactly as Key Vault returns one.
+json_pem() { python3 -c 'import json,sys; print(json.dumps({"value": sys.stdin.read()}))' < "$1"; }
+
+# The script asks for the body and the status in one request (-w), because a
+# 403 and a 404 are different problems that both look like an empty value
+# otherwise. Answer in that shape when it does.
+emit() {
+    printf '%s' "$1"
+    [[ -n "$WRITE_OUT" ]] && printf '\n%s' "$2"
+    return 0
+}
+
+case "$URL" in
+    */metadata/identity/oauth2/token*)
+        [[ "$METADATA_HEADER" == true ]] || { echo "400 Bad Request: Metadata header required" >&2; exit 22; }
+        if [[ "${FAKE_AZ_TOKEN_RC:-0}" != "0" ]]; then
+            echo "curl: (22) The requested URL returned error: 400" >&2
+            exit "${FAKE_AZ_TOKEN_RC}"
+        fi
+        printf '{"access_token":"%s","expires_in":"3599","token_type":"Bearer"}' \
+            "${FAKE_AZ_TOKEN:-fake-kv-token}"
+        exit 0
+        ;;
+    */metadata/instance/compute/name*)
+        [[ "$METADATA_HEADER" == true ]] || { echo "400 Bad Request" >&2; exit 22; }
+        printf '%s' "${FAKE_AZ_VM_NAME:-vault-reference_3}"
+        exit 0
+        ;;
+    */metadata/instance/compute/location*)
+        [[ "$METADATA_HEADER" == true ]] || { echo "400 Bad Request" >&2; exit 22; }
+        printf '%s' "${FAKE_AZ_LOCATION:-eastus}"
+        exit 0
+        ;;
+    */metadata/instance/network/*privateIpAddress*)
+        [[ "$METADATA_HEADER" == true ]] || { echo "400 Bad Request" >&2; exit 22; }
+        printf '%s' "${FAKE_LOCAL_IPV4:-10.1.0.42}"
+        exit 0
+        ;;
+    *vault.azure.net/secrets/*)
+        [[ "$AUTH_HEADER" == true ]] \
+            || { emit '{"error":{"code":"Unauthorized","message":"no token"}}' 401; exit 0; }
+        case "$URL" in
+            *-crt*)
+                case "${FAKE_AZ_CRT_SECRET:-present}" in
+                    absent)   emit '{"error":{"code":"SecretNotFound","message":"not found"}}' 404 ;;
+                    denied)   emit '{"error":{"code":"Forbidden","message":"identity lacks Get on secrets"}}' 403 ;;
+                    *)        emit "$(json_pem "${FAKE_CA_CERT_FILE}")" 200 ;;
+                esac
+                ;;
+            *-key*)
+                case "${FAKE_AZ_KEY_SECRET:-present}" in
+                    absent)   emit '{"error":{"code":"SecretNotFound","message":"not found"}}' 404 ;;
+                    denied)   emit '{"error":{"code":"Forbidden","message":"identity lacks Get on secrets"}}' 403 ;;
+                    *)        emit "$(json_pem "${FAKE_CA_KEY_FILE}")" 200 ;;
+                esac
+                ;;
+            *) emit '{"error":{"code":"SecretNotFound","message":"not found"}}' 404 ;;
+        esac
+        exit 0
+        ;;
+esac
 
 case "$URL" in
     */latest/api/token)

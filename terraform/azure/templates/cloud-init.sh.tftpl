@@ -117,12 +117,27 @@ chmod 0640 /etc/vault.d/vault.hcl
 # ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
-# This script does not issue certificates. On AWS a node the group
-# launches now signs its own from a bootstrap CA published to SSM
-# (scripts/issue-bootstrap-cert.sh); Azure has no equivalent yet, so a
-# replacement here waits for the Ansible layer. Vault will refuse to start
-# without them, which is the correct failure: a Vault serving plaintext is
-# worse than one that does not start. See docs/deployment.md.
+# A node the scale set created after the bootstrap CA was published signs
+# its own leaf here, from the CA in this cluster's Key Vault (see
+# scripts/publish-bootstrap-ca.sh). Before publication -- every node of a
+# first apply -- the script says so and leaves the certificate to the
+# Ansible layer, as before. The script is embedded verbatim; the quoted
+# heredoc stops the shell expanding anything in it.
+cat > /usr/local/sbin/vault-bootstrap-cert <<'BOOTSTRAP_CERT_SCRIPT'
+${bootstrap_cert_script}
+BOOTSTRAP_CERT_SCRIPT
+chmod 0755 /usr/local/sbin/vault-bootstrap-cert
+
+/usr/local/sbin/vault-bootstrap-cert \
+  --cloud azure \
+  --cluster-name "$${CLUSTER_NAME}" \
+  --key-vault "$${KEY_VAULT_NAME}" \
+  --extra-san "${lb_address}" \
+  || echo "Issuing a bootstrap certificate failed; see the lines above."
+
+# Vault refuses to start without TLS material, which is the correct
+# failure: a Vault serving plaintext is worse than one that does not
+# start. See docs/deployment.md.
 if [[ ! -f /etc/vault.d/tls/vault.crt ]]; then
   echo "No TLS certificate at /etc/vault.d/tls/vault.crt."
   echo "Vault will not start until one is provisioned — see docs/deployment.md."

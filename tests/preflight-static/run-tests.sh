@@ -160,6 +160,7 @@ render() {
         -e 's|\${tenant_id}|11111111-1111-1111-1111-111111111111|g' \
         -e 's|\${bootstrap_ca_prefix}|/vault-ref/tls|g' \
         -e 's|\${lb_dns_name}|vault-ref-nlb-0123456789.elb.us-east-1.amazonaws.com|g' \
+        -e 's|\${lb_address}|10.1.1.7|g' \
         -e 's|^\${bootstrap_cert_script}$|echo "embedded: scripts/issue-bootstrap-cert.sh"|' \
         -e 's|\$\${|${|g' \
         "$1"
