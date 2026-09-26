@@ -124,6 +124,27 @@ The mechanics:
   wrote the decrypted key into state while reporting "No changes".
   `tests/cloud-apply-emulated` publishes a key and re-applies to hold it.
 
+  `scripts/publish-bootstrap-ca.sh` overwrites them after
+  `generate-cloud-certs.sh`, putting the key back under the volume KMS key
+  it was created with — `put-parameter` without `--key-id` re-encrypts
+  under the account's `aws/ssm` key, which the node role cannot decrypt,
+  and reports success. It reads both back before saying so.
+- `scripts/issue-bootstrap-cert.sh`, embedded in user-data, runs before
+  Vault starts. A node with a certificate is left alone; a placeholder
+  means "first apply" and defers to Ansible, as before; otherwise it
+  refuses a CA that is not this cluster's, signs a leaf with exactly the
+  SANs `generate-cloud-certs.sh` would, and verifies it before writing.
+- The node role may call `ssm:GetParameter` on those two parameters, and
+  `kms:Decrypt` on the volume key only through SSM.
+
+**What is not proven:** a node on AWS doing it. `tests/bootstrap-cert`
+drives both scripts with real `openssl` against shims that model SSM and
+IMDSv2, and `terraform/aws/tests` asserts the parameters, the grant and
+the embedded script. No replacement has been watched issuing its own
+certificate on a real cluster. Once the PKI migration is done, the
+second design is the one that takes the key off the nodes — with this
+one kept beneath it for a cold start.
+
 ### The same problem on Azure, solved with different parts
 
 Azure reached 2026-09-25 with no self-issued certificate at all: cloud-init
@@ -161,26 +182,6 @@ uses for `node_id`, that the load balancer's address is an **IP** SAN rather
 than a DNS entry holding an address, and that a 403 is not mistaken for "not
 published yet". What is not: any of it against a real subscription.
 `terraform/azure` has never been applied.
-  `scripts/publish-bootstrap-ca.sh` overwrites them after
-  `generate-cloud-certs.sh`, putting the key back under the volume KMS key
-  it was created with — `put-parameter` without `--key-id` re-encrypts
-  under the account's `aws/ssm` key, which the node role cannot decrypt,
-  and reports success. It reads both back before saying so.
-- `scripts/issue-bootstrap-cert.sh`, embedded in user-data, runs before
-  Vault starts. A node with a certificate is left alone; a placeholder
-  means "first apply" and defers to Ansible, as before; otherwise it
-  refuses a CA that is not this cluster's, signs a leaf with exactly the
-  SANs `generate-cloud-certs.sh` would, and verifies it before writing.
-- The node role may call `ssm:GetParameter` on those two parameters, and
-  `kms:Decrypt` on the volume key only through SSM.
-
-**What is not proven:** a node on AWS doing it. `tests/bootstrap-cert`
-drives both scripts with real `openssl` against shims that model SSM and
-IMDSv2, and `terraform/aws/tests` asserts the parameters, the grant and
-the embedded script. No replacement has been watched issuing its own
-certificate on a real cluster. Once the PKI migration is done, the
-second design is the one that takes the key off the nodes — with this
-one kept beneath it for a cold start.
 
 ### Doing the migration
 
