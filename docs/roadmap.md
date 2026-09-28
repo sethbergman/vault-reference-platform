@@ -240,8 +240,25 @@ The blockers are, in order:
    What that session did not reach: snapshots to the bucket, PKI
    certificates and audit devices on a real node, and the refresh. Those
    need a cluster standing again, and the roles are off by default.
-2. **A real Azure apply.** `terraform/azure` has never been applied
-   either, and it is not item 1 with different commands:
+2. **A real Azure apply.** Done once, on 2026-09-28, and **closed**.
+   The profile could not have applied as written — not on that
+   subscription, not on any — and getting it to apply, configure,
+   initialize, self-heal and tear down took nineteen fixes. None was
+   reachable by `terraform test` against mocked providers or by the
+   emulated apply: all 30 Azure assertions passed throughout, and still
+   do.
+
+   Settled, each for the first time: **auto-unseal through Key Vault**
+   (`type: azurekeyvault`, every node unsealed itself); **a replacement
+   node signing its own certificate** — one the scale set created
+   unprompted, which read the bootstrap CA from Key Vault with its own
+   managed identity and joined; **Raft discovery by scale-set
+   enumeration**; and **reachability through Azure Bastion**. Final
+   state: three voters, `FailureTolerance: 1`, autopilot `min_quorum=3`.
+
+   This list was written as a prediction, and it is worth recording which
+   parts of it were right, because the ones it named are the ones that
+   broke:
 
    - **Discovery is scale-set mode, not tag mode.** go-discover's Azure
      provider rejects a mix of `tag_name`/`tag_value` and
@@ -273,7 +290,40 @@ The blockers are, in order:
    - **Repeating it is not free.** Purge protection cannot be turned
      off, so each apply leaves a soft-deleted Key Vault for 90 days,
      against AWS's cancellable 7-day KMS window. Worth knowing before
-     the fourth attempt rather than after.
+     the fourth attempt rather than after. **Observed**, and it purges
+     on 2026-12-27; nobody can hurry it.
+
+   Two of those were exactly right. The inventory and the cluster did
+   fail independently: `azure_rm` does not enumerate scale sets unless
+   asked — its own documentation says "defaults to no VMSS fetch" — so
+   the inventory returned empty with **no warning and exit 0** while
+   three healthy, correctly tagged nodes were running. And both
+   authorization models were wrong, each in its own way: the Key Vault
+   refused the nodes at the firewall while their access policy was
+   correct all along, and the snapshot account refused the operator at
+   the network rule while the role assignment was correct.
+
+   What the list did not anticipate is the shape those shared. **A
+   policy says who, a firewall says from where, and both have to allow
+   it.** Three separate resources failed on whichever half nobody had
+   looked at, and Owner turns out to be a control-plane role carrying no
+   data-plane access at all. Two of the nineteen were in fixes written
+   earlier the same day for the other half of the same problem.
+
+   Two more the list could not have predicted, because they are not
+   about Azure's shape but about what the tools do at the seams. The
+   storage account and its customer-managed key **undo each other on
+   alternate applies** — nothing fails while that happens, and snapshots
+   keep being written to an account whose encryption key has silently
+   changed hands. And a destroy that stopped partway left the expensive
+   resources gone and a load balancer billing, on the strength of a run
+   that had reported failure and was read as finished.
+
+   What it did not reach is what the AWS sessions did not reach either:
+   snapshots to the container, a restore, PKI and audit on a real node,
+   and any identity narrower than an administrator. Two fixes are
+   deliberately partial and say so in their commits — orphaned Bastion
+   tunnels, and VNet flow logs, which need azurerm 4.x.
 3. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node, an edit to it is
    detectable, and the anchors that make it detectable now leave the

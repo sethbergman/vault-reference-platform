@@ -299,6 +299,116 @@ plugin needs `boto3` in the same Python that runs Ansible.
 - A refresh triggered the documented way, now that the trigger is fixed.
   What was watched was a refresh started from the CLI.
 
+## What the Azure apply settled
+
+`terraform/azure` was applied to a real subscription on 2026-09-28, for
+the first time. It could not have applied as written — not on that
+subscription, not on any — and getting it to apply, configure,
+initialize, self-heal and tear down took nineteen fixes.
+
+**None was reachable by `terraform test` against mocked providers, and
+none by the emulated apply.** All 30 Azure assertions passed throughout,
+and still do. That is not a criticism of them: they check that the
+configuration says what it means to say, which is a different question
+from whether Azure accepts it.
+
+### Settled
+
+- **Auto-unseal through Key Vault.** Every node reported
+  `type: azurekeyvault` and unsealed itself. Nobody held a key.
+- **A replacement node signing its own certificate.** The node that
+  finished the cluster was not provisioned by anyone:
+  `automatic_instance_repair` created it while the cluster was being
+  debugged. It read the bootstrap CA from Key Vault with its own managed
+  identity, signed its leaf, deleted the CA key and joined. Its SANs
+  included `IP Address:` for the load balancer, which matters below.
+- **Raft peer discovery by scale-set enumeration** — the Azure mechanism
+  with no AWS counterpart.
+- **Reachability through Azure Bastion.** Every command in the session
+  went through `az network bastion tunnel`.
+- **The Entra-authenticated state backend.** `shared_access_key_enabled`
+  is false, so the backend uses `use_azuread_auth` and a role assignment
+  rather than an account key.
+
+Final state: three voters, `FailureTolerance: 1`, autopilot
+`cleanup_dead_servers=true min_quorum=3`.
+
+### The shape most of the failures shared
+
+**A policy says who, a firewall says from where, and both have to allow
+it.** Three resources failed on whichever half nobody had looked at:
+
+- The Key Vault refused the nodes at the firewall
+  (`ForbiddenByFirewall`) while their access policy had been correct
+  from the start. The line that would have admitted the node subnet was
+  a comment saying to add it "once the VM scale set exists".
+- The snapshot account refused the operator at the network rule
+  (`AuthorizationFailure`) while the role assignment was correct — it
+  accepts data-plane traffic only from the node subnet, and Terraform
+  runs somewhere else.
+- The state account refused the provider outright
+  (`KeyBasedAuthenticationNotPermitted`), because the module told the
+  *backend* to use Entra and never told the provider.
+
+**Owner is a control-plane role and carries no data-plane access at
+all.** That is the sentence that would have saved the most time. Two of
+the nineteen fixes were in fixes written earlier the same day for the
+other half of the same problem.
+
+### Three worth reading the detail on
+
+**The storage account and its customer-managed key undo each other.**
+`azurerm_storage_account_customer_managed_key` points the account's
+encryption at the auto-unseal key; `azurerm_storage_account` does not
+know that, reads back a `customer_managed_key` block it never declared,
+and plans to remove it. Applying that resets the account to
+Microsoft-managed keys, which makes the other resource plan to put it
+back — on alternate applies, forever. **Nothing fails while that
+happens.** Snapshots keep being written to an account whose encryption
+key has silently changed hands, and the operator sees `1 to change`
+removing a block they did not write.
+
+**The inventory returned empty with exit 0.** `azure_rm` does not
+enumerate scale sets unless asked — its own documentation says "defaults
+to no VMSS fetch" — and every node in this profile is a scale set
+instance. Three healthy, correctly tagged nodes were running throughout.
+An empty inventory is exactly what an unbooted cluster looks like, so the
+failure impersonates the thing it is not.
+
+**A failed teardown leaves the cheap things.** The destroy stopped on
+`CannotRemoveRuleUsedByProbeUsedByVMSS` *after* the Bastion, NAT gateway,
+public addresses and scale set were gone and *before* the load balancer
+and VNet. The portal showed a mostly-empty resource group, the expensive
+lines were genuinely deleted, and a load balancer went on billing on the
+strength of a run that had reported failure and was read as finished.
+Sweep the subscription after a teardown; do not read the resource group.
+
+### Two things that are properties, not defects
+
+- **Azure accepts only RSA SSH keys** on a Linux scale set. `ed25519` is
+  the sensible default everywhere else and is what the AWS profile uses,
+  so bringing the same key over is the obvious move and it does not
+  work. The pre-flight now says so before the bootstrap bills.
+- **A broken cluster burns an instance every 30 minutes.**
+  `automatic_instance_repair` replaced three nodes while Vault could not
+  start, and each replacement arrived needing a bootstrap CA that a
+  first apply has not published yet. That is the mechanism working, and
+  it is worth knowing before you spend thirty minutes debugging.
+
+### What is still unproven
+
+- Snapshots to the container, a restore, PKI and audit on a real node —
+  now skipped on all three applies.
+- Any identity narrower than an administrator, on either profile.
+- VNet flow logs. Azure blocked creating NSG flow logs on 2025-06-30 and
+  `azurerm` 3.x cannot create the replacement, so `enable_flow_logs`
+  defaults to false. That is a real reduction in posture, recorded as
+  one. The fix is azurerm 4.x.
+- Whether a Bastion tunnel survives a hard-killed ProxyCommand. ssh
+  kills one outright when its master exits, so no `EXIT` trap runs; the
+  fix took three leaked tunnels per run down to one, and reaping the
+  rest at startup is not written yet.
+
 ---
 
 ## Before you apply

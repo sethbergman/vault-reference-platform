@@ -141,15 +141,16 @@ one-way door and a restart of vault-unseal an unrecoverable one.
 |---|---|---|---|
 | local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
 | AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and two real applies (2026-09-17, 2026-09-24) — partly proven, see `docs/cloud-apply.md` |
-| Azure | `terraform/azure` | Azure Key Vault | `terraform test` with mocked providers only |
+| Azure | `terraform/azure` | Azure Key Vault | `terraform test` (mocked) and one real apply (2026-09-28) — partly proven, see `docs/cloud-apply.md` |
 | bare/other | Ansible alone | Shamir (role default) | not exercised |
 
 **`terraform/aws` has been applied to a real account twice, on
-2026-09-17 and 2026-09-24; `terraform/azure` never has.** Do not describe
-either as working or proven. `docs/cloud-apply.md` records what that session
-settled — auto-unseal, peer discovery, health checks, the handoff, a
-restore — what it observed failing, and what it never reached. Its
-headline finding was that **the cluster was not self-healing**: a
+2026-09-17 and 2026-09-24, and `terraform/azure` once, on 2026-09-28.**
+Do not describe either as working or proven. `docs/cloud-apply.md`
+records what each session settled — auto-unseal, peer discovery, health
+checks, the handoff, a restore — what it observed failing, and what it
+never reached. The AWS sessions' headline finding was that **the cluster
+was not self-healing**: a
 replacement node's certificates came only from an Ansible run keyed to an
 instance id that does not exist until launch. A replacement now signs its
 own leaf at boot from a bootstrap CA published to SSM
@@ -159,6 +160,22 @@ refresh kept quorum across all three nodes. What neither session reached
 is listed in `docs/cloud-apply.md`: snapshots to the bucket, a restore,
 PKI and audit on a real node, and any identity narrower than an
 administrator.
+
+**The Azure apply found nineteen defects, and the profile could not have
+applied as written** — not on that subscription, not on any. None was
+reachable by `terraform test` against mocked providers or by the emulated
+apply: all 30 Azure assertions passed throughout, and still do. It
+settled auto-unseal through Key Vault, a replacement node signing its own
+certificate from a CA it fetched with its own managed identity, Raft
+discovery by scale-set enumeration, and reachability through Bastion. It
+reached none of the same things the AWS applies did not.
+
+One shape recurred often enough to expect it: **a policy says who, a
+firewall says from where, and both have to allow it.** The Key Vault, the
+state account and the snapshot account each failed on whichever half
+nobody had looked at, and Owner is a control-plane role carrying no
+data-plane access at all. Two of the defects were in fixes written
+earlier the same day for the other half of the same problem.
 `scripts/preflight-cloud.sh` / `scripts/teardown-cloud.sh` exist because
 `terraform destroy` fails partway on both profiles.
 
@@ -569,7 +586,12 @@ between here and v1.0:
    keeps `validate` runnable without credentials, and
    `tests/state-backend` asserts it still works — do not regress it.
    The AWS backend has been used against a real account once (the
-   2026-09-17 apply); the Azure one never has, and no identity narrower
+   2026-09-17 apply), and the Azure one once (2026-09-28, with Entra
+   authentication and no account key: `shared_access_key_enabled` is
+   false, which needs `use_azuread_auth` in the backend *and*
+   `storage_use_azuread` on the provider — the second was missing and the
+   bootstrap failed partway, leaving an account whose blob versioning had
+   silently never been applied). No identity narrower
    than an administrator has been tried against either.
 5. An upgrade path matching how the profiles deploy. The canonical model
    per profile is now decided (`docs/rolling-upgrades.md`): instance
