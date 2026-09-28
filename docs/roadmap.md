@@ -33,8 +33,8 @@ and which parts are a plausible-looking configuration nobody has run.
 
 ## The honest gap
 
-**`terraform/aws` has been applied to a real account once, on 2026-09-17.
-`terraform/azure` never has.**
+**`terraform/aws` has been applied to a real account twice, on
+2026-09-17 and 2026-09-24, and `terraform/azure` once, on 2026-09-28.**
 
 `terraform/aws` and `terraform/azure` are covered by `terraform test`
 against mocked providers, and that catches more than it might sound like
@@ -362,18 +362,29 @@ The blockers are, in order:
    followed kept its state there rather than on disk. The bucket is the
    one thing that session deliberately left behind.
 
-   What is left is narrower than it was. Nothing shows that two applies
-   from two machines race the way one process planting a lock file does,
-   or that a least-privilege identity can reach the bucket at all — that
-   session ran as an administrator, which answers the question in the
-   easiest possible way. And the Azure side is untouched: the Entra role
-   assignment has never been granted to a second person, and the Azure
-   bootstrap module has never been applied to anything, because moto is
-   an AWS API and there is no emulator for the other side this
-   repository can run
-   ([why](cloud-apply.md#why-azure-has-no-emulated-apply)).
+   The Azure side is no longer untouched. On 2026-09-28 the bootstrap
+   module was applied for real and the profile kept its state in the
+   account it built, authenticating through Entra with no account key —
+   which is the half this repository had never exercised anywhere, and
+   the half that turned out to be wrong. `shared_access_key_enabled` is
+   false, so the backend needs `use_azuread_auth` *and* the provider
+   needs `storage_use_azuread`; only the first was set, and the apply
+   failed partway, leaving an account whose blob versioning and soft
+   delete had silently never been applied. Terraform had marked the
+   resource tainted, which is the only reason the next plan did not
+   quietly adopt it.
 
-   So this item is half proven, and closes with blocker 2. See
+   What is left is narrower again, and is the same on both sides.
+   Nothing shows that two applies from two machines race the way one
+   process planting a lock file does. Nothing shows that a
+   least-privilege identity can reach either backend at all — all three
+   sessions ran as an administrator, which answers the question in the
+   easiest possible way. And the Entra role assignment has never been
+   granted to a second person.
+
+   So this item is most of the way proven, and what remains of it is the
+   same sentence as the remainder of blockers 1 and 2: no identity
+   narrower than an administrator has been tried. See
    [terraform-state.md](terraform-state.md).
 5. **An upgrade path that matches how the profiles actually deploy.**
    `scripts/vault-upgrade.sh` steps the leader down, swaps the binary
