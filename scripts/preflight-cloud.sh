@@ -284,6 +284,27 @@ if [[ "$CLOUD" == "aws" ]]; then
         fi
     fi
 else
+    # Azure refuses every key type except RSA on a Linux scale set:
+    #
+    #   the provided ssh-ed25519 SSH key is not supported.
+    #   Only RSA SSH keys are supported by Azure
+    #
+    # ed25519 is the sensible default everywhere else and is what the AWS
+    # profile uses, so bringing the same key over is the obvious thing to
+    # do and it does not work. `terraform plan` does catch this — but only
+    # once the backend exists, which is after the state bootstrap has been
+    # applied and is billing. This costs a string comparison.
+    SSH_PUB="$(tfvar ssh_public_key "")"
+    if [[ -z "$SSH_PUB" ]]; then
+        bad "ssh_public_key is empty" \
+            "the profile declares it with no default, so terraform refuses at plan time: export TF_VAR_ssh_public_key=\"\$(cat ~/.ssh/id_rsa.pub)\""
+    elif [[ "$SSH_PUB" == ssh-rsa* ]]; then
+        ok "ssh_public_key is an RSA key, which is the only kind Azure takes"
+    else
+        bad "ssh_public_key is ${SSH_PUB%% *}, and Azure only accepts ssh-rsa" \
+            "the scale set is refused at creation, after the VNet, NAT gateway, load balancer and Bastion are billing; generate one with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_azure"
+    fi
+
     if command -v az >/dev/null 2>&1; then
         # A role assignment needs Owner or User Access Administrator.
         # Contributor is enough for everything else, which is why this

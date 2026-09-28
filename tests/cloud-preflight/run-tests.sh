@@ -90,6 +90,7 @@ reset_scenario() {
     export FAKE_AZ_BASTION_EXT=installed
     export FAKE_AZ_ROLE_RC=0
     export FAKE_AZ_OID_RC=0
+    export TF_VAR_ssh_public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQExample preflight@example.com"
     export FAKE_AZ_TOKEN_RC=0
     export FAKE_AZ_REST_RC=0
     export FAKE_AZ_ZONES_RC=0
@@ -622,6 +623,65 @@ if grep -q "cannot be purged for 90 days" <<< "$OUT"; then
     ok "Azure: names the Key Vault retention before you apply, not after"
 else
     bad "Azure: names the Key Vault retention before you apply, not after"
+fi
+
+printf '\n=== Pre-flight: the one key type Azure takes ===\n'
+
+# ed25519 is the sensible default everywhere else, and is the key the AWS
+# profile uses, so carrying it over is the obvious move. Azure refuses it:
+# "the provided ssh-ed25519 SSH key is not supported. Only RSA SSH keys
+# are supported by Azure". terraform plan catches it, but not until the
+# backend exists, which is after the state bootstrap is billing.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud azure
+if grep -q "Azure only accepts ssh-rsa" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "an ed25519 key fails before the bootstrap, not at the scale set"
+else
+    bad "an ed25519 key fails before the bootstrap, not at the scale set" \
+        "exit ${RC}; $(grep -i 'ssh' <<< "$OUT" || true)"
+fi
+
+# Named, so the reader does not have to work out which key was read.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud azure
+if grep -q "ssh-ed25519" <<< "$OUT"; then
+    ok "and says which type it found"
+else
+    bad "and says which type it found"
+fi
+
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQExample seth@host"
+run_preflight --cloud azure
+if grep -q "which is the only kind Azure takes" <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "an RSA key passes"
+else
+    bad "an RSA key passes" "exit ${RC}"
+fi
+
+# The profile declares ssh_public_key with no default, so an empty one is
+# a plan-time refusal rather than a cluster nobody can log into -- but it
+# is still cheaper to say so here.
+reset_scenario
+export TF_VAR_ssh_public_key=""
+run_preflight --cloud azure
+if grep -q "ssh_public_key is empty" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "an empty key is named rather than read as some other type"
+else
+    bad "an empty key is named rather than read as some other type" "exit ${RC}"
+fi
+
+# AWS takes ed25519 perfectly well, and its own check is about the key
+# pair existing in the account. This must not leak across.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud aws
+if ! grep -q "ssh-rsa" <<< "$OUT"; then
+    ok "and none of this is imposed on the AWS profile"
+else
+    bad "and none of this is imposed on the AWS profile"
 fi
 
 printf '\n=== Pre-flight: Azure credentials are checked against Azure ===\n'
