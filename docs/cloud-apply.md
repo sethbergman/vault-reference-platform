@@ -395,7 +395,7 @@ Sweep the subscription after a teardown; do not read the resource group.
   first apply has not published yet. That is the mechanism working, and
   it is worth knowing before you spend thirty minutes debugging.
 
-### What is still unproven
+### What Azure has still not proven
 
 - Snapshots to the container, a restore, PKI and audit on a real node —
   now skipped on all three applies.
