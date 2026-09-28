@@ -147,10 +147,25 @@ resource "azurerm_storage_account" "tfstate" {
   # The control that is not optional either way is above:
   # shared_access_key_enabled = false, so reaching the account is not the
   # same as being able to read it.
-  network_rules {
-    default_action = length(var.allowed_ip_ranges) > 0 ? "Deny" : "Allow"
-    ip_rules       = var.allowed_ip_ranges
-    bypass         = ["AzureServices"]
+  # Declared only when there is something to declare. A network_rules
+  # block with default_action = "Allow" and no addresses says exactly what
+  # a storage account already does by default -- Azure stores
+  # defaultAction Allow and bypass AzureServices either way -- but the
+  # provider does not match its own empty block against what comes back,
+  # so every subsequent plan wanted to add it again. Applying it changed
+  # nothing and the next plan wanted it again.
+  #
+  # A plan that never reads clean is worse than the noise: it teaches
+  # whoever runs it that one pending change is normal here, and real
+  # drift arrives looking exactly like that.
+  dynamic "network_rules" {
+    for_each = length(var.allowed_ip_ranges) > 0 ? [1] : []
+
+    content {
+      default_action = "Deny"
+      ip_rules       = var.allowed_ip_ranges
+      bypass         = ["AzureServices"]
+    }
   }
 
   # The Azure half of the AWS bucket's prevent_destroy. `terraform
