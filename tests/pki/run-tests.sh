@@ -842,11 +842,52 @@ printf '{"_meta": {"hostvars": {}}, "vault_nodes": {"hosts": []}}\n' > "$EMPTY_J
 EMPTY_RC=0
 EMPTY_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$EMPTY_JSON" \
     --out "${WORK}/empty-certs" 2>&1)" || EMPTY_RC=$?
-if [[ "$EMPTY_RC" != "0" && "$EMPTY_OUT" == *"private_ip_address"* ]]; then
+# The message names "private address" rather than either inventory's
+# field, because the two clouds spell it differently -- aws_ec2 gives
+# private_ip_address, azure_rm gives private_ipv4_addresses. Pinning the
+# refusal alone would pass on a run that refused and still left a CA
+# behind, which is the outcome this is really about.
+if [[ "$EMPTY_RC" != "0" && "$EMPTY_OUT" == *"private address"* \
+      && ! -f "${WORK}/empty-certs/ca.crt" ]]; then
     ok "an empty inventory is an error, not a CA with no leaves"
 else
     bad "an empty inventory is an error, not a CA with no leaves" \
         "exit ${EMPTY_RC}: ${EMPTY_OUT}"
+fi
+
+# The Azure inventory spells the address differently and gives a list.
+# Reading only the AWS spelling found no hosts against a healthy Azure
+# cluster and reported it as an empty inventory -- so the error sent the
+# reader to check a cluster that was already up.
+AZ_JSON="${WORK}/azure-inventory.json"
+cat > "$AZ_JSON" <<'AZEOF'
+{"_meta": {"hostvars": {
+   "vault-reference-vault_0": {"private_ipv4_addresses": ["10.1.0.5"]},
+   "vault-reference-vault_1": {"private_ipv4_addresses": ["10.1.0.6"]}
+ }},
+ "vault_nodes": {"hosts": ["vault-reference-vault_0", "vault-reference-vault_1"]}}
+AZEOF
+AZ_RC=0
+AZ_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$AZ_JSON" \
+    --out "${WORK}/azure-certs" 2>&1)" || AZ_RC=$?
+if [[ "$AZ_RC" == "0" \
+      && -f "${WORK}/azure-certs/vault-reference-vault_0.crt" \
+      && -f "${WORK}/azure-certs/vault-reference-vault_1.crt" ]]; then
+    ok "an Azure inventory issues leaves: the address is a list under another name"
+else
+    bad "an Azure inventory issues leaves: the address is a list under another name" \
+        "exit ${AZ_RC}: ${AZ_OUT}"
+fi
+
+# And the address has to be the one from the list, not a placeholder:
+# a leaf whose IP SAN does not match the node fails the role's own
+# -checkip verification on delivery.
+if openssl x509 -in "${WORK}/azure-certs/vault-reference-vault_0.crt" -noout -text 2>/dev/null \
+    | grep -q "IP Address:10.1.0.5"; then
+    ok "and the leaf carries the address the inventory gave"
+else
+    bad "and the leaf carries the address the inventory gave" \
+        "$(openssl x509 -in "${WORK}/azure-certs/vault-reference-vault_0.crt" -noout -text 2>/dev/null | grep -A 2 'Alternative Name' || true)"
 fi
 
 # ---------------------------------------------------------------------------
