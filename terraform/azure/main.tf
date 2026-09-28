@@ -32,6 +32,20 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # storage.tf sets shared_access_key_enabled = false on the snapshot
+  # account, and the provider's own data-plane calls default to a key:
+  # the Blob Service poll that finishes creating the account, and creating
+  # the snapshots container in it. Without this they are refused by the
+  # control the account exists to set:
+  #
+  #   403 Key based authentication is not permitted on this storage account
+  #
+  # The state bootstrap had the identical omission, and the first real
+  # apply of it failed partway. Here it would fail later and cost more:
+  # the VNet, NAT gateway, load balancer and Bastion are all created
+  # before storage.
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}

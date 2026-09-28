@@ -46,6 +46,22 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # The account below sets shared_access_key_enabled = false, and the
+  # provider's own data-plane calls default to a key: the Blob Service
+  # availability poll that finishes creating the account, and creating the
+  # container inside it. Without this they are refused by the very control
+  # this module exists to set:
+  #
+  #   403 Key based authentication is not permitted on this storage account
+  #     with KeyBasedAuthenticationNotPermitted
+  #
+  # The comments below say twice that the *backend* needs
+  # use_azuread_auth, and outputs.tf emits it. Nothing said the same thing
+  # to the provider running this module, so the first real apply of it
+  # failed partway: resource group and storage account created, container
+  # and role assignment not.
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}
@@ -169,6 +185,17 @@ resource "azurerm_storage_container" "tfstate" {
   name                  = "tfstate"
   storage_account_name  = azurerm_storage_account.tfstate.name
   container_access_type = "private"
+
+  # Owner is a control-plane role and carries no data-plane access at all.
+  # Creating a container in an account that refuses keys goes through the
+  # data plane, so it needs the Blob Data Contributor assignment below --
+  # and nothing in the references between these two resources says so, so
+  # Terraform is free to create them in either order or at the same time.
+  #
+  # An Azure role assignment is not effective the instant it returns.
+  # If this fails with a 403 on AuthorizationPermissionMismatch, that is
+  # propagation rather than configuration: re-run the apply.
+  depends_on = [azurerm_role_assignment.tfstate_operator]
 }
 
 # Granted to whoever applied this module, so that the next command they
