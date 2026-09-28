@@ -106,13 +106,27 @@ resource "azurerm_key_vault" "vault_autounseal" {
   # Deny by default. Without this the Key Vault accepts traffic from any
   # network, which for the key that unseals Vault is a wide door.
   # AzureServices is bypassed so the platform's own integrations keep
-  # working; add the Vault subnet's ID here once the VM scale set exists.
+  # working.
   network_acls {
     default_action = "Deny"
     bypass         = "AzureServices"
 
-    # Without this the apply cannot create the key below from anywhere
-    # outside the VNet. See operator_ip_ranges in variables.tf.
+    # The nodes. This line used to be a comment saying to add the Vault
+    # subnet "once the VM scale set exists", and nothing ever did, so the
+    # firewall refused the one caller that has to get through:
+    #
+    #   403 Forbidden ... ForbiddenByFirewall
+    #   Client address is not authorized and caller is not a trusted service
+    #
+    # The managed identity had the access policy all along. A policy says
+    # who may use the key; the firewall decides whether they can reach it,
+    # and every node failed to start with a correct identity and no route.
+    # The subnet already carries the Microsoft.KeyVault service endpoint,
+    # which is the half that was done.
+    virtual_network_subnet_ids = [azurerm_subnet.vault.id]
+
+    # And the apply itself, which creates the key below from outside the
+    # VNet. See operator_ip_ranges in variables.tf.
     ip_rules = var.operator_ip_ranges
   }
 }
@@ -139,6 +153,21 @@ resource "azurerm_key_vault_access_policy" "operator" {
     "Recover",
     "SetRotationPolicy",
     "Update",
+  ]
+
+  # Keys and secrets are separate surfaces: a policy granting every key
+  # permission there is grants nothing on secrets. scripts/publish-boot
+  # strap-ca.sh writes the bootstrap CA as two secrets and reads them back
+  # to compare digests, so without this it fails with ForbiddenByPolicy on
+  # an identity holding Owner and a key policy on the same vault.
+  #
+  # Set and Get are what the script uses; List is what makes the result
+  # checkable by hand. Not Purge: the vault has purge protection on and a
+  # soft-deleted secret is meant to stay recoverable.
+  secret_permissions = [
+    "Get",
+    "List",
+    "Set",
   ]
 }
 

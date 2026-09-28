@@ -255,6 +255,52 @@ run "storage_requires_modern_tls" {
 # refuses a multi-zone scale set that is also in a single placement group,
 # and azurerm defaults single_placement_group to true. Asserting the zones
 # without this would pin half a configuration that cannot be created.
+# Auto-unseal needs two things that live in different files and are easy
+# to do by halves: the identity may use the key (compute.tf) and the nodes
+# can reach the vault holding it (main.tf, plus the subnet's service
+# endpoint in network.tf). The access policy was there from the start and
+# the network rule was a comment saying to add it later, so every node
+# came up with a correct identity, no route, and Vault refusing to start.
+# The operator writes the bootstrap CA; the nodes only read it. Both
+# halves are pinned because the asymmetry is the point, and because a
+# policy over keys says nothing about secrets -- which is how the write
+# came to fail on an identity that already held Owner.
+run "the_operator_can_publish_the_bootstrap_ca" {
+  command = plan
+
+  assert {
+    condition     = contains(azurerm_key_vault_access_policy.operator.secret_permissions, "Set")
+    error_message = "publish-bootstrap-ca.sh writes the CA as secrets; without Set it fails with ForbiddenByPolicy however much the identity holds elsewhere."
+  }
+
+  assert {
+    condition     = !contains(azurerm_key_vault_access_policy.operator.secret_permissions, "Purge")
+    error_message = "The vault has purge protection on deliberately; a soft-deleted secret is meant to stay recoverable."
+  }
+}
+
+run "the_nodes_can_reach_the_key_vault_that_unseals_them" {
+  # apply, not plan: a subnet id is not known until it exists, so under
+  # plan the comparison is an unknown value and the run errors rather than
+  # asserting anything. The mocked provider supplies one on apply.
+  command = apply
+
+  assert {
+    condition = contains(
+      azurerm_key_vault.vault_autounseal.network_acls[0].virtual_network_subnet_ids,
+      azurerm_subnet.vault.id
+    )
+    error_message = "The Key Vault denies by default, so the node subnet needs a rule or every node fails to start with ForbiddenByFirewall."
+  }
+
+  # The rule does nothing without the endpoint: traffic would leave through
+  # the NAT gateway and arrive as a public address the vault does not know.
+  assert {
+    condition     = contains(azurerm_subnet.vault.service_endpoints, "Microsoft.KeyVault")
+    error_message = "A virtual network rule needs the Microsoft.KeyVault service endpoint on the same subnet to match anything."
+  }
+}
+
 run "a_zonal_scale_set_is_not_in_one_placement_group" {
   command = plan
 
