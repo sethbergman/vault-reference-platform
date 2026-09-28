@@ -39,7 +39,11 @@ if [[ "${FAKE_TUNNEL_LISTEN_DELAY:-0}" != "0" ]]; then
     sleep "${FAKE_TUNNEL_LISTEN_DELAY}"
 fi
 
-python3 - "$PORT" <<'PY' &
+# The trailing arguments are not read. They put "bastion tunnel" on this
+# process's command line, which is how the real leaked process is found:
+# az's child is `python3 -Im azure.cli network bastion tunnel ...`, while
+# a heredoc's would be `python3 -` and invisible to any search for it.
+LISTENER_SRC='
 import socket, sys, time
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -51,7 +55,13 @@ while True:
         conn.close()
     except OSError:
         time.sleep(0.05)
-PY
+'
+python3 -c "$LISTENER_SRC" "$PORT" network bastion tunnel --port "$PORT" &
 LISTENER=$!
-trap 'kill "$LISTENER" 2>/dev/null' EXIT TERM INT
+
+# Deliberately no trap. The real `az` is a shell wrapper around the
+# process that holds the tunnel, and killing the wrapper does not kill
+# that child -- it keeps the local port and the Bastion session. A shim
+# that tidied up on TERM was modelling a better-behaved tool than the one
+# in use, and made the leftover count below unfailable.
 wait "$LISTENER"
