@@ -29,6 +29,19 @@ plugin: azure.azcollection.azure_rm
 include_vm_resource_groups:
   - "*"
 
+# Every node in this profile is a scale set instance, and the plugin does
+# not look at scale sets unless asked: its own documentation says
+# "defaults to no VMSS fetch". With only the line above, it enumerates
+# standalone virtual machines, finds none, and reports an empty inventory
+# with no warning and exit 0 — which is indistinguishable from a cluster
+# that has not come up yet.
+#
+# The first real Azure apply is what found this. Three healthy nodes were
+# running, tagged correctly, and `ansible-inventory --list` returned
+# nothing at all.
+include_vmss_resource_groups:
+  - "*"
+
 # Only running instances, only ones carrying the cluster tag.
 conditional_groups:
   vault_nodes: "'VaultCluster' in tags"
@@ -62,15 +75,15 @@ hostvar_expressions:
   ansible_host: id
   ansible_user: "'azureuser'"
 
-# scripts/bastion-proxy.sh wraps the tunnel into a ProxyCommand, because
-# `az network bastion tunnel` opens a local port and keeps running rather
-# than speaking stdio the way `aws ssm start-session` does. The two names
-# come from group_vars, written by terraform-to-ansible.sh from the
-# Terraform outputs -- typing them here would go stale the moment a cluster
-# is rebuilt, and would go stale silently.
-ansible_ssh_common_args: >-
-  -o StrictHostKeyChecking=accept-new
-  -o ProxyCommand="{{ playbook_dir }}/../scripts/bastion-proxy.sh
-  --target-resource-id %h --resource-port %p
-  --bastion-name {{ vault_bastion_name }}
-  --resource-group {{ vault_bastion_resource_group }}"
+# The ProxyCommand that carries every connection is NOT set here. It used
+# to be, and it never reached a single host: the top-level keys of a
+# plugin configuration are the plugin's own options, and an unknown one is
+# ignored silently rather than rejected. ansible_ssh_common_args is not an
+# azure_rm option, so it was read as nothing, and ssh -- given no proxy --
+# tried to resolve an Azure resource id as a hostname.
+#
+# It lives in group_vars/vault_nodes.yml instead, written by
+# scripts/terraform-to-ansible.sh beside vault_bastion_name and
+# vault_bastion_resource_group, which it interpolates. Anything added here
+# that is not an azure_rm option will disappear the same way, so check the
+# plugin's documented options before adding one.

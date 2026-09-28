@@ -187,18 +187,26 @@ fi
 echo "$INVENTORY_JSON" | jq -e . >/dev/null 2>&1 \
     || die "Inventory output is not valid JSON"
 
-# A host with no private_ip_address is dropped rather than issued a
-# certificate missing the SAN the role checks. The alternative fails on
-# the node, after the key has been written, instead of here.
+# A host with no address is dropped rather than issued a certificate
+# missing the SAN the role checks. The alternative fails on the node,
+# after the key has been written, instead of here.
+#
+# The two inventory plugins spell it differently, and neither spelling is
+# wrong: aws_ec2 gives private_ip_address, a string; azure_rm gives
+# private_ipv4_addresses, a list. This read only the first, so against the
+# Azure inventory it found nothing and reported it as an empty inventory —
+# which is what an unbooted cluster looks like, so the message sent the
+# reader to check a cluster that was already healthy.
 HOSTS="$(echo "$INVENTORY_JSON" | jq -r '
     (.vault_nodes.hosts // [])[] as $h
     | (._meta.hostvars[$h] // {})
-    | select(.private_ip_address != null)
-    | "\($h) \(.private_ip_address)"
+    | (.private_ip_address // (.private_ipv4_addresses // [])[0]) as $ip
+    | select($ip != null)
+    | "\($h) \($ip)"
 ')"
 
 if [[ -z "$HOSTS" ]]; then
-    die "No host in the vault_nodes group has a private_ip_address.
+    die "No host in the vault_nodes group has a private address.
        An empty inventory is the usual cause: the cluster has not finished
        booting, or these credentials cannot see it. Check with
          ansible-inventory -i ${INVENTORY} --graph"
@@ -316,8 +324,23 @@ while read -r node ip; do
         2>/dev/null || die "Failed to generate a key for ${node}"
 
     SAN="IP:${ip},DNS:${node},DNS:${CLUSTER_SERVERNAME},DNS:localhost,IP:127.0.0.1"
+    # An extra SAN is usually a name -- the AWS load balancer's -- but
+    # Azure's load balancer has no name to give, only an address, and
+    # openssl needs IP: for one of those. A DNS entry holding an address
+    # matches nothing: the leaf would verify for every client except the
+    # ones arriving through the load balancer, which is the traffic it was
+    # added for.
+    #
+    # The same rule as scripts/issue-bootstrap-cert.sh, which learned it
+    # first. These two must issue the same set or a node that signed its
+    # own leaf at boot and a node issued one here stop being
+    # interchangeable.
     for extra in ${EXTRA_SANS+"${EXTRA_SANS[@]}"}; do
-        SAN="${SAN},DNS:${extra}"
+        if [[ "$extra" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            SAN="${SAN},IP:${extra}"
+        else
+            SAN="${SAN},DNS:${extra}"
+        fi
     done
 
     # serverAuth,clientAuth: Raft peers authenticate to each other, so a
@@ -362,9 +385,9 @@ if [[ "$ADD_MISSING" == true ]]; then
     log "Next, for the new host only -- the others are configured already:"
     while read -r node _; do
         [[ -n "$node" ]] || continue
-        log "  cd ansible && ansible-playbook -i inventory/aws_ec2.yml \\"
+        log "  cd ansible && ansible-playbook -i ${INVENTORY#ansible/} \\"
         log "      playbooks/site.yml --limit ${node}"
     done <<< "$HOSTS"
 else
-    log "Next: cd ansible && ansible-playbook -i inventory/aws_ec2.yml playbooks/site.yml"
+    log "Next: cd ansible && ansible-playbook -i ${INVENTORY#ansible/} playbooks/site.yml"
 fi
