@@ -242,18 +242,63 @@ run "storage_requires_modern_tls" {
   }
 }
 
-run "flow_logs_are_enabled" {
+# Vault's audit device records requests it served; flow logs record the
+# attempts it never saw. Azure blocked the creation of new NSG flow logs
+# on 2025-06-30 and this provider cannot create the VNet flow logs that
+# replace them, so the profile ships with enable_flow_logs = false and an
+# apply that declared them unconditionally could not succeed at all.
+#
+# Both halves are pinned. Losing the first would let the default quietly
+# become "on" again and every apply fail; losing the second would let the
+# variable become a switch that turns on something half-configured.
+# Zone spread and placement group are one decision, not two: Azure
+# refuses a multi-zone scale set that is also in a single placement group,
+# and azurerm defaults single_placement_group to true. Asserting the zones
+# without this would pin half a configuration that cannot be created.
+run "a_zonal_scale_set_is_not_in_one_placement_group" {
   command = plan
 
-  # Vault's audit device records requests it served; these record the
-  # attempts it never saw.
   assert {
-    condition     = azurerm_network_watcher_flow_log.vault.enabled == true
-    error_message = "NSG flow logs must be enabled."
+    condition     = azurerm_linux_virtual_machine_scale_set.vault.single_placement_group == false
+    error_message = "A scale set spread across zones cannot be in a single placement group: Azure rejects the combination with platform_fault_domain_count = 1, and azurerm defaults this to true."
   }
 
   assert {
-    condition     = azurerm_network_watcher_flow_log.vault.retention_policy[0].enabled == true
+    condition     = length(azurerm_linux_virtual_machine_scale_set.vault.zones) > 1
+    error_message = "The scale set must span more than one zone, or losing a zone loses the cluster."
+  }
+}
+
+run "flow_logs_are_off_by_default_because_azure_refuses_them" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_network_watcher_flow_log.vault) == 0
+    error_message = "enable_flow_logs must default to false: Azure has blocked creating new NSG flow logs since 2025-06-30, so an apply that declares one fails."
+  }
+
+  # The watcher is free and stays, so that turning flow logs on later is a
+  # variable rather than a new resource.
+  assert {
+    condition     = azurerm_network_watcher.vault.name != ""
+    error_message = "The network watcher must exist regardless, or enabling flow logs later means creating it too."
+  }
+}
+
+run "flow_logs_are_fully_configured_when_switched_on" {
+  command = plan
+
+  variables {
+    enable_flow_logs = true
+  }
+
+  assert {
+    condition     = azurerm_network_watcher_flow_log.vault[0].enabled == true
+    error_message = "A flow log that is created but not enabled records nothing."
+  }
+
+  assert {
+    condition     = azurerm_network_watcher_flow_log.vault[0].retention_policy[0].enabled == true
     error_message = "Flow log retention must be enabled or logs are discarded immediately."
   }
 }

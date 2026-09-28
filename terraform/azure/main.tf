@@ -110,7 +110,36 @@ resource "azurerm_key_vault" "vault_autounseal" {
   network_acls {
     default_action = "Deny"
     bypass         = "AzureServices"
+
+    # Without this the apply cannot create the key below from anywhere
+    # outside the VNet. See operator_ip_ranges in variables.tf.
+    ip_rules = var.operator_ip_ranges
   }
+}
+
+# The two access policies this profile creates are for the VM's managed
+# identity and the storage account's, and neither is for whoever runs the
+# apply. The first real apply stopped here:
+#
+#   403 Forbidden ... does not have keys get permission on key vault
+#
+# Create rather than Get alone: the key resource reads the vault before
+# writing to it, and reads the rotation policy after.
+resource "azurerm_key_vault_access_policy" "operator" {
+  key_vault_id = azurerm_key_vault.vault_autounseal.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  key_permissions = [
+    "Create",
+    "Delete",
+    "Get",
+    "GetRotationPolicy",
+    "List",
+    "Recover",
+    "SetRotationPolicy",
+    "Update",
+  ]
 }
 
 resource "azurerm_key_vault_key" "vault_autounseal" {
@@ -119,6 +148,10 @@ resource "azurerm_key_vault_key" "vault_autounseal" {
   key_type     = "RSA"
   key_size     = 2048
   key_opts     = ["wrapKey", "unwrapKey"]
+
+  # Nothing in the references between them says the key needs the policy
+  # that permits creating it, so Terraform is free to do both at once.
+  depends_on = [azurerm_key_vault_access_policy.operator]
 }
 
 # The access policy granting Vault's azurekeyvault seal wrap/unwrap on

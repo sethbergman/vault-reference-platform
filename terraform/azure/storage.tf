@@ -69,9 +69,30 @@ resource "azurerm_storage_account" "vault" {
     # public internet.
     virtual_network_subnet_ids = [azurerm_subnet.vault.id]
     bypass                     = ["AzureServices"]
+
+    # The nodes are covered by the subnet rule above. This is for the
+    # apply itself, which creates the container from wherever Terraform is
+    # being run. See operator_ip_ranges in variables.tf.
+    ip_rules = var.operator_ip_ranges
   }
 
   tags = module.vault_cluster.cluster_tags
+
+  # azurerm_storage_account_customer_managed_key below points this
+  # account's encryption at the auto-unseal key. This resource does not
+  # know that, so it reads the account back, finds a customer_managed_key
+  # block it never declared, and plans to remove it — which resets the
+  # account to Microsoft-managed keys. Applying that makes the other
+  # resource plan to put it back. The two undo each other on alternate
+  # applies, forever.
+  #
+  # The damage is quiet rather than loud. Nothing fails: snapshots keep
+  # being written, to an account whose encryption key silently changed
+  # hands. Whoever runs the apply sees "1 to change" and a block being
+  # removed that they did not put there.
+  lifecycle {
+    ignore_changes = [customer_managed_key]
+  }
 }
 
 # Encrypted with the same Key Vault key that seals the cluster, rather

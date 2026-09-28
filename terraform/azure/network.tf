@@ -186,6 +186,11 @@ resource "azurerm_network_watcher" "vault" {
 }
 
 resource "azurerm_network_watcher_flow_log" "vault" {
+  # Azure refuses to create new NSG flow logs since 2025-06-30, and this
+  # provider cannot create the VNet flow logs that replace them. See
+  # enable_flow_logs in variables.tf for why that leaves this off.
+  count = var.enable_flow_logs ? 1 : 0
+
   name                 = "${var.cluster_name}-flow-log"
   network_watcher_name = azurerm_network_watcher.vault.name
   resource_group_name  = azurerm_resource_group.vault.name
