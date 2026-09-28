@@ -124,6 +124,42 @@ if [[ "$ARGS" == *"Microsoft.Compute/skus"* ]]; then
     exit 0
 fi
 
+# What this cluster already holds. The query filters on the cluster tag
+# and the size together, so these answer only when both match -- a
+# different cluster's instances, or the same cluster at a different size,
+# are competition rather than credit, and the shim has to be able to say
+# so or the test cannot tell the two apart.
+# A filter that is absent is not a filter that fails to match. Azure
+# returns every scale set when the query does not narrow them, so a
+# dropped clause has to look like "everything", or the assertions about
+# not crediting somebody else's cluster pass against code that credits it.
+az_filter_selects() {
+    local clause="$1" want="$2"
+    case "$ARGS" in
+        *"${clause}=="*) [[ "$ARGS" == *"${clause}=='${want}'"* ]] ;;
+        *) return 0 ;;   # not filtered on at all: everything matches
+    esac
+}
+
+if [[ "$ARGS" == *"vmss list"* ]]; then
+    [[ "${FAKE_AZ_VMSS_RC:-0}" == "0" ]] || exit "${FAKE_AZ_VMSS_RC}"
+    if az_filter_selects "tags.cluster" "${FAKE_AZ_CLUSTER:-vault-reference}" \
+       && az_filter_selects "sku.name" "${FAKE_AZ_HELD_SIZE:-Standard_B2s}"; then
+        [[ "${FAKE_AZ_HELD_CAPACITY:-0}" == "0" ]] || printf '%s\n' "${FAKE_AZ_HELD_CAPACITY}"
+    fi
+    exit 0
+fi
+
+if [[ "$ARGS" == *"network public-ip list"* ]]; then
+    [[ "${FAKE_AZ_PIP_RC:-0}" == "0" ]] || exit "${FAKE_AZ_PIP_RC}"
+    if az_filter_selects "tags.cluster" "${FAKE_AZ_CLUSTER:-vault-reference}"; then
+        printf '%s\n' "${FAKE_AZ_HELD_IPS:-0}"
+    else
+        printf '0\n'
+    fi
+    exit 0
+fi
+
 if [[ "$ARGS" == *"vm list-usage"* ]]; then
     [[ "${FAKE_AZ_VM_USAGE_RC:-0}" == "0" ]] || exit "${FAKE_AZ_VM_USAGE_RC}"
     # Decoys first, and every one of them a row a careless match would
