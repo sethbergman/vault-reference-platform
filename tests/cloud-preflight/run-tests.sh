@@ -90,6 +90,9 @@ reset_scenario() {
     export FAKE_AZ_BASTION_EXT=installed
     export FAKE_AZ_ROLE_RC=0
     export FAKE_AZ_OID_RC=0
+    export FAKE_AZ_TOKEN_RC=0
+    export FAKE_AZ_REST_RC=0
+    export FAKE_AZ_ZONES_RC=0
     export FAKE_AZ_OID="52448b5d-fee6-4109-a9d3-816b9a98899a"
     # Owner, not Contributor. The default scenario should be a subscription
     # that can run the profile, so that a case which changes one thing is
@@ -619,6 +622,85 @@ if grep -q "cannot be purged for 90 days" <<< "$OUT"; then
     ok "Azure: names the Key Vault retention before you apply, not after"
 else
     bad "Azure: names the Key Vault retention before you apply, not after"
+fi
+
+printf '\n=== Pre-flight: Azure credentials are checked against Azure ===\n'
+
+# `az account show` reads a local cache, so it answers whether or not the
+# token works. On 2026-09-28 a tenant started refusing the device-code flow
+# the login had used; account show kept reporting the subscription, this
+# section said ok, and the quota section turned every refused call into
+# "this subscription is not offered Standard_F1als_v7" -- which sent half
+# an hour at the wrong variable. The AWS branch never had the bug: it calls
+# sts get-caller-identity, which is a real request.
+reset_scenario
+export FAKE_AZ_TOKEN_RC=1
+run_preflight --cloud azure
+if grep -q "Azure refused a token" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a dead token is a failure, not a cached success"
+else
+    bad "a dead token is a failure, not a cached success" \
+        "exit ${RC}; $(grep -i 'authenticated' <<< "$OUT" || true)"
+fi
+
+# The code is the whole diagnosis -- AADSTS530035 (the flow is blocked) and
+# AADSTS50076 (MFA required) need completely different responses, and az
+# buries both under three lines of suggested commands.
+reset_scenario
+export FAKE_AZ_TOKEN_RC=1
+run_preflight --cloud azure
+if grep -q "AADSTS530035" <<< "$OUT"; then
+    ok "and the AADSTS code reaches the reader"
+else
+    bad "and the AADSTS code reaches the reader" \
+        "$(grep -i 'refused' <<< "$OUT" || true)"
+fi
+
+# The regression, stated directly. Nothing below the credentials section
+# may report a finding about the subscription when nothing could be asked.
+reset_scenario
+export FAKE_AZ_TOKEN_RC=1
+run_preflight --cloud azure
+if ! grep -q "is not offered" <<< "$OUT" \
+    && ! grep -q "no availability zone" <<< "$OUT" \
+    && ! grep -q "is restricted in" <<< "$OUT"; then
+    ok "and no verdict is reached about a subscription nothing could be asked of"
+else
+    bad "and no verdict is reached about a subscription nothing could be asked of" \
+        "$(grep -E 'not offered|availability zone|restricted' <<< "$OUT" || true)"
+fi
+
+# Distinguishable from the token being fine and the subscription genuinely
+# not offering the size, which must still fail.
+reset_scenario
+export FAKE_AZ_REST_RC=1
+run_preflight --cloud azure
+if grep -q "could not read which VM sizes" <<< "$OUT" \
+    && ! grep -q "is not offered" <<< "$OUT"; then
+    ok "a refused SKU read is unchecked, not a size the subscription lacks"
+else
+    bad "a refused SKU read is unchecked, not a size the subscription lacks" \
+        "$(grep -E 'not offered|could not read' <<< "$OUT" || true)"
+fi
+
+reset_scenario
+export FAKE_AZ_ZONES_RC=1
+run_preflight --cloud azure
+if grep -q "could not read which zones" <<< "$OUT" \
+    && ! grep -q "no availability zone" <<< "$OUT"; then
+    ok "a refused zone read is unchecked, not a size with no zones"
+else
+    bad "a refused zone read is unchecked, not a size with no zones" \
+        "$(grep -E 'availability zone|could not read' <<< "$OUT" || true)"
+fi
+
+# A working token still has to say which account the money comes out of.
+reset_scenario
+run_preflight --cloud azure
+if grep -q "the token still works" <<< "$OUT" && grep -q "subscription:" <<< "$OUT"; then
+    ok "a working token reports the subscription it is about to spend in"
+else
+    bad "a working token reports the subscription it is about to spend in"
 fi
 
 printf '\n=== Pre-flight: Azure permissions ===\n'

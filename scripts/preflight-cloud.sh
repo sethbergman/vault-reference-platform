@@ -33,6 +33,14 @@
 # for a guest account, so it warned identically whether the account was
 # Owner or Contributor. tests/cloud-preflight/README.md has both in full.
 #
+# Starting that apply on 2026-09-28 found the fourth, the same mistake one
+# section earlier: `az account show` reads a local cache, so the
+# credentials check passed while every real call was refused, and the quota
+# section reported the refusals as "this subscription is not offered
+# Standard_F1als_v7". A refused call and an empty answer both arrive as no
+# output and mean opposite things. The credentials check now acquires a
+# token, and prints the AADSTS code when it cannot.
+#
 # The Azure checks cost three API calls of about seven seconds. That is
 # deliberate: `az vm list-skus` filters client-side, downloading every SKU
 # in every region, and took 6m15s on a real subscription even with --size
@@ -197,9 +205,35 @@ if [[ "$CLOUD" == "aws" ]] && command -v aws >/dev/null 2>&1; then
         bad "could not resolve an AWS identity" "aws sts get-caller-identity failed"
     fi
 elif [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
+    # `az account show` reads a local cache. It reports who you logged in
+    # as once, not whether that still works, and it is happy to answer
+    # while every real call is being refused — which is what happened on
+    # 2026-09-28, when a tenant older than the login started rejecting the
+    # device-code flow. This section said "ok authenticated to Azure" and
+    # the quota section below turned the refusals into "this subscription
+    # is not offered Standard_F1als_v7": a confident, specific, wrong
+    # answer pointing at the wrong variable.
+    #
+    # The AWS branch above never had this bug, because
+    # `sts get-caller-identity` is a real call. This one was written to
+    # mirror it and picked a primitive that is not.
+    #
+    # Acquiring a token is the cheapest call that actually reaches Azure.
+    # Its error carries the AADSTS code, which is the one part worth
+    # printing: those codes are individually searchable and mean very
+    # different things, and az buries it under three lines of suggested
+    # commands.
+    AZ_TOKEN_RC=0
+    AZ_TOKEN_ERR="$(az account get-access-token --query expiresOn -o tsv 2>&1 >/dev/null)" \
+        || AZ_TOKEN_RC=$?
     SUB="$(az account show --query '{name:name,id:id}' -o json 2>/dev/null || true)"
-    if [[ -n "$SUB" ]]; then
-        ok "authenticated to Azure"
+    if [[ "$AZ_TOKEN_RC" != "0" ]]; then
+        AZ_ERR="$(grep -om1 'AADSTS[0-9]*[^.]*\.' <<< "$AZ_TOKEN_ERR" || true)"
+        [[ -n "$AZ_ERR" ]] || AZ_ERR="$(head -1 <<< "$AZ_TOKEN_ERR")"
+        bad "Azure refused a token for this session" \
+            "${AZ_ERR:-az account get-access-token failed} — run: az login. Nothing below was checked against Azure, whatever it says."
+    elif [[ -n "$SUB" ]]; then
+        ok "authenticated to Azure, and the token still works"
         info "        subscription: $(tr -d '\n' <<< "$SUB")"
     else
         bad "could not resolve an Azure subscription" "run: az login"
@@ -343,13 +377,21 @@ if [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
     # tsv` renders one line per field and prints nothing for an empty
     # array, so a middle field that happens to be empty shifts every line
     # after it — and the check then reads the wrong line and still says ok.
+    SKU_RC=0
     SKU_FACTS="$(az rest --method get --url "$SKU_URL" \
         --query "${SKU_SEL} | [0].[family, restrictions[].join(':', [type, reasonCode])]" \
-        -o tsv 2>/dev/null || true)"
+        -o tsv 2>/dev/null)" || SKU_RC=$?
     VM_FAMILY="$(sed -n 1p <<< "$SKU_FACTS")"
     SKU_RESTRICTIONS="$(sed -n 2p <<< "$SKU_FACTS")"
 
-    if [[ -z "$VM_FAMILY" ]]; then
+    # A refused call and an empty answer both arrive as no output, and they
+    # mean opposite things: one says nothing was checked, the other says
+    # Azure will not sell you this size. Reporting the first as the second
+    # is how a dead token became a VM-size problem for half an hour.
+    if [[ "$SKU_RC" != "0" ]]; then
+        warn "could not read which VM sizes ${LOCATION} offers this subscription" \
+            "so ${VM_SIZE} was not checked at all — if the credentials section failed, that is why"
+    elif [[ -z "$VM_FAMILY" ]]; then
         bad "this subscription is not offered ${VM_SIZE} in ${LOCATION}" \
             "the apply fails creating the scale set; export TF_VAR_vm_size and TF_VAR_location, and note the profile defaults to Standard_B2s in eastus"
     else
@@ -364,10 +406,15 @@ if [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
         # than tab-separated. The profile pins availability_zones to three
         # and sets zone_balance, which fails on a size the region offers
         # in fewer.
+        SKU_ZONES_RC=0
         SKU_ZONES="$(az rest --method get --url "$SKU_URL" \
-            --query "${SKU_SEL} | [0].locationInfo[0].zones" -o tsv 2>/dev/null || true)"
+            --query "${SKU_SEL} | [0].locationInfo[0].zones" -o tsv 2>/dev/null)" \
+            || SKU_ZONES_RC=$?
         ZONE_COUNT="$(grep -c . <<< "$SKU_ZONES" || true)"
-        if [[ "$ZONE_COUNT" -ge 3 ]]; then
+        if [[ "$SKU_ZONES_RC" != "0" ]]; then
+            warn "could not read which zones ${LOCATION} offers ${VM_SIZE} in" \
+                "so the zone spread was not checked"
+        elif [[ "$ZONE_COUNT" -ge 3 ]]; then
             ok "${VM_SIZE} is offered in ${ZONE_COUNT} availability zones in ${LOCATION}"
         elif [[ "$ZONE_COUNT" -eq 0 ]]; then
             bad "${VM_SIZE} is offered in no availability zone in ${LOCATION}" \
