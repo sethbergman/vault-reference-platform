@@ -6,6 +6,31 @@ printf 'az %s\n' "$*" >> "${FAKE_LOG}"
 
 ARGS="$*"
 
+# --- the token ------------------------------------------------------------
+# `az account show` and `az extension show` are answered from local state
+# and keep working when the token is dead; everything else reaches Azure
+# and does not. Modelling only the first call would let the pre-flight look
+# fine below the credentials section, which is exactly the shape of the bug
+# this models.
+az_needs_azure() {
+    case "$ARGS" in
+        *"account show"*|*"extension show"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+if [[ "${FAKE_AZ_TOKEN_RC:-0}" != "0" ]] && az_needs_azure; then
+    printf '%s\n' "${FAKE_AZ_TOKEN_ERR:-ERROR: AADSTS530035: Access has been blocked by security defaults. Trace ID: 4f87b28c-87e8-48d9-a094-0576a9e4d700}" >&2
+    printf 'Run the command below to authenticate interactively:\n' >&2
+    printf 'az login --tenant "f9a31021-e5ae-4bef-9622-4b6847494f3a"\n' >&2
+    exit "${FAKE_AZ_TOKEN_RC}"
+fi
+
+if [[ "$ARGS" == *"account get-access-token"* ]]; then
+    printf '%s\n' "${FAKE_AZ_TOKEN_EXPIRY:-2026-09-28 16:04:33.000000}"
+    exit 0
+fi
+
 if [[ "$ARGS" == *"account show"* ]]; then
     [[ "${FAKE_AZ_ACCOUNT_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ACCOUNT_RC}"
     if [[ "$ARGS" == *"user.name"* ]]; then
@@ -63,6 +88,10 @@ fi
 # The three az rest queries are told apart by what they ask for, since
 # implementing JMESPath here would be implementing the thing under test.
 if [[ "$ARGS" == *"Microsoft.Compute/skus"* ]]; then
+    if [[ "$ARGS" == *"locationInfo[0].zones"* ]]; then
+        [[ "${FAKE_AZ_ZONES_RC:-0}" == "0" ]] || exit "${FAKE_AZ_ZONES_RC}"
+    fi
+    [[ "${FAKE_AZ_REST_RC:-0}" == "0" ]] || exit "${FAKE_AZ_REST_RC}"
     # An unknown size returns an empty selection from all three queries,
     # exactly as the API does.
     if [[ -z "${FAKE_AZ_SKU_FAMILY-StandardFalsv7Family}" ]]; then

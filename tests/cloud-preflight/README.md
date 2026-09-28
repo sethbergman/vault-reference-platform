@@ -44,6 +44,24 @@ The second and third were found by preparing the Azure apply on
   check could not distinguish the case it exists to catch from the case it
   exists to pass.
 
+The fourth was found three days later, on 2026-09-28, trying to start the
+apply. `az account show` reads a **local cache**: it reports who you logged
+in as once, not whether that still works. The tenant had begun refusing the
+device-code flow the login had used, so every call that reached Azure was
+rejected while `account show` kept answering — and the pre-flight said `ok
+authenticated to Azure`, then turned the refusals into `FAIL this
+subscription is not offered Standard_F1als_v7`. A confident, specific,
+wrong answer pointing at the wrong variable, and half an hour spent on VM
+sizes before anyone looked at the token. The AWS branch never had the bug:
+`sts get-caller-identity` is a real request. The Azure branch was written
+to mirror it and picked a primitive that is not.
+
+It is the same mistake as the quota section in a different place. A refused
+call and an empty answer both arrive as no output, and they mean opposite
+things — *nothing was checked* versus *Azure will not sell you this*. Two
+checks conflated them and now keep them apart, and the credentials check
+acquires a token so the failure is named where it happens instead.
+
 The suite passed throughout, because the `az` shim shared both
 assumptions — it answered `--assignee` happily, and there was nothing to
 ask about quota. That is the shim failure mode
@@ -55,6 +73,7 @@ not the output the script wants.
 | Shim | What it models that matters |
 |---|---|
 | `az` | `--assignee` **fails** with the graph error, as the real CLI does for a guest identity. Only `--assignee-object-id` answers. The quota rows carry decoys a careless match would take instead: `lowPriorityCores` contains `cores`, `PublicIPAddresses` is the all-SKU total with a roomy limit beside a tight Standard one, and two families sit at a limit of 0. The family row comes back in a different case from the SKU's own `family`, which is how Azure returns it. |
+| `az` (tokens) | A dead token fails **every** call that reaches Azure while `account show` and `extension show` keep answering from local state. Modelling only the one call would let a test pass against a failure mode nobody has: it is the combination that produced the wrong answer. |
 | `aws` | Elastic IP usage, key-pair lookup, and the versioned-bucket paging teardown walks. |
 | `terraform` | `plan`, `destroy`, `state list` and `output` return codes, so the pre-flight's own decisions are what is under test rather than Terraform's. |
 
@@ -103,6 +122,12 @@ nothing.
 | Compare `PremiumIO` in the wrong case | a size without premium storage fails: `os_disk` is `Premium_LRS` |
 | Report an unreadable quota as a shortfall | quota that cannot be read is a warning, not a shortfall |
 | Drop the cloud guard on the Azure block | the AWS profile asks Azure nothing |
+| Swallow the token call's exit status | a dead token is a failure, not a cached success |
+| Report a generic message instead of the code | and the AADSTS code reaches the reader |
+| Treat a refused SKU read as an empty answer again | and no verdict is reached about a subscription nothing could be asked of |
+| Collapse the SKU read's exit status | a refused SKU read is unchecked, not a size the subscription lacks |
+| Treat a refused zone read as no zones again | a refused zone read is unchecked, not a size with no zones |
+| Stop printing which subscription the money comes from | a working token reports the subscription it is about to spend in |
 
 One assertion is weaker than it looks and is recorded here rather than
 overclaimed: *and says which kind of restriction it is* pins that both
