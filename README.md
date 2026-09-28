@@ -32,9 +32,10 @@ that part down.
   and destroys cleanly against an emulated AWS API on every PR, and was
   applied to a real account once, on 2026-09-17 — which found ten
   defects; a second on 2026-09-24 watched a replacement node heal
-  itself. `terraform/azure` has
-  never been applied. See [`docs/cloud-apply.md`](docs/cloud-apply.md)
-  for what that session settled and what it did not.
+  itself. `terraform/azure` was applied once, on 2026-09-28, which found
+  nineteen more — it could not have applied as written, on any
+  subscription. See [`docs/cloud-apply.md`](docs/cloud-apply.md) for what
+  those sessions settled and what they did not.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -243,13 +244,18 @@ See [`docs/deployment.md`](docs/deployment.md).
 
 ## Before a cloud apply
 
-`terraform/aws` has been applied to a real account once, on 2026-09-17;
-`terraform/azure` never has. The emulated apply in CI settles that the
-AWS configuration is one the API accepts; it says nothing about whether
-the cluster it describes comes up, which is what that session was for —
-and what it found is in
+`terraform/aws` has been applied to a real account twice, on 2026-09-17
+and 2026-09-24; `terraform/azure` once, on 2026-09-28. The emulated apply
+in CI settles that the AWS configuration is one the API accepts; it says
+nothing about whether the cluster it describes comes up, which is what
+those sessions were for — and what they found is in
 [`docs/cloud-apply.md`](docs/cloud-apply.md). Run the pre-flight first
 either way.
+
+Each of those applies found defects no test here could reach, and the
+pre-flight was itself the subject of several. That is the argument for
+running it rather than against it: every one was cheaper to find there
+than at the scale set.
 
 ```bash
 export TF_VAR_ssh_key_name=your-key TF_VAR_az_count=2
@@ -466,13 +472,24 @@ What stands between here and v1.0, in order:
    could reach. Still never reached: snapshots to the bucket, PKI and
    audit on a real node, and any identity narrower than an administrator.
    See [`docs/cloud-apply.md`](docs/cloud-apply.md).
-2. **A real Azure apply.** A separate item, not the same job twice.
-   `terraform/azure` discovers peers through a scale set rather than
-   tags, has a health probe with no status-code matcher, and reconciles
-   a lost instance rather than replacing it — three mechanisms with no
-   AWS counterpart, and the first is where mocked tests already missed a
-   real bug. [`docs/cloud-apply.md`](docs/cloud-apply.md) lists what each
-   apply would settle.
+2. **A real Azure apply.** Done once, 2026-09-28, and **closed**.
+   Settled: **auto-unseal through Key Vault**, **a replacement node
+   signing its own certificate** from a CA it fetched with its own
+   managed identity, **Raft discovery by scale-set enumeration**, and
+   **reachability through Azure Bastion** — the first three being
+   mechanisms with no AWS counterpart. Final state was three voters with
+   `FailureTolerance: 1`.
+
+   The profile could not have applied as written, on any subscription.
+   Nineteen fixes, none reachable by `terraform test` against mocked
+   providers or by the emulated apply — all 30 Azure assertions passed
+   throughout, and still do. The one worth knowing about did not fail at
+   all: the storage account and its customer-managed key undid each
+   other on alternate applies, moving snapshot encryption between Key
+   Vault and Microsoft-managed keys while everything reported success.
+   Still never reached: snapshots to the container, a restore, PKI and
+   audit on a real node, and any identity narrower than an
+   administrator. See [`docs/cloud-apply.md`](docs/cloud-apply.md).
 3. **Off-host audit shipping.** The audit trail now outlives the node,
    an edit to it is detectable, and the anchors that make it detectable
    now leave the machine. `scripts/ship-anchors.sh` writes each one to an
