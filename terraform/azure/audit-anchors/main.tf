@@ -67,6 +67,20 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # The account below sets shared_access_key_enabled = false, and the
+  # provider's own data-plane calls default to a key: the Blob Service
+  # poll that finishes creating the account, and creating the container
+  # in it. Without this both are refused by the very control this module
+  # relies on:
+  #
+  #   403 Key based authentication is not permitted on this storage
+  #   account, with KeyBasedAuthenticationNotPermitted
+  #
+  # The same omission was in terraform/azure/bootstrap and
+  # terraform/azure, where a real apply found it. This module has never
+  # been applied; tests/preflight-static found it here instead.
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}
@@ -174,10 +188,32 @@ resource "azurerm_storage_account" "anchors" {
   tags = var.tags
 }
 
+# Granted to whoever applies this module, and needed only to create the
+# container below. Owner is a control-plane role and carries no
+# data-plane access at all, so in an account with no key there is no
+# other way to make one.
+#
+# Deliberately not the append-only role defined below: that one exists to
+# stop the shipper deleting anchors, and creating a container is not
+# something the shipper does. Two principals, two grants, and neither is
+# a superset of the other by accident.
+resource "azurerm_role_assignment" "anchors_operator" {
+  scope                = azurerm_storage_account.anchors.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 resource "azurerm_storage_container" "anchors" {
   name                  = var.anchor_container_name
   storage_account_name  = azurerm_storage_account.anchors.name
   container_access_type = "private"
+
+  # Nothing in the references between these two says the container needs
+  # the assignment above, so Terraform is free to create them in either
+  # order or at once. An Azure role assignment is also not effective the
+  # instant it returns: a 403 on AuthorizationPermissionMismatch here is
+  # propagation rather than configuration, and re-running is the answer.
+  depends_on = [azurerm_role_assignment.anchors_operator]
 }
 
 # The credential that ships anchors cannot remove them.

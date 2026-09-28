@@ -604,6 +604,46 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== Cross-resource invariants a real apply charged us for ===\n'
+# ---------------------------------------------------------------------------
+# Nine of the nineteen defects the first Azure apply found were visible in
+# the source the whole time. Not to `terraform validate`, which sees one
+# file, nor to `terraform test`, which sees the configuration's shape
+# through mocked providers that enforce none of the cloud's own rules --
+# but to anything willing to read two resources at once and know what the
+# pair has to satisfy.
+#
+# check_cloud_invariants.py holds them as general rules rather than as
+# re-detections of what broke: a check that recognised only the resource
+# names from that session would pass the next module somebody writes,
+# which is the module that will have the same bug. It earned that on its
+# first run, finding the same defect a third time in
+# terraform/azure/audit-anchors -- a module that has never been applied,
+# and would have failed exactly as the other two did.
+#
+# Each rule also reports when it found nothing to check, and two of them
+# treat that as a failure: a rule that silently applies to nothing is
+# indistinguishable from a rule that passes.
+INV_OUT="$(python3 "${SCRIPT_DIR}/check_cloud_invariants.py" "$REPO_ROOT" 2>&1)"
+INV_RC=$?
+
+while IFS= read -r line; do
+    case "$line" in
+        "OK "*)  ok "${line#OK }" ;;
+        "BAD "*) bad "${line#BAD }" ;;
+        *)       [[ -z "$line" ]] || bad "unreadable invariant output" "$line" ;;
+    esac
+done <<< "$INV_OUT"
+
+# A crash is not a pass. Without this an exception inside the checker
+# prints a traceback, matches none of the cases above, and the suite
+# moves on having asserted nothing.
+if [[ "$INV_RC" != "0" && "$INV_OUT" != *"BAD "* ]]; then
+    bad "the invariant checker exited ${INV_RC} without reporting a finding" \
+        "$(tail -3 <<< "$INV_OUT")"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"
