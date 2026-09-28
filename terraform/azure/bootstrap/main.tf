@@ -46,6 +46,22 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # The account below sets shared_access_key_enabled = false, and the
+  # provider's own data-plane calls default to a key: the Blob Service
+  # availability poll that finishes creating the account, and creating the
+  # container inside it. Without this they are refused by the very control
+  # this module exists to set:
+  #
+  #   403 Key based authentication is not permitted on this storage account
+  #     with KeyBasedAuthenticationNotPermitted
+  #
+  # The comments below say twice that the *backend* needs
+  # use_azuread_auth, and outputs.tf emits it. Nothing said the same thing
+  # to the provider running this module, so the first real apply of it
+  # failed partway: resource group and storage account created, container
+  # and role assignment not.
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}
@@ -131,10 +147,25 @@ resource "azurerm_storage_account" "tfstate" {
   # The control that is not optional either way is above:
   # shared_access_key_enabled = false, so reaching the account is not the
   # same as being able to read it.
-  network_rules {
-    default_action = length(var.allowed_ip_ranges) > 0 ? "Deny" : "Allow"
-    ip_rules       = var.allowed_ip_ranges
-    bypass         = ["AzureServices"]
+  # Declared only when there is something to declare. A network_rules
+  # block with default_action = "Allow" and no addresses says exactly what
+  # a storage account already does by default -- Azure stores
+  # defaultAction Allow and bypass AzureServices either way -- but the
+  # provider does not match its own empty block against what comes back,
+  # so every subsequent plan wanted to add it again. Applying it changed
+  # nothing and the next plan wanted it again.
+  #
+  # A plan that never reads clean is worse than the noise: it teaches
+  # whoever runs it that one pending change is normal here, and real
+  # drift arrives looking exactly like that.
+  dynamic "network_rules" {
+    for_each = length(var.allowed_ip_ranges) > 0 ? [1] : []
+
+    content {
+      default_action = "Deny"
+      ip_rules       = var.allowed_ip_ranges
+      bypass         = ["AzureServices"]
+    }
   }
 
   # The Azure half of the AWS bucket's prevent_destroy. `terraform
@@ -169,6 +200,17 @@ resource "azurerm_storage_container" "tfstate" {
   name                  = "tfstate"
   storage_account_name  = azurerm_storage_account.tfstate.name
   container_access_type = "private"
+
+  # Owner is a control-plane role and carries no data-plane access at all.
+  # Creating a container in an account that refuses keys goes through the
+  # data plane, so it needs the Blob Data Contributor assignment below --
+  # and nothing in the references between these two resources says so, so
+  # Terraform is free to create them in either order or at the same time.
+  #
+  # An Azure role assignment is not effective the instant it returns.
+  # If this fails with a 403 on AuthorizationPermissionMismatch, that is
+  # propagation rather than configuration: re-run the apply.
+  depends_on = [azurerm_role_assignment.tfstate_operator]
 }
 
 # Granted to whoever applied this module, so that the next command they

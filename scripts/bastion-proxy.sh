@@ -130,10 +130,30 @@ s.close()' 2>/dev/null)" || die "could not find a free local port (python3 missi
 
 TUNNEL_PID=""
 cleanup() {
-    if [[ -n "$TUNNEL_PID" ]]; then
-        kill "$TUNNEL_PID" 2>/dev/null || true
-        wait "$TUNNEL_PID" 2>/dev/null || true
-    fi
+    [[ -n "$TUNNEL_PID" ]] || return 0
+
+    # `az` is a shell wrapper around the process that actually holds the
+    # tunnel:
+    #
+    #   bash /usr/bin/az network bastion tunnel ...
+    #    \_ python3 -Im azure.cli network bastion tunnel ...
+    #
+    # Killing the wrapper leaves the child running, still bound to the
+    # local port and still holding a Bastion session. Ansible opens a
+    # connection per host and reconnects when ControlPersist expires, so
+    # one playbook run left six behind -- invisibly, until a later run
+    # cannot bind or the Bastion refuses another session.
+    #
+    # Children first: killing the parent first can reparent them to init,
+    # where this loop will not find them.
+    local child
+    for child in $(ps -eo pid,ppid --no-headers 2>/dev/null \
+        | awk -v p="$TUNNEL_PID" '$2 == p { print $1 }'); do
+        kill "$child" 2>/dev/null || true
+    done
+
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    wait "$TUNNEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 

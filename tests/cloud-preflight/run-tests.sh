@@ -90,6 +90,7 @@ reset_scenario() {
     export FAKE_AZ_BASTION_EXT=installed
     export FAKE_AZ_ROLE_RC=0
     export FAKE_AZ_OID_RC=0
+    export TF_VAR_ssh_public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQExample preflight@example.com"
     export FAKE_AZ_TOKEN_RC=0
     export FAKE_AZ_REST_RC=0
     export FAKE_AZ_ZONES_RC=0
@@ -115,6 +116,13 @@ reset_scenario() {
     export FAKE_AZ_IP_USED=0
     export FAKE_AZ_IP_LIMIT=3
     export FAKE_AZ_VM_USAGE_RC=0
+    # Nothing deployed: the pre-flight's first run, before any apply.
+    export FAKE_AZ_CLUSTER=vault-reference
+    export FAKE_AZ_HELD_SIZE=Standard_B2s
+    export FAKE_AZ_HELD_CAPACITY=0
+    export FAKE_AZ_HELD_IPS=0
+    export FAKE_AZ_VMSS_RC=0
+    export FAKE_AZ_PIP_RC=0
     export FAKE_AZ_NET_USAGE_RC=0
 
     # The pre-flight reads these now, so one leaking out of a case -- or
@@ -622,6 +630,163 @@ if grep -q "cannot be purged for 90 days" <<< "$OUT"; then
     ok "Azure: names the Key Vault retention before you apply, not after"
 else
     bad "Azure: names the Key Vault retention before you apply, not after"
+fi
+
+printf '\n=== Pre-flight: quota is what is still needed ===\n'
+
+# Run against a cluster that is already up -- to re-check it, or to finish
+# a partial apply -- the total it needs is already sitting in the "used"
+# column. Comparing the total to what is free counts the cluster as its
+# own competition. On 2026-09-28 that reported three failures against a
+# healthy three-node cluster and no true ones, which is how a check stops
+# being read.
+reset_scenario
+export FAKE_AZ_HELD_CAPACITY=3
+export FAKE_AZ_CORES_USED=3
+export FAKE_AZ_FAMILY_USED=3
+export FAKE_AZ_HELD_IPS=2
+export FAKE_AZ_IP_USED=2
+run_preflight --cloud azure
+if [[ "$RC" == "0" ]] && ! grep -q "vCPUs in eastus: 3/4 used, 1 free — 3 needed" <<< "$OUT"; then
+    ok "a cluster that is already up is not its own competition"
+else
+    bad "a cluster that is already up is not its own competition" \
+        "exit ${RC}; $(grep -E 'vCPU|public IP' <<< "$OUT" || true)"
+fi
+
+# Said out loud, or the numbers look like they do not add up.
+reset_scenario
+export FAKE_AZ_HELD_CAPACITY=3
+export FAKE_AZ_CORES_USED=3
+export FAKE_AZ_FAMILY_USED=3
+run_preflight --cloud azure
+if grep -q "already held by cluster vault-reference" <<< "$OUT"; then
+    ok "and says how much of the need is already met"
+else
+    bad "and says how much of the need is already met" \
+        "$(grep -i 'vcpu' <<< "$OUT" || true)"
+fi
+
+# The discount must not apply to somebody else's cluster. Getting this
+# wrong makes the check pass when it should fail, which is the direction
+# that costs money.
+reset_scenario
+export FAKE_AZ_CLUSTER=someone-elses
+export FAKE_AZ_HELD_CAPACITY=3
+export FAKE_AZ_CORES_USED=3
+export FAKE_AZ_FAMILY_USED=3
+run_preflight --cloud azure
+if grep -q "3 needed" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "another cluster's instances are competition, not credit"
+else
+    bad "another cluster's instances are competition, not credit" \
+        "exit ${RC}; $(grep -i 'vcpu' <<< "$OUT" || true)"
+fi
+
+# Nor to the same cluster at a different size: each VM family has a quota
+# of its own, so the instances being replaced do not relieve the family
+# replacing them.
+reset_scenario
+export FAKE_AZ_HELD_SIZE=Standard_D2s_v5
+export FAKE_AZ_HELD_CAPACITY=3
+export FAKE_AZ_CORES_USED=3
+export FAKE_AZ_FAMILY_USED=3
+run_preflight --cloud azure
+if grep -q "3 needed" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "the same cluster at another size is not credit either"
+else
+    bad "the same cluster at another size is not credit either" \
+        "exit ${RC}; $(grep -i 'vcpu' <<< "$OUT" || true)"
+fi
+
+# The same filter, on the other resource. Addresses are counted by a
+# separate query, and a separate mistake: crediting every cluster's
+# Standard addresses would hide a subscription that has none left.
+reset_scenario
+export FAKE_AZ_CLUSTER=someone-elses
+export FAKE_AZ_HELD_IPS=2
+export FAKE_AZ_IP_USED=2
+run_preflight --cloud azure
+if grep -q "2 needed" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "another cluster's addresses are competition, not credit"
+else
+    bad "another cluster's addresses are competition, not credit" \
+        "exit ${RC}; $(grep -i 'public IP' <<< "$OUT" || true)"
+fi
+
+# Growing a cluster still has to be checked: two held, three wanted, so
+# one more is needed and there has to be room for it.
+reset_scenario
+export FAKE_AZ_HELD_CAPACITY=2
+export FAKE_AZ_CORES_USED=2
+export FAKE_AZ_CORES_LIMIT=2
+export FAKE_AZ_FAMILY_USED=2
+export FAKE_AZ_FAMILY_LIMIT=2
+run_preflight --cloud azure
+if grep -q "1 needed" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "growing a cluster by one node still needs room for one node"
+else
+    bad "growing a cluster by one node still needs room for one node" \
+        "exit ${RC}; $(grep -i 'vcpu' <<< "$OUT" || true)"
+fi
+
+printf '\n=== Pre-flight: the one key type Azure takes ===\n'
+
+# ed25519 is the sensible default everywhere else, and is the key the AWS
+# profile uses, so carrying it over is the obvious move. Azure refuses it:
+# "the provided ssh-ed25519 SSH key is not supported. Only RSA SSH keys
+# are supported by Azure". terraform plan catches it, but not until the
+# backend exists, which is after the state bootstrap is billing.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud azure
+if grep -q "Azure only accepts ssh-rsa" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "an ed25519 key fails before the bootstrap, not at the scale set"
+else
+    bad "an ed25519 key fails before the bootstrap, not at the scale set" \
+        "exit ${RC}; $(grep -i 'ssh' <<< "$OUT" || true)"
+fi
+
+# Named, so the reader does not have to work out which key was read.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud azure
+if grep -q "ssh-ed25519" <<< "$OUT"; then
+    ok "and says which type it found"
+else
+    bad "and says which type it found"
+fi
+
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQExample seth@host"
+run_preflight --cloud azure
+if grep -q "which is the only kind Azure takes" <<< "$OUT" && [[ "$RC" == "0" ]]; then
+    ok "an RSA key passes"
+else
+    bad "an RSA key passes" "exit ${RC}"
+fi
+
+# The profile declares ssh_public_key with no default, so an empty one is
+# a plan-time refusal rather than a cluster nobody can log into -- but it
+# is still cheaper to say so here.
+reset_scenario
+export TF_VAR_ssh_public_key=""
+run_preflight --cloud azure
+if grep -q "ssh_public_key is empty" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "an empty key is named rather than read as some other type"
+else
+    bad "an empty key is named rather than read as some other type" "exit ${RC}"
+fi
+
+# AWS takes ed25519 perfectly well, and its own check is about the key
+# pair existing in the account. This must not leak across.
+reset_scenario
+export TF_VAR_ssh_public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample seth@host"
+run_preflight --cloud aws
+if ! grep -q "ssh-rsa" <<< "$OUT"; then
+    ok "and none of this is imposed on the AWS profile"
+else
+    bad "and none of this is imposed on the AWS profile"
 fi
 
 printf '\n=== Pre-flight: Azure credentials are checked against Azure ===\n'

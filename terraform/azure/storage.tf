@@ -69,9 +69,30 @@ resource "azurerm_storage_account" "vault" {
     # public internet.
     virtual_network_subnet_ids = [azurerm_subnet.vault.id]
     bypass                     = ["AzureServices"]
+
+    # The nodes are covered by the subnet rule above. This is for the
+    # apply itself, which creates the container from wherever Terraform is
+    # being run. See operator_ip_ranges in variables.tf.
+    ip_rules = var.operator_ip_ranges
   }
 
   tags = module.vault_cluster.cluster_tags
+
+  # azurerm_storage_account_customer_managed_key below points this
+  # account's encryption at the auto-unseal key. This resource does not
+  # know that, so it reads the account back, finds a customer_managed_key
+  # block it never declared, and plans to remove it — which resets the
+  # account to Microsoft-managed keys. Applying that makes the other
+  # resource plan to put it back. The two undo each other on alternate
+  # applies, forever.
+  #
+  # The damage is quiet rather than loud. Nothing fails: snapshots keep
+  # being written, to an account whose encryption key silently changed
+  # hands. Whoever runs the apply sees "1 to change" and a block being
+  # removed that they did not put there.
+  lifecycle {
+    ignore_changes = [customer_managed_key]
+  }
 }
 
 # Encrypted with the same Key Vault key that seals the cluster, rather
@@ -100,8 +121,31 @@ resource "azurerm_storage_account_customer_managed_key" "vault" {
   depends_on = [azurerm_key_vault_access_policy.storage]
 }
 
+# Granted to whoever runs the apply, and needed only to create the
+# container below. Owner is a control-plane role and carries no data-plane
+# access at all, so in an account that refuses keys there is no other way
+# to make a container -- the two role assignments in compute.tf are both
+# for the VM's managed identity and do nothing for Terraform.
+#
+# Data Contributor rather than Owner: enough to create the container and
+# write a snapshot, not enough to change who else can. The same reasoning,
+# and the same role, as the state bootstrap's tfstate_operator.
+resource "azurerm_role_assignment" "snapshots_operator" {
+  scope                = azurerm_storage_account.vault.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 resource "azurerm_storage_container" "snapshots" {
   name                  = "snapshots"
   storage_account_name  = azurerm_storage_account.vault.name
   container_access_type = "private"
+
+  # Nothing in the references between these two says the container needs
+  # the assignment above, so Terraform is free to create them in either
+  # order or at the same time. An Azure role assignment is also not
+  # effective the instant it returns: a 403 on
+  # AuthorizationPermissionMismatch here is propagation rather than
+  # configuration, and re-running the apply is the answer.
+  depends_on = [azurerm_role_assignment.snapshots_operator]
 }

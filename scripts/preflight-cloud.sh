@@ -284,6 +284,27 @@ if [[ "$CLOUD" == "aws" ]]; then
         fi
     fi
 else
+    # Azure refuses every key type except RSA on a Linux scale set:
+    #
+    #   the provided ssh-ed25519 SSH key is not supported.
+    #   Only RSA SSH keys are supported by Azure
+    #
+    # ed25519 is the sensible default everywhere else and is what the AWS
+    # profile uses, so bringing the same key over is the obvious thing to
+    # do and it does not work. `terraform plan` does catch this — but only
+    # once the backend exists, which is after the state bootstrap has been
+    # applied and is billing. This costs a string comparison.
+    SSH_PUB="$(tfvar ssh_public_key "")"
+    if [[ -z "$SSH_PUB" ]]; then
+        bad "ssh_public_key is empty" \
+            "the profile declares it with no default, so terraform refuses at plan time: export TF_VAR_ssh_public_key=\"\$(cat ~/.ssh/id_rsa.pub)\""
+    elif [[ "$SSH_PUB" == ssh-rsa* ]]; then
+        ok "ssh_public_key is an RSA key, which is the only kind Azure takes"
+    else
+        bad "ssh_public_key is ${SSH_PUB%% *}, and Azure only accepts ssh-rsa" \
+            "the scale set is refused at creation, after the VNet, NAT gateway, load balancer and Bastion are billing; generate one with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_azure"
+    fi
+
     if command -v az >/dev/null 2>&1; then
         # A role assignment needs Owner or User Access Administrator.
         # Contributor is enough for everything else, which is why this
@@ -442,8 +463,39 @@ if [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
             warn "could not read the vCPU count for ${VM_SIZE}" \
                 "so quota was not checked against it"
         else
-            NEED_VCPUS=$((NODE_COUNT * SKU_VCPUS))
-            info "        ${NODE_COUNT} × ${VM_SIZE} needs ${NEED_VCPUS} vCPUs in ${LOCATION}"
+            # What the apply still needs, which is not what the cluster
+            # needs in total. Run against a cluster that is already up —
+            # to re-check it, or to finish a partial apply — the total is
+            # already sitting in the "used" column, so comparing it to
+            # what is free counts the cluster as its own competition. On
+            # 2026-09-28 that turned a healthy three-node cluster into
+            # three confident failures and no true ones, which is how a
+            # check stops being read.
+            #
+            # Discounted by tag and size together. Another cluster's
+            # instances are real competition and must not be discounted,
+            # and neither must a different size: each VM family has a
+            # quota of its own, so instances of the size being replaced do
+            # not relieve the one replacing them. Both errors would make
+            # this pass when it should fail; being conservative here fails
+            # when it could have passed, which is the safe direction.
+            CLUSTER="$(tfvar cluster_name vault-reference)"
+            HELD_VCPUS=0
+            while read -r cap; do
+                [[ -n "$cap" ]] || continue
+                HELD_VCPUS=$((HELD_VCPUS + cap * SKU_VCPUS))
+            done < <(az vmss list \
+                --query "[?tags.cluster=='${CLUSTER}' && sku.name=='${VM_SIZE}'].sku.capacity" \
+                -o tsv 2>/dev/null || true)
+
+            TOTAL_VCPUS=$((NODE_COUNT * SKU_VCPUS))
+            NEED_VCPUS=$((TOTAL_VCPUS - HELD_VCPUS))
+            [[ "$NEED_VCPUS" -ge 0 ]] || NEED_VCPUS=0
+
+            info "        ${NODE_COUNT} × ${VM_SIZE} needs ${TOTAL_VCPUS} vCPUs in ${LOCATION}"
+            if [[ "$HELD_VCPUS" -gt 0 ]]; then
+                info "        ${HELD_VCPUS} already held by cluster ${CLUSTER}, so ${NEED_VCPUS} more"
+            fi
 
             # Two ceilings, and the regional one is the famous one. A
             # family capped at 0 with regional headroom to spare is what
@@ -481,8 +533,21 @@ if [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
     # One Standard public IP for the NAT gateway, one for the Bastion, and
     # a third only if the load balancer is internet-facing. Standard has a
     # quota separate from Basic and from the total.
-    NEED_IPS=2
-    [[ "$(tfvar internal_lb true)" == "false" ]] && NEED_IPS=3
+    TOTAL_IPS=2
+    [[ "$(tfvar internal_lb true)" == "false" ]] && TOTAL_IPS=3
+
+    # Same reasoning as the vCPUs above: addresses this cluster already
+    # holds are not addresses it has to find.
+    AZ_CLUSTER="$(tfvar cluster_name vault-reference)"
+    HELD_IPS="$(az network public-ip list \
+        --query "length([?tags.cluster=='${AZ_CLUSTER}' && sku.name=='Standard'])" \
+        -o tsv 2>/dev/null || echo 0)"
+    [[ "$HELD_IPS" =~ ^[0-9]+$ ]] || HELD_IPS=0
+    NEED_IPS=$((TOTAL_IPS - HELD_IPS))
+    [[ "$NEED_IPS" -ge 0 ]] || NEED_IPS=0
+    if [[ "$HELD_IPS" -gt 0 ]]; then
+        info "        ${TOTAL_IPS} Standard addresses wanted, ${HELD_IPS} already held by cluster ${AZ_CLUSTER}"
+    fi
     NET_USAGE="$(az network list-usages --location "$LOCATION" \
         --query "[].[name.value,currentValue,limit]" -o tsv 2>/dev/null || true)"
     IP_ROW="$(grep -im1 -- $'^IPv4StandardSkuPublicIpAddresses\t' <<< "$NET_USAGE" || true)"

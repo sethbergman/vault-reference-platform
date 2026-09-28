@@ -32,6 +32,20 @@ terraform {
 
 provider "azurerm" {
   features {}
+
+  # storage.tf sets shared_access_key_enabled = false on the snapshot
+  # account, and the provider's own data-plane calls default to a key:
+  # the Blob Service poll that finishes creating the account, and creating
+  # the snapshots container in it. Without this they are refused by the
+  # control the account exists to set:
+  #
+  #   403 Key based authentication is not permitted on this storage account
+  #
+  # The state bootstrap had the identical omission, and the first real
+  # apply of it failed partway. Here it would fail later and cost more:
+  # the VNet, NAT gateway, load balancer and Bastion are all created
+  # before storage.
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}
@@ -92,11 +106,69 @@ resource "azurerm_key_vault" "vault_autounseal" {
   # Deny by default. Without this the Key Vault accepts traffic from any
   # network, which for the key that unseals Vault is a wide door.
   # AzureServices is bypassed so the platform's own integrations keep
-  # working; add the Vault subnet's ID here once the VM scale set exists.
+  # working.
   network_acls {
     default_action = "Deny"
     bypass         = "AzureServices"
+
+    # The nodes. This line used to be a comment saying to add the Vault
+    # subnet "once the VM scale set exists", and nothing ever did, so the
+    # firewall refused the one caller that has to get through:
+    #
+    #   403 Forbidden ... ForbiddenByFirewall
+    #   Client address is not authorized and caller is not a trusted service
+    #
+    # The managed identity had the access policy all along. A policy says
+    # who may use the key; the firewall decides whether they can reach it,
+    # and every node failed to start with a correct identity and no route.
+    # The subnet already carries the Microsoft.KeyVault service endpoint,
+    # which is the half that was done.
+    virtual_network_subnet_ids = [azurerm_subnet.vault.id]
+
+    # And the apply itself, which creates the key below from outside the
+    # VNet. See operator_ip_ranges in variables.tf.
+    ip_rules = var.operator_ip_ranges
   }
+}
+
+# The two access policies this profile creates are for the VM's managed
+# identity and the storage account's, and neither is for whoever runs the
+# apply. The first real apply stopped here:
+#
+#   403 Forbidden ... does not have keys get permission on key vault
+#
+# Create rather than Get alone: the key resource reads the vault before
+# writing to it, and reads the rotation policy after.
+resource "azurerm_key_vault_access_policy" "operator" {
+  key_vault_id = azurerm_key_vault.vault_autounseal.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  key_permissions = [
+    "Create",
+    "Delete",
+    "Get",
+    "GetRotationPolicy",
+    "List",
+    "Recover",
+    "SetRotationPolicy",
+    "Update",
+  ]
+
+  # Keys and secrets are separate surfaces: a policy granting every key
+  # permission there is grants nothing on secrets. scripts/publish-boot
+  # strap-ca.sh writes the bootstrap CA as two secrets and reads them back
+  # to compare digests, so without this it fails with ForbiddenByPolicy on
+  # an identity holding Owner and a key policy on the same vault.
+  #
+  # Set and Get are what the script uses; List is what makes the result
+  # checkable by hand. Not Purge: the vault has purge protection on and a
+  # soft-deleted secret is meant to stay recoverable.
+  secret_permissions = [
+    "Get",
+    "List",
+    "Set",
+  ]
 }
 
 resource "azurerm_key_vault_key" "vault_autounseal" {
@@ -105,6 +177,10 @@ resource "azurerm_key_vault_key" "vault_autounseal" {
   key_type     = "RSA"
   key_size     = 2048
   key_opts     = ["wrapKey", "unwrapKey"]
+
+  # Nothing in the references between them says the key needs the policy
+  # that permits creating it, so Terraform is free to do both at once.
+  depends_on = [azurerm_key_vault_access_policy.operator]
 }
 
 # The access policy granting Vault's azurekeyvault seal wrap/unwrap on

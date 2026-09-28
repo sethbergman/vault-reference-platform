@@ -76,6 +76,22 @@ resource "azurerm_lb_rule" "vault" {
   backend_address_pool_ids       = [azurerm_lb_backend_address_pool.vault.id]
   probe_id                       = azurerm_lb_probe.vault.id
 
+  # Destroy order, not create order. This rule and the scale set both
+  # reference the same probe and neither references the other, so
+  # Terraform is free to destroy them at the same time -- and Azure
+  # refuses the rule while the scale set still points at the probe:
+  #
+  #   CannotRemoveRuleUsedByProbeUsedByVMSS: ... cannot be removed
+  #   because the rule references the load balancer probe ... used as
+  #   health probe by VM scale set. To remove this rule, please update VM
+  #   scale set to remove the reference to the probe.
+  #
+  # A destroy is the reverse of a create, so depending on the scale set
+  # here puts the rule after it going down. The first real teardown hit
+  # this, stopped partway, and left the load balancer and VNet behind --
+  # billing, and looking like a teardown that had finished.
+  depends_on = [azurerm_linux_virtual_machine_scale_set.vault]
+
   # Vault's own request forwarding sends writes received by a standby on
   # to the leader, so client affinity buys nothing and would unbalance the
   # pool.

@@ -369,6 +369,14 @@ until the pre-flight was taught to look:
   headroom, which is why the two ceilings are checked separately.
 - **Three Standard public IPv4 addresses**, which is exactly enough for
   the NAT gateway and the Bastion and nothing else.
+- **Only RSA SSH keys.** Azure refuses every other type on a Linux scale
+  set — `the provided ssh-ed25519 SSH key is not supported` — and ed25519
+  is both the sensible default and the key the AWS profile uses, so
+  carrying the same one over is the obvious move and it does not work.
+  Generate a second key with
+  `ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_azure`, and remember the
+  playbook then needs `--private-key ~/.ssh/id_rsa_azure`. This is not a
+  subscription limit and does not vary: it applies to every Azure apply.
 
 What fit was three nodes of `Standard_F1als_v7` in `westus2` — 1 vCPU and
 2 GiB each, zonal in 1, 2 and 3, premium disks supported, its family

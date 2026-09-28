@@ -242,18 +242,109 @@ run "storage_requires_modern_tls" {
   }
 }
 
-run "flow_logs_are_enabled" {
+# Vault's audit device records requests it served; flow logs record the
+# attempts it never saw. Azure blocked the creation of new NSG flow logs
+# on 2025-06-30 and this provider cannot create the VNet flow logs that
+# replace them, so the profile ships with enable_flow_logs = false and an
+# apply that declared them unconditionally could not succeed at all.
+#
+# Both halves are pinned. Losing the first would let the default quietly
+# become "on" again and every apply fail; losing the second would let the
+# variable become a switch that turns on something half-configured.
+# Zone spread and placement group are one decision, not two: Azure
+# refuses a multi-zone scale set that is also in a single placement group,
+# and azurerm defaults single_placement_group to true. Asserting the zones
+# without this would pin half a configuration that cannot be created.
+# Auto-unseal needs two things that live in different files and are easy
+# to do by halves: the identity may use the key (compute.tf) and the nodes
+# can reach the vault holding it (main.tf, plus the subnet's service
+# endpoint in network.tf). The access policy was there from the start and
+# the network rule was a comment saying to add it later, so every node
+# came up with a correct identity, no route, and Vault refusing to start.
+# The operator writes the bootstrap CA; the nodes only read it. Both
+# halves are pinned because the asymmetry is the point, and because a
+# policy over keys says nothing about secrets -- which is how the write
+# came to fail on an identity that already held Owner.
+run "the_operator_can_publish_the_bootstrap_ca" {
   command = plan
 
-  # Vault's audit device records requests it served; these record the
-  # attempts it never saw.
   assert {
-    condition     = azurerm_network_watcher_flow_log.vault.enabled == true
-    error_message = "NSG flow logs must be enabled."
+    condition     = contains(azurerm_key_vault_access_policy.operator.secret_permissions, "Set")
+    error_message = "publish-bootstrap-ca.sh writes the CA as secrets; without Set it fails with ForbiddenByPolicy however much the identity holds elsewhere."
   }
 
   assert {
-    condition     = azurerm_network_watcher_flow_log.vault.retention_policy[0].enabled == true
+    condition     = !contains(azurerm_key_vault_access_policy.operator.secret_permissions, "Purge")
+    error_message = "The vault has purge protection on deliberately; a soft-deleted secret is meant to stay recoverable."
+  }
+}
+
+run "the_nodes_can_reach_the_key_vault_that_unseals_them" {
+  # apply, not plan: a subnet id is not known until it exists, so under
+  # plan the comparison is an unknown value and the run errors rather than
+  # asserting anything. The mocked provider supplies one on apply.
+  command = apply
+
+  assert {
+    condition = contains(
+      azurerm_key_vault.vault_autounseal.network_acls[0].virtual_network_subnet_ids,
+      azurerm_subnet.vault.id
+    )
+    error_message = "The Key Vault denies by default, so the node subnet needs a rule or every node fails to start with ForbiddenByFirewall."
+  }
+
+  # The rule does nothing without the endpoint: traffic would leave through
+  # the NAT gateway and arrive as a public address the vault does not know.
+  assert {
+    condition     = contains(azurerm_subnet.vault.service_endpoints, "Microsoft.KeyVault")
+    error_message = "A virtual network rule needs the Microsoft.KeyVault service endpoint on the same subnet to match anything."
+  }
+}
+
+run "a_zonal_scale_set_is_not_in_one_placement_group" {
+  command = plan
+
+  assert {
+    condition     = azurerm_linux_virtual_machine_scale_set.vault.single_placement_group == false
+    error_message = "A scale set spread across zones cannot be in a single placement group: Azure rejects the combination with platform_fault_domain_count = 1, and azurerm defaults this to true."
+  }
+
+  assert {
+    condition     = length(azurerm_linux_virtual_machine_scale_set.vault.zones) > 1
+    error_message = "The scale set must span more than one zone, or losing a zone loses the cluster."
+  }
+}
+
+run "flow_logs_are_off_by_default_because_azure_refuses_them" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_network_watcher_flow_log.vault) == 0
+    error_message = "enable_flow_logs must default to false: Azure has blocked creating new NSG flow logs since 2025-06-30, so an apply that declares one fails."
+  }
+
+  # The watcher is free and stays, so that turning flow logs on later is a
+  # variable rather than a new resource.
+  assert {
+    condition     = azurerm_network_watcher.vault.name != ""
+    error_message = "The network watcher must exist regardless, or enabling flow logs later means creating it too."
+  }
+}
+
+run "flow_logs_are_fully_configured_when_switched_on" {
+  command = plan
+
+  variables {
+    enable_flow_logs = true
+  }
+
+  assert {
+    condition     = azurerm_network_watcher_flow_log.vault[0].enabled == true
+    error_message = "A flow log that is created but not enabled records nothing."
+  }
+
+  assert {
+    condition     = azurerm_network_watcher_flow_log.vault[0].retention_policy[0].enabled == true
     error_message = "Flow log retention must be enabled or logs are discarded immediately."
   }
 }

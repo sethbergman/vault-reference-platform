@@ -80,7 +80,20 @@ resource "azurerm_linux_virtual_machine_scale_set" "vault" {
   zones                       = var.availability_zones
   zone_balance                = true
   platform_fault_domain_count = 1
-  upgrade_mode                = "Manual"
+
+  # A placement group is a single cluster in a single zone, so a scale set
+  # spread across three of them cannot be in one. azurerm defaults this to
+  # true, and Azure refuses the combination outright:
+  #
+  #   Virtual Machine Scale Set deployed to multiple Availability Zones
+  #   with 'platformFaultDomainCount' set to 1 and Single Placement Group
+  #   set to true is not supported.
+  #
+  # Nothing in the mocked provider tests could have found this: they check
+  # that the configuration says what it means to say, not that Azure will
+  # accept it. The first real apply is what refused it.
+  single_placement_group = false
+  upgrade_mode           = "Manual"
 
   admin_username                  = var.admin_username
   disable_password_authentication = true

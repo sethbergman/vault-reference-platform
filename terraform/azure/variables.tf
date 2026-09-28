@@ -92,6 +92,42 @@ variable "snapshot_retention_days" {
   default     = 30
 }
 
+# Deny-by-default is the posture both the Key Vault and the snapshot
+# account ship with, and it applies to whoever runs Terraform too. The
+# first real apply failed on exactly that: the account accepts data-plane
+# traffic only from the node subnet, so creating the snapshots container
+# from a laptop was refused however much RBAC the operator held. Network
+# rules say where from; roles say who. Both have to allow it.
+#
+# Left empty the apply must be run from inside the VNet. The AWS profile
+# has no equivalent, which is why nothing caught this until an apply.
+variable "operator_ip_ranges" {
+  type        = list(string)
+  default     = []
+  description = "Public addresses Terraform is run from, allowed through the Key Vault and snapshot account network rules. Empty means the apply must originate inside the VNet."
+}
+
+# Azure blocked the creation of new NSG flow logs on 2025-06-30 and
+# retires them on 2027-09-30:
+#
+#   NsgFlowLogCreationBlocked: creation of new NSG flow logs is blocked
+#
+# The replacement is VNet flow logs, which this provider cannot create:
+# azurerm 3.x requires network_security_group_id on
+# azurerm_network_watcher_flow_log and has no target_resource_id. So on
+# the pinned provider this resource cannot be created by anyone, and an
+# apply that always declares it is an apply that always fails.
+#
+# Defaulting a security control to off is a real reduction and is not
+# something to do quietly — see docs/security.md. It is off here because
+# the alternative is not "on", it is "the profile does not apply".
+# Turning it on needs azurerm 4.x; that is roadmap work, not an edit.
+variable "enable_flow_logs" {
+  type        = bool
+  default     = false
+  description = "Create NSG flow logs. Azure blocks creating new ones; leaving this false is the only way the profile applies on the pinned provider."
+}
+
 variable "flow_log_retention_days" {
   type        = number
   description = "Days to retain NSG flow logs."
