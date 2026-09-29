@@ -51,6 +51,43 @@
 # The script is idempotent — it leaves existing devices alone — so this
 # is safe to re-run. changed_when keys off what it reported doing rather
 # than the exit code, which is 0 in both cases.
+- name: Create the systemd drop-in directory for Vault
+  ansible.builtin.file:
+    path: /etc/systemd/system/vault.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: vault_audit_enabled
+
+- name: Allow Vault to write the audit directory
+  ansible.builtin.template:
+    src: audit-writable.conf.j2
+    dest: /etc/systemd/system/vault.service.d/audit-writable.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: vault_audit_dropin
+  when: vault_audit_enabled
+
+- name: Reload systemd and restart Vault so the drop-in applies
+  # A restart, not a reload: ReadWritePaths changes the mount namespace
+  # the process runs in, and that is built at start. Safe here because
+  # the cloud profiles auto-unseal -- on a Shamir cluster this would
+  # leave the node sealed and waiting for keys.
+  ansible.builtin.systemd_service:
+    name: vault
+    state: restarted
+    daemon_reload: true
+  when: vault_audit_enabled and vault_audit_dropin.changed
+
+- name: Wait for Vault to answer again after the restart
+  ansible.builtin.wait_for:
+    port: 8200
+    host: 127.0.0.1
+    timeout: 120
+  when: vault_audit_enabled and vault_audit_dropin.changed
+
 - name: Enable the audit devices
   ansible.builtin.command:
     argv: >-
@@ -72,6 +109,17 @@
     VAULT_TOKEN: "{{ vault_audit_token }}"
   register: vault_audit_run
   changed_when: "'Enabling the' in vault_audit_run.stderr"
+  # An audit device is cluster state: `vault audit enable` writes to
+  # Vault's storage and the write is forwarded to the leader, so enabling
+  # it once enables it everywhere. Running this per host meant three nodes
+  # racing -- one enabled, one lost the race and failed, one arrived late
+  # and correctly did nothing. Three outcomes from one cause, which reads
+  # as three separate bugs.
+  run_once: true
+  # no_log hides the reason as well as the token. That is the right trade
+  # here -- the command line carries VAULT_TOKEN -- but it means a failure
+  # arrives with no diagnosis, so the assertion above and the report below
+  # have to carry the explaining.
   no_log: true
   when: vault_audit_enabled
 
@@ -79,6 +127,9 @@
 # many are live is worth doing: one device is a single point of failure
 # and the operator should see that rather than infer it.
 - name: Report how many devices are enabled
+  # Once, for the same reason as the task above: this describes the
+  # cluster, not the host.
+  run_once: true
   ansible.builtin.debug:
     msg: >-
       {{ 'Audit devices enabled. Vault refuses requests when it cannot

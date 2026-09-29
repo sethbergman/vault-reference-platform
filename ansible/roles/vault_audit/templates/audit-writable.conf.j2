@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+#
+# HashiCorp's packaged vault.service sets ProtectSystem=full, which mounts
+# /etc read-only inside the service's namespace. The audit directory lives
+# under /etc/vault.d, so Vault cannot open its own audit log however the
+# directory is owned:
+#
+#   unable to open "{{ vault_audit_file }}" for writing: read-only file system
+#
+# A drop-in rather than an edit to the unit: that file is the package's,
+# and an upgrade would put it back.
+#
+# ReadWritePaths is the narrowest fix available. It re-opens this one
+# directory and leaves the rest of /etc read-only, which is the point of
+# ProtectSystem in the first place.
+[Service]
+ReadWritePaths={{ vault_audit_dir }}

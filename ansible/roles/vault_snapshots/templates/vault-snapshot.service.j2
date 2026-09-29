@@ -30,7 +30,16 @@ PrivateTmp=true
 # else, so it gets nothing else.
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+# tmpfs, not true. The Vault CLI reads $HOME/.vault to find its token
+# helper before running any subcommand, so ProtectHome=true made every
+# invocation fail with "permission denied" on a path it only wanted to
+# look at -- and the script reported that as Vault being unreachable.
+#
+# tmpfs gives the unit an empty /home: the open fails with ENOENT, which
+# the CLI treats as "no token helper configured" and carries on. It is
+# stricter than read-only, which would let this unit read every home
+# directory on the host.
+ProtectHome=tmpfs
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

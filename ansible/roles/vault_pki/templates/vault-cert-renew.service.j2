@@ -27,7 +27,16 @@ ExecStart={{ vault_pki_script }} \
 # SIGHUP reloads the certificate contents from the paths Vault started
 # with. No restart, no reseal, no leadership change.
 NoNewPrivileges=true
-ProtectHome=true
+# tmpfs, not true. This unit runs scripts/issue-node-cert.sh, which
+# drives the Vault CLI, and the CLI reads $HOME/.vault to find its token
+# helper before running any subcommand. ProtectHome=true makes that open
+# fail with EACCES -- /root here, since this unit runs as root -- and the
+# CLI exits before it has spoken to Vault at all.
+#
+# tmpfs gives an empty /home and /root: the open fails with ENOENT, which
+# the CLI treats as "no token helper configured". Stricter than
+# read-only, which would expose every home directory to this unit.
+ProtectHome=tmpfs
 PrivateDevices=true
 
 [Install]
