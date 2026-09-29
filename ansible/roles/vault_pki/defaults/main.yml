@@ -65,4 +65,25 @@ vault_pki_common_name: "{{ inventory_hostname }}.{{ vault_pki_domain }}"
 # is one the role can actually issue.
 vault_pki_cluster_servername: "{{ vault_cluster_name | default('vault-reference') }}.{{ vault_pki_domain }}"
 
+# EVERY NAME HERE HAS TO BE ONE THE ROLE WILL ISSUE.
+#
+# bootstrap-pki.sh sets allowed_domains to `<domain>,localhost` with
+# allow_subdomains, so a name outside it is refused at issue time:
+#
+#   * subject alternate name i-023d7733be318810a not allowed by this role
+#
+# inventory_hostname is outside it on every profile -- an instance id on
+# the cloud ones, `vault-0` on the local one -- so this default needs
+# `bootstrap-pki.sh --extra-domains` to name them, or an override that
+# leaves it out. Until 2026-09-29 nothing said so and nothing checked,
+# and the renewal timer could not have renewed anything.
+#
+# It is left in rather than removed because the profiles want opposite
+# things and both are right: the local profile joins by
+# `leader_api_addr = https://vault-0:8200`, so its peers verify the
+# container name and losing it would break the cluster. On a cloud
+# profile nothing verifies the instance id -- peers use
+# leader_tls_servername -- so overriding this to
+# "localhost,{{ vault_pki_cluster_servername }}" is the better answer
+# there, and is what the fourth AWS apply used.
 vault_pki_alt_names: "{{ inventory_hostname }},localhost,{{ vault_pki_cluster_servername }}"
