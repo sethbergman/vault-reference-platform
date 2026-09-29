@@ -79,7 +79,8 @@
   # throttle: 1 so that is one node at a time. Without it the linear
   # strategy restarts all three together and the cluster is down entirely
   # while they come back -- turning "enable audit logging" into an outage
-  # on a cluster that was serving.
+  # on a cluster that was serving. The unit is Type=notify, so each
+  # restart returns only once that node is serving again.
   throttle: 1
   ansible.builtin.systemd_service:
     name: vault

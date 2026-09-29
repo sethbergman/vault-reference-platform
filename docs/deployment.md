@@ -308,6 +308,58 @@ Running from *inside* the VPC — a bastion, a VPN, a CI runner in a
 private subnet — wants none of it: set `ansible_host` back to
 `private_ip_address` and drop `ansible_ssh_common_args`.
 
+### Reaching the Vault API
+
+A different problem from reaching the nodes, and easy to assume is the
+same one. The playbook gets there over SSM; your `vault` CLI does not.
+
+**The load balancer is internal on both profiles.**
+`terraform/aws/variables.tf` defaults `internal_lb = true` and
+`terraform/azure` does the same, because a Vault API on the public
+internet should be a deliberate decision. So `terraform output -raw
+vault_addr` is a name that resolves to a private address, and a client
+outside the network gets a timeout rather than a refusal:
+
+```text
+dial tcp 10.0.10.170:8200: i/o timeout
+```
+
+That is the load balancer doing its job. Forward a port instead:
+
+```bash
+# AWS
+aws ssm start-session --target <instance-id> \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "portNumber=8200,localPortNumber=18200"
+
+# Azure
+az network bastion tunnel --name <bastion> --resource-group <rg> \
+    --target-resource-id <instance-resource-id> \
+    --resource-port 8200 --port 18200
+```
+
+```bash
+export VAULT_ADDR=https://127.0.0.1:18200
+export VAULT_CACERT=ansible/files/tls/ca.crt
+```
+
+`127.0.0.1` verifies rather than needing `-tls-skip-verify`, because
+`scripts/generate-cloud-certs.sh` puts `DNS:localhost` and `IP:127.0.0.1`
+on every leaf. That is what those two SANs are for.
+
+**One forward reaches one node,** and which node matters for some
+operations. A snapshot is served by the leader alone — Vault redirects the
+request rather than forwarding it, to the leader's own `api_addr`, a
+private address your client cannot reach either. `scripts/dr-drill-cloud.sh`
+looks the leader up and forwards to it for this reason. Most other calls
+are forwarded by the standby and work against any node.
+
+**Close a forward you are finished with.** Two `az network bastion tunnel`
+processes orphaned on 2026-09-28 were still holding 18200 and 18201 more
+than a day later, against a resource group that no longer existed, and
+blocked an unrelated AWS session until somebody read the command lines.
+`ss -ltnp | grep 1820` says what has them.
+
 **Azure has no equivalent here.** Its nodes are equally private and its
 inventory sets no connection arguments, so reaching them is still the
 reader's problem. That is not an oversight being deferred quietly: the
