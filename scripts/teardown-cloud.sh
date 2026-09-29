@@ -43,6 +43,19 @@
 # it carries prevent_destroy so this script cannot remove it even by
 # accident. See docs/terraform-state.md.
 #
+# EVERY TERRAFORM CALL PASSES -input=false
+#
+# terraform/azure declares ssh_public_key with no default, so a destroy
+# without it prompts. The calls below pipe terraform through `tail`, which
+# buffers until the command exits, so the prompt never reaches the screen:
+# the run waits forever, holding the state lock, and the operator sees a
+# step header followed by nothing and concludes it finished. Resources
+# keep billing behind a teardown that looked complete.
+#
+# With -input=false a missing variable fails immediately and names itself.
+# Export the profile's variables before running this, the same ones the
+# apply used.
+#
 # Requirements: terraform, and the CLI for the chosen cloud (aws or az).
 
 set -euo pipefail
@@ -107,7 +120,7 @@ log "State holds ${RESOURCE_COUNT} resource(s) in ${TF_DIR}."
 
 if [[ "$PLAN_ONLY" == true ]]; then
     step "What would be destroyed"
-    tf plan -destroy -no-color 2>&1 | tail -40 >&2
+    tf plan -destroy -no-color -input=false 2>&1 | tail -40 >&2
     log ""
     log "Plan only — nothing was destroyed."
     exit 0
@@ -206,7 +219,7 @@ if [[ "$CLOUD" == "azure" ]]; then
     # resources running behind a run that had reported failure, which is
     # the shape of teardown failure most likely to be read as success.
     if tf state list 2>/dev/null | grep -qx "azurerm_linux_virtual_machine_scale_set.vault"; then
-        if tf destroy -auto-approve -no-color \
+        if tf destroy -auto-approve -no-color -input=false \
             -target=azurerm_linux_virtual_machine_scale_set.vault 2>&1 | tail -8 >&2; then
             log "Scale set removed."
         else
@@ -220,7 +233,7 @@ if [[ "$CLOUD" == "azure" ]]; then
 fi
 
 step "terraform destroy"
-if tf destroy -auto-approve -no-color 2>&1 | tail -30 >&2; then
+if tf destroy -auto-approve -no-color -input=false 2>&1 | tail -30 >&2; then
     log "Destroy completed."
 else
     die "Destroy failed. Nothing further was attempted — re-run once the cause is fixed, and check the console for partially destroyed resources."
