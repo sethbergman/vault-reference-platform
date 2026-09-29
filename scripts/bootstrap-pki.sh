@@ -16,7 +16,9 @@
 #   --role <name>         PKI role name (default: vault-node)
 #   --ca-ttl <duration>   Root CA lifetime (default: 87600h, ten years)
 #   --cert-ttl <duration> Maximum leaf lifetime (default: 72h)
-#   --force               Reconfigure even if the mount already exists
+#   --force               Reconfigure an existing mount: the role, the
+#                         issuing URLs and the policy. It does NOT replace
+#                         the root CA -- see the note at the root block.
 #
 # THE BOOTSTRAP PROBLEM — read this before believing the docs.
 #
@@ -117,8 +119,24 @@ vault secrets tune -max-lease-ttl="$CA_TTL" "$MOUNT" >/dev/null \
 # does not compromise the whole trust chain. That needs a root this
 # repository has no way to provide, so the tradeoff is stated rather than
 # hidden — see docs/security.md.
-if vault read -format=json "${MOUNT}/cert/ca" >/dev/null 2>&1 && [[ "$FORCE" == false ]]; then
+# Deliberately not `&& [[ "$FORCE" == false ]]`. --force used to fall
+# through to the regeneration below, which Vault refuses outright --
+# "issuer name already in use" -- so the one documented way to widen an
+# existing role did not work at all.
+#
+# Making it succeed would have been worse than leaving it broken. The
+# comment above says what replacing a root does to a running cluster, and
+# a flag whose help text is "reconfigure" should not do it. So --force
+# reconfigures the role, the URLs and the policy; a new root is a new
+# --mount.
+if vault read -format=json "${MOUNT}/cert/ca" >/dev/null 2>&1; then
     log "A root CA already exists at ${MOUNT}/; leaving it alone."
+    if [[ "$FORCE" == true ]]; then
+        log "  --force reconfigures the role, the URLs and the policy."
+        log "  It does not replace the root: that would invalidate every"
+        log "  certificate already issued here, including the ones the"
+        log "  nodes are serving. Use a different --mount for a new root."
+    fi
 else
     log "Generating the root CA (ttl ${CA_TTL})..."
     vault write -format=json "${MOUNT}/root/generate/internal" \
