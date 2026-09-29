@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Present so `command -v` finds it. The aws shim binds the port itself.
+exit 0

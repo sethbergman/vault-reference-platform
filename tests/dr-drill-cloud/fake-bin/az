@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# A stand-in for `az`, for tests/dr-drill-cloud. Same shape as the aws
+# shim: the tunnel binds the port for real, because the drill waits on it
+# for real.
+#
+# The scale set it models has instances 4, 5 and 6 -- not 0, 1, 2. Scale
+# set instance ids are assigned once and never reused downwards, so any
+# scale set that has ever replaced an instance looks like this, and the
+# 2026-09-28 apply finished with instance 000005 in it. A shim numbering
+# from zero would agree with a drill that assumed instance 0 exists.
+set -uo pipefail
+
+{
+    printf 'az'
+    for a in "$@"; do printf ' %s' "$a"; done
+    printf '\n'
+} >> "${FAKE_LOG:-/dev/null}"
+
+# The subcommand is the first two or three words; everything after is
+# flags. Matching on a fixed-width join of $1 $2 $3 would miss
+# `vmss list-instances -g ...`, which is how the first version of this
+# shim answered nothing at all to a command the drill really does run.
+CMD="$*"
+INSTANCES="${FAKE_VMSS_INSTANCES-4 5 6}"
+
+resource_id() {
+    printf '/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/vmss/virtualMachines/%s\n' "$1"
+}
+
+case "$CMD" in
+    "vmss nic list"*)
+        wanted=""
+        for a in "$@"; do
+            case "$a" in
+                *privateIPAddress==*) wanted="${a#*privateIPAddress==\'}"; wanted="${wanted%%\'*}" ;;
+            esac
+        done
+        if [[ "$wanted" == "${FAKE_LEADER_IP:-10.1.0.7}" && "${FAKE_NIC_FINDS_NOTHING:-false}" != true ]]; then
+            resource_id "${FAKE_LEADER_INSTANCE:-5}"
+        fi
+        ;;
+    *"[0].instanceId"*)
+        # `az vmss list-instances --query "[0].instanceId"`: which instances
+        # does this scale set actually have?
+        [[ -n "$INSTANCES" ]] || exit 0
+        printf '%s\n' "${INSTANCES%% *}"
+        ;;
+    "vmss list-instances"*)
+        # Resolve one instance id to a resource id, and answer nothing for
+        # an instance the scale set does not have -- which is what the real
+        # query does, and what a drill assuming instance 0 runs into.
+        wanted=""
+        for a in "$@"; do
+            case "$a" in
+                *instanceId==*) wanted="${a#*instanceId==\'}"; wanted="${wanted%%\'*}" ;;
+            esac
+        done
+        [[ -n "$wanted" ]] || exit 0
+        for i in $INSTANCES; do
+            if [[ "$i" == "$wanted" ]]; then resource_id "$i"; exit 0; fi
+        done
+        ;;
+    "network bastion tunnel"*)
+        [[ "${FAKE_BASTION_RC:-0}" == 0 ]] || exit "${FAKE_BASTION_RC}"
+        port=""
+        prev=""
+        for a in "$@"; do
+            [[ "$prev" == "--port" ]] && port="$a"
+            prev="$a"
+        done
+        [[ -n "$port" ]] || exit 1
+        exec python3 -c "
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', ${port})); s.listen(5)
+time.sleep(600)"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
