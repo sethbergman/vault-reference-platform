@@ -330,6 +330,15 @@ from whether Azure accepts it.
   is false, so the backend uses `use_azuread_auth` and a role assignment
   rather than an account key.
 
+A second session on 2026-09-29 added three more, against a cluster
+rebuilt from the same profile:
+
+- **Snapshots reaching blob storage** under a managed identity, against
+  an account with no key — checklist item 6.
+- **A restore, checked four ways**, under a Key Vault seal — item 7, and
+  the first restore of a cloud cluster here.
+- **Audit devices enabled cluster-wide**, which is half of item 8.
+
 Final state: three voters, `FailureTolerance: 1`, autopilot
 `cleanup_dead_servers=true min_quorum=3`.
 
@@ -397,9 +406,14 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 ### What Azure has still not proven
 
-- Snapshots to the container, a restore, PKI and audit on a real node —
-  now skipped on all three applies.
+- The PKI migration — and it is blocked on tooling rather than on a
+  cluster: see item 8 above. Snapshots, a restore and audit devices were
+  all settled on 2026-09-29.
 - Any identity narrower than an administrator, on either profile.
+- Whether the packaged `vault.service` is `Type=notify`. It decides
+  whether a throttled rolling restart waits for each node to be serving
+  again or only for systemd to have started it. One command settles it:
+  `systemctl show vault -p Type`.
 - VNet flow logs. Azure blocked creating NSG flow logs on 2025-06-30 and
   `azurerm` 3.x cannot create the replacement, so `enable_flow_logs`
   defaults to false. That is a real reduction in posture, recorded as
@@ -627,6 +641,63 @@ cd ..
 # left a dead voter behind that afternoon. Once per cluster.
 ./scripts/configure-autopilot.sh
 ```
+
+### Then, for items 6, 7 and 8
+
+The sequence above leaves a cluster that cannot reach three of the
+checklist items, because `vault_snapshots_enabled` and
+`vault_audit_enabled` both default to `false` — deliberately, since both
+change a cluster's availability or trust characteristics, and each role's
+`defaults/main.yml` says so at length.
+
+That is one step, and it is the step that did not happen on any of the
+first three applies. It is written down here for that reason.
+
+```bash
+# Everything below talks to the cluster, so it needs an address, the CA,
+# and a token. The load balancer is fine for these — only the DR drill
+# needs the leader specifically, and it finds the leader itself.
+export VAULT_ADDR="$(terraform -chdir=terraform/aws output -raw vault_addr)"
+export VAULT_CACERT="$PWD/ansible/files/tls/ca.crt"
+export VAULT_TOKEN=...        # from the `vault operator init` you ran
+
+# The snapshot job needs a credential of its own. The instance role gets
+# the file into the bucket; this is what gets the snapshot out of Vault,
+# and it is why the role takes a role_id and secret_id rather than a
+# token sitting in a file on every node forever.
+./scripts/bootstrap-approle.sh --role vault-snapshot \
+    --policy-file examples/policies/snapshot.hcl
+ROLE_ID="$(vault read -field=role_id auth/approle/role/vault-snapshot/role-id)"
+SECRET_ID="$(./scripts/rotate-secret-id.sh --role vault-snapshot)"
+
+# A file rather than -e on the command line: an --extra-var is visible in
+# `ps` to every account on the control machine and lands in shell history.
+umask 077
+cat > /tmp/enable.yml <<EOF
+vault_snapshots_enabled: true
+vault_snapshots_role_id: ${ROLE_ID}
+vault_snapshots_secret_id: ${SECRET_ID}
+vault_audit_enabled: true
+vault_audit_token: ${VAULT_TOKEN}
+EOF
+
+cd ansible && ansible-playbook -i inventory/aws_ec2.yml \
+    --private-key ~/.ssh/<your-key>.pem playbooks/site.yml \
+    -e @/tmp/enable.yml
+cd .. && shred -u /tmp/enable.yml
+```
+
+Enabling audit restarts Vault, because the drop-in that lets it write its
+own log changes the mount namespace and that is built at start. The task
+is `throttle: 1`, so one node at a time — without that the linear strategy
+restarts all three together and a three-node Raft cluster with no node
+running has no leader and no quorum. Nothing had that throttle until
+2026-09-29, and auto-unseal is the reason nobody had noticed.
+
+`vault_audit_token` needs `sudo` on `sys/audit`, which in practice means
+the root token. That is the honest state of it: no identity narrower than
+an administrator has been tried against either profile, and it is on the
+roadmap as its own item rather than pretended away.
 
 ### Azure
 
@@ -968,6 +1039,18 @@ fall back on — if the role assignment is wrong, the upload fails and no
 amount of fetching keys will work around it. That is the point of the
 setting, and it makes this check sharper than its AWS counterpart.
 
+**Observed on Azure, 2026-09-29.** Two objects in the container, written
+by the leader, with both standbys logging that they skipped. Read back
+with `--auth-mode login` against an account that has no key at all, so
+the managed identity's role assignment is proven end to end rather than
+inferred from a green timer.
+
+Reaching it took three systemd fixes, none of which is about snapshots:
+see [Three fixes the hardening needed](#three-fixes-the-hardening-needed)
+below. **Not observed on AWS.** The instance-role half of this claim —
+`s3:PutObject` from IMDS credentials — is still untested against a real
+account.
+
 ### 7. Restoring a snapshot actually works
 
 *Claimed by:* `docs/disaster-recovery.md`
@@ -975,22 +1058,50 @@ setting, and it makes this check sharper than its AWS counterpart.
 restore path
 
 Do **not** use `scripts/dr-drill.sh` here. It drives the local Docker
-Compose profile and tears it down; it is not a cloud tool. The cloud
-equivalent is the same idea run by hand:
+Compose profile and tears it down; it is not a cloud tool. Use
+`scripts/dr-drill-cloud.sh`:
 
 ```bash
-vault kv put secret/dr-canary value=before-restore
-vault operator raft snapshot save /tmp/cloud.snap
-
-vault kv delete secret/dr-canary          # the "disaster"
-vault operator raft snapshot restore /tmp/cloud.snap
-
-vault kv get secret/dr-canary             # expect: before-restore
+export VAULT_TOKEN=...            # one that can snapshot and restore
+./scripts/dr-drill-cloud.sh --cloud aws
 ```
+
+This document described the cloud drill as "the same idea run by hand"
+for three applies, and run-by-hand is why it was skipped on all three:
+every step is easy, the sequence is long, and it is always the thing
+there is no time for. Writing it down as a script is the whole fix.
 
 **Reading the canary back is the test.** A restore that silently did
 nothing still leaves a healthy unsealed cluster, so "the command
-succeeded" proves nothing.
+succeeded" proves nothing. The script checks three more things, and the
+second is the one worth understanding:
+
+| Check | What it rules out |
+|---|---|
+| The canary written before the snapshot reads back | A restore that did nothing |
+| **A token minted after the snapshot no longer works** | **A merge rather than a replacement** |
+| The cluster is unsealed afterwards | A seal path that did not survive |
+| Every peer is still a voter | Trading one disaster for another |
+
+The token is the sharp one. It was never in the snapshot, so if it still
+authenticates, whatever happened did not replace the cluster's state —
+and a cluster that merged a snapshot into itself looks identical to one
+that restored from it, right up until you rely on the difference.
+
+**Observed on Azure, 2026-09-29: four for four**, under a Key Vault seal.
+That is the first restore of a cloud cluster this repository has watched,
+and the token check is not reachable at all from the local drill, which
+has no cloud seal to restore under.
+
+**Not observed on AWS.** The script's AWS half was written from the Azure
+half's shape and, until it was rewritten, could not have worked: it
+pointed at the load balancer, which is the wrong address for this one
+job. `terraform/aws/lb.tf` probes with `standbyok=true` precisely so
+standbys stay in the pool — item 4 above — so a TCP listener spreads
+connections across all three nodes, and Vault redirects a snapshot
+request to the leader's `api_addr`, a private address. Two attempts in
+three would have failed the way Azure's did. Both clouds now look the
+leader up and forward a port to it: SSM on AWS, Bastion on Azure.
 
 What this specifically checks that the local drill cannot: **the restore
 path when the seal is KMS rather than Transit.** The snapshot is
@@ -1016,6 +1127,49 @@ echo | openssl s_client -connect <node>:8200 2>/dev/null \
 **Expect** the issuer to be the Vault PKI CA, not the self-signed
 bootstrap certificate, and the audit log to contain entries with hashed
 values rather than plaintext.
+
+**The audit half was observed on Azure, 2026-09-29**: two devices enabled
+cluster-wide, entries being written with hashed values.
+
+**The PKI half cannot be done with the tool this repository ships**, which
+was settled by reading rather than by spending a cluster on it.
+`scripts/migrate-to-vault-pki.sh` takes one `--tls-dir` and one
+`--reload-cmd` for the whole cluster, and writes each certificate into
+that directory through `issue-node-cert.sh`. That is right for the local
+Docker profile, where three containers bind-mount the same
+`docker/dev/tls` and the certificates differ only by `--cert-name`. On a
+cloud cluster every node reads `/etc/vault.d/tls/vault.crt` out of its own
+filesystem, and there is no shared directory to write into.
+
+The phases can be driven one node at a time — `--phase trust` on each,
+then `--phase swap` on each in turn, then `--phase prune` — and that is
+probably the shape of the answer. Note what it costs: the guard that makes
+phase 3 safe checks that **every node in `--nodes`** already presents a
+PKI certificate, and with one node listed it checks one. Running the
+prune three times, once per node, is three runs of a guard that cannot see
+the partition it exists to prevent.
+
+So this is a gap in the tooling rather than an item waiting for a cluster,
+and it is the one thing on the checklist a real apply would not settle.
+
+#### Three fixes the hardening needed
+
+Neither half ran at all before three systemd defects were fixed, and none
+of the three is about PKI or audit. The local profile runs Vault in
+Docker with **no systemd**, so nothing here had ever been exercised:
+
+| Unit | Setting | What it broke |
+|---|---|---|
+| `vault.service` (packaged) | `ProtectSystem=full` | `/etc` read-only, so Vault cannot open its own audit log |
+| `vault-snapshot.service` | `ProtectHome=true` | The Vault CLI exits before contacting Vault |
+| `vault-cert-renew.service` | `ProtectHome=true` | Same, as root — the renewal timer had never renewed anything |
+
+The `ProtectHome` pair is the one to remember. The Vault CLI opens
+`$HOME/.vault` to find its token helper **before running any
+subcommand** — including `vault status`, which needs no token — so the
+failure arrives as `Could not reach Vault`, about a Vault that is
+answering every other caller. `ProtectHome=tmpfs` is the fix, and it is
+*stricter* than `read-only`.
 
 ### 9. An instance refresh keeps quorum (AWS)
 

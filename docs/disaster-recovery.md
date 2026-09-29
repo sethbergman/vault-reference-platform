@@ -205,6 +205,19 @@ snapshot behaves the same. See [cloud-apply.md](cloud-apply.md).
 
 ## Testing
 
+There are two drills, and they prove different things. The local one runs
+in CI on every PR; the cloud one costs a cluster to run and has been run
+once.
+
+| | `dr-drill.sh` | `dr-drill-cloud.sh` |
+|---|---|---|
+| Against | Docker Compose | A real cloud cluster |
+| Seal | Transit | KMS or Key Vault |
+| Destroys | The node and its storage | Nothing — a secret |
+| Runs | Every PR, in CI | By hand, once so far |
+
+### The local drill
+
 `scripts/dr-drill.sh` runs the whole cycle against the local Docker
 Compose profile: seed a canary secret, snapshot, destroy the node and
 its storage, bring up an empty replacement, restore, and verify the
@@ -217,6 +230,49 @@ make test          # or: ./scripts/dr-drill.sh
 It runs in CI on every PR (`dr-drill-test`), so the restore path can't
 rot unnoticed — which is the point, since a restore procedure nobody
 exercises is a procedure nobody knows is broken.
+
+### The cloud drill
+
+`scripts/dr-drill-cloud.sh` is the same idea where the seal is real:
+
+```bash
+export VAULT_TOKEN=...
+./scripts/dr-drill-cloud.sh --cloud aws     # or: --cloud azure
+```
+
+It writes a canary, snapshots, mints a token *after* that snapshot,
+destroys the canary, restores, and then checks four things. The token is
+the assertion that could not exist locally: it was never in the snapshot,
+so if it still authenticates afterwards, the cluster merged the snapshot
+rather than restoring from it — and both outcomes leave a healthy
+unsealed cluster holding the canary.
+
+It deliberately does **not** destroy a node. A scale set or autoscaling
+group would put one back, and the drill would end up measuring
+reconciliation rather than restore. The local drill destroys storage
+because nothing there replaces it.
+
+It also does not touch the seal key, which is the single most important
+thing about backing up an auto-unsealed Vault: **the snapshot is only
+half of what a restore needs.** Lose the key and the snapshot is
+mathematically undecryptable. `scripts/teardown-cloud.sh` reports the
+surviving KMS key or Key Vault for this reason rather than as litter.
+
+A snapshot is served by the leader alone, and Vault redirects rather than
+forwards that request — to the leader's own `api_addr`, a private
+address. So the drill looks the leader up and forwards a local port to
+it, over SSM on AWS and a Bastion tunnel on Azure, and talks to
+`127.0.0.1`, which every leaf certificate carries as a SAN. On AWS the
+load balancer is reachable and is still the wrong address: it keeps
+standbys in the pool on purpose.
+
+The token the drill needs can be a narrow one.
+`examples/policies/snapshot.hcl` is enough to take the snapshot —
+`read` on `sys/storage/raft/snapshot`, and no `sudo`, which was an open
+question until a real cluster answered it. A restore needs more.
+
+**Run once, on Azure, 2026-09-29: four passes.** Never on AWS; the AWS
+path was rewritten afterwards and has not been watched working.
 
 Two details the drill makes concrete, both easy to be surprised by
 mid-incident:
