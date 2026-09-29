@@ -205,6 +205,29 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Reach the leader
 # ---------------------------------------------------------------------------
+# require_free_port <port> — refuse to start a tunnel onto a port that
+# something else already holds.
+#
+# wait_for_port below waits for the port to accept a connection, and cannot
+# tell our tunnel from anyone's. Two orphaned `az network bastion tunnel`
+# processes held 18200 and 18201 for over a day on 2026-09-29, against a
+# resource group that had been destroyed -- so the check would have passed
+# instantly and this drill would have reported on the wrong cluster, or on
+# no cluster at all, with nothing in its output saying so.
+#
+# Naming the holder matters more than refusing does. "18200 is in use" sends
+# an operator hunting; the command line says it is yesterday's tunnel.
+require_free_port() {
+    local port="$1" holder
+    python3 -c "
+import socket,sys
+s = socket.socket(); s.settimeout(1)
+sys.exit(1 if s.connect_ex(('127.0.0.1', ${port})) == 0 else 0)" 2>/dev/null && return 0
+
+    holder="$(ss -ltnp 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p { print $NF }' | head -1)"
+    die "port ${port} is already in use${holder:+ by ${holder}} — a forward left over from an earlier run reaches whatever it was opened against, not this cluster. Close it (ss -ltnp | grep ${port}) and try again."
+}
+
 wait_for_port() {
     local port="$1" deadline=$((SECONDS + 60))
     while ! python3 -c "
@@ -251,6 +274,7 @@ if [[ "$CLOUD" == "azure" ]]; then
     }
     tunnel_to() {        # tunnel_to <instance-id> <local-port>
         local target
+        require_free_port "$2"
         target="$(az vmss list-instances -g "$RG" -n "$VMSS" \
             --query "[?instanceId=='$1'].id | [0]" -o tsv 2>/dev/null)"
         [[ -n "$target" ]] || die "no instance ${1} in ${VMSS}"
@@ -284,6 +308,7 @@ else
             --output text 2>/dev/null | sed 's/^None$//'
     }
     tunnel_to() {        # tunnel_to <instance-id> <local-port>
+        require_free_port "$2"
         aws ssm start-session --target "$1" \
             --document-name AWS-StartPortForwardingSession \
             --parameters "portNumber=8200,localPortNumber=$2" \
