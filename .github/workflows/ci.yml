@@ -932,6 +932,20 @@ jobs:
       - name: Exercise scripts/snapshot.sh
         run: ./tests/snapshot/run-tests.sh
 
+  dr-drill-cloud-test:
+    name: Cloud DR drill tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The only thing here that has ever restored a cloud cluster, run by
+      # hand, once per cluster, on a day somebody has a cluster to spend.
+      # A drill that reports four passes against a cluster it never
+      # restored is worse than no drill: it turns an unknown into a wrong
+      # answer, and there is no second run to catch it.
+      - name: Exercise scripts/dr-drill-cloud.sh
+        run: ./tests/dr-drill-cloud/run-tests.sh
+
   pki-test:
     name: Vault PKI node certificate tests
     runs-on: ubuntu-latest

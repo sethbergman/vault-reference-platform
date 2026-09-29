@@ -75,6 +75,12 @@
   # the process runs in, and that is built at start. Safe here because
   # the cloud profiles auto-unseal -- on a Shamir cluster this would
   # leave the node sealed and waiting for keys.
+  #
+  # throttle: 1 so that is one node at a time. Without it the linear
+  # strategy restarts all three together and the cluster is down entirely
+  # while they come back -- turning "enable audit logging" into an outage
+  # on a cluster that was serving.
+  throttle: 1
   ansible.builtin.systemd_service:
     name: vault
     state: restarted
@@ -82,6 +88,7 @@
   when: vault_audit_enabled and vault_audit_dropin.changed
 
 - name: Wait for Vault to answer again after the restart
+  throttle: 1
   ansible.builtin.wait_for:
     port: 8200
     host: 127.0.0.1

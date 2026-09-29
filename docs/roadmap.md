@@ -319,11 +319,31 @@ The blockers are, in order:
    resources gone and a load balancer billing, on the strength of a run
    that had reported failure and was read as finished.
 
-   What it did not reach is what the AWS sessions did not reach either:
-   snapshots to the container, a restore, PKI and audit on a real node,
-   and any identity narrower than an administrator. Two fixes are
-   deliberately partial and say so in their commits — orphaned Bastion
-   tunnels, and VNet flow logs, which need azurerm 4.x.
+   What it did not reach, a second session on 2026-09-29 did. Checklist
+   items 6, 7 and the audit half of 8 are settled on Azure — snapshots
+   into the container under a managed identity, a restore checked four
+   ways under a Key Vault seal, and audit devices enabled cluster-wide.
+   Those are the first anywhere: three real applies had skipped them,
+   because `cloud-apply.md` described the cloud drill as "the same idea
+   run by hand" and run-by-hand loses to the end of a session every
+   time. `scripts/dr-drill-cloud.sh` is that sequence written down.
+
+   Reaching them cost three systemd fixes that are not about snapshots,
+   audit or PKI at all. The packaged unit's `ProtectSystem=full` leaves
+   `/etc` read-only, so Vault cannot open its own audit log; and
+   `ProtectHome=true` on two of this repository's own units stops the
+   Vault CLI before it contacts Vault, because it opens `$HOME/.vault`
+   ahead of any subcommand. The local profile runs Vault in Docker with
+   no systemd, so none of it had ever run.
+
+   Still unreached on Azure: the PKI migration, and any identity narrower
+   than an administrator. The PKI one is not waiting for a cluster —
+   `migrate-to-vault-pki.sh` takes a single `--tls-dir` for every node,
+   which is right for three containers sharing a bind mount and wrong for
+   three machines that each read their own `/etc/vault.d/tls`. A cloud
+   migration needs per-node delivery the script does not have. Two further
+   fixes are deliberately partial and say so in their commits — orphaned
+   Bastion tunnels, and VNet flow logs, which need azurerm 4.x.
 3. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node, an edit to it is
    detectable, and the anchors that make it detectable now leave the

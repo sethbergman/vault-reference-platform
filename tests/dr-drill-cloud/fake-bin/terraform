@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# A stand-in for `terraform`, for tests/dr-drill-cloud. Answers
+# `output -raw <name>` from FAKE_TF_<NAME>, and fails the way the real
+# command does when an output does not exist -- which is how the drill
+# tells "this profile was applied without a bastion" from "the bastion is
+# broken".
+set -uo pipefail
+
+{
+    printf 'terraform'
+    for a in "$@"; do printf ' %s' "$a"; done
+    printf '\n'
+} >> "${FAKE_LOG:-/dev/null}"
+
+args=()
+for a in "$@"; do
+    case "$a" in
+        -chdir=*) ;;
+        *) args+=("$a") ;;
+    esac
+done
+
+if [[ "${args[0]:-}" == "output" && "${args[1]:-}" == "-raw" ]]; then
+    name="${args[2]}"
+    var="FAKE_TF_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    value="${!var:-}"
+    if [[ -z "$value" ]]; then
+        printf 'Error: Output "%s" not found\n' "$name" >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+    exit 0
+fi
+
+exit 1

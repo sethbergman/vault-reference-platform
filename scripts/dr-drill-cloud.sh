@@ -12,6 +12,13 @@
 #   --from-file <path>    Restore this snapshot instead of fetching the
 #                         newest one from the object store.
 #   --keep-canary         Leave the canary secret behind.
+#   --read-timeout <s>    How long to keep asking a cluster that has just
+#                         restored (default: 30). Vault steps down and
+#                         reloads its listener, so a read in that window
+#                         comes back empty; the drill reports a read it
+#                         never got as "could not read" rather than as a
+#                         failure, and on a larger cluster that is the
+#                         wrong thing to have to say.
 #   --yes                 Skip the confirmation. For CI, not for you.
 #
 # What it does:
@@ -70,20 +77,37 @@
 #   most important thing to get right about backing up an auto-unsealed
 #   Vault: the snapshot is only half of what a restore needs.
 #
-# ON AZURE, THE TUNNEL HAS TO REACH THE LEADER
+# THE TUNNEL HAS TO REACH THE LEADER -- ON BOTH CLOUDS
 #
-# A snapshot is served by the leader alone. Ask a standby and Vault
-# answers with a redirect to the leader's private address, which is
-# reachable from inside the VNet and nowhere else:
+# A snapshot is served by the leader alone, and Vault does not forward a
+# snapshot request the way it forwards an ordinary one. It redirects, to
+# the leader's own api_addr, which both profiles set to the node's private
+# address. From outside the network that is:
 #
 #   redirect failed: dial tcp 10.1.0.7:8200: i/o timeout
 #
-# One Bastion tunnel reaches one node, so this looks the leader up rather
-# than assuming, and points the tunnel there. With internal_lb = true
-# there is no reachable load balancer address to use instead.
+# So this looks the leader up and forwards a port to it rather than
+# assuming. On Azure that is a Bastion tunnel, because internal_lb = true
+# leaves no reachable load balancer address at all.
+#
+# On AWS there is a reachable load balancer, and it is the wrong thing to
+# use anyway. terraform/aws/lb.tf probes
+# /v1/sys/health?standbyok=true, so a healthy standby answers 200 and
+# stays in the target group -- which is checklist item 4, and deliberate.
+# The listener is TCP, so connections spread across all three nodes and
+# two attempts in three land on a standby. A load balancer that keeps
+# standbys in the pool is the right load balancer and the wrong address
+# for this one job. AWS forwards the port over SSM instead, the same
+# channel ansible/inventory/aws_ec2.yml already reaches the nodes through.
+#
+# Talking to 127.0.0.1 verifies, on either cloud: every leaf
+# scripts/generate-cloud-certs.sh mints carries DNS:localhost and
+# IP:127.0.0.1. Nothing here needs -tls-skip-verify and nothing here has
+# it.
 #
 # Requirements: terraform, vault, jq, python3; aws or az for the object
-# store; az for the Bastion tunnel on Azure.
+# store; session-manager-plugin on AWS, and the az bastion extension on
+# Azure.
 
 set -uo pipefail
 
@@ -95,6 +119,7 @@ TF_DIR=""
 FROM_FILE=""
 KEEP_CANARY=false
 ASSUME_YES=false
+READ_TIMEOUT=30
 
 PASS=0
 FAIL=0
@@ -119,6 +144,7 @@ while [[ $# -gt 0 ]]; do
         --dir)          TF_DIR="$2"; shift 2 ;;
         --from-file)    FROM_FILE="$2"; shift 2 ;;
         --keep-canary)  KEEP_CANARY=true; shift ;;
+        --read-timeout) READ_TIMEOUT="$2"; shift 2 ;;
         --yes)          ASSUME_YES=true; shift ;;
         -h|--help)      usage ;;
         *)              die "Unknown argument: $1" ;;
@@ -127,6 +153,9 @@ done
 
 [[ -n "$CLOUD" ]] || die "--cloud is required (aws or azure)"
 case "$CLOUD" in aws|azure) ;; *) die "--cloud must be aws or azure, got: ${CLOUD}" ;; esac
+if ! [[ "$READ_TIMEOUT" =~ ^[0-9]+$ ]] || (( READ_TIMEOUT == 0 )); then
+    die "--read-timeout must be a positive number of seconds, got: ${READ_TIMEOUT}"
+fi
 [[ -n "$TF_DIR" ]] || TF_DIR="${REPO_ROOT}/terraform/${CLOUD}"
 [[ -d "$TF_DIR" ]] || die "No Terraform directory at ${TF_DIR}"
 
@@ -134,7 +163,14 @@ for tool in terraform vault jq python3; do
     command -v "$tool" >/dev/null 2>&1 || die "${tool} not found on PATH"
 done
 [[ "$CLOUD" == "azure" ]] && { command -v az >/dev/null 2>&1 || die "az not found on PATH"; }
-[[ "$CLOUD" == "aws"   ]] && { command -v aws >/dev/null 2>&1 || die "aws not found on PATH"; }
+if [[ "$CLOUD" == "aws" ]]; then
+    command -v aws >/dev/null 2>&1 || die "aws not found on PATH"
+    # `aws ssm start-session` shells out to this and reports a bare
+    # "SessionManagerPlugin is not found" that reads like an AWS outage.
+    # scripts/preflight-cloud.sh checks for it for the same reason.
+    command -v session-manager-plugin >/dev/null 2>&1 \
+        || die "session-manager-plugin not found on PATH — the port forward to the leader needs it"
+fi
 
 [[ -n "${VAULT_TOKEN:-}" ]] || die "VAULT_TOKEN is not set — this needs a token that can snapshot and restore"
 
@@ -142,19 +178,28 @@ tf() { terraform -chdir="$TF_DIR" "$@"; }
 
 WORK="$(mktemp -d)"
 TUNNEL_PID=""
+
+# Both clouds wrap the process that actually holds the local port: `az`
+# spawns it, and `aws ssm start-session` execs session-manager-plugin.
+# Killing the wrapper alone leaves the child bound, and the next tunnel
+# fails to listen on a port nothing appears to be using.
+close_tunnel() {
+    [[ -n "$TUNNEL_PID" ]] || return 0
+    local child
+    for child in $(ps -eo pid,ppid --no-headers 2>/dev/null \
+        | awk -v p="$TUNNEL_PID" '$2 == p { print $1 }'); do
+        kill "$child" 2>/dev/null || true
+    done
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    TUNNEL_PID=""
+}
 cleanup() {
-    if [[ -n "$TUNNEL_PID" ]]; then
-        # `az` is a wrapper around the process that holds the tunnel;
-        # killing the wrapper leaves the child bound to the local port.
-        local child
-        for child in $(ps -eo pid,ppid --no-headers 2>/dev/null \
-            | awk -v p="$TUNNEL_PID" '$2 == p { print $1 }'); do
-            kill "$child" 2>/dev/null || true
-        done
-        kill "$TUNNEL_PID" 2>/dev/null || true
-    fi
+    close_tunnel
     rm -rf "$WORK"
 }
+# Not `trap 'close_tunnel; rm -rf "$WORK"' EXIT`: a trap handler ending in
+# a conditional hands its exit status to the script, which is what
+# tests/lint/check_trap_exit.py exists to catch.
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
@@ -171,14 +216,33 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', ${port})) == 0 else 1)" 2>/dev/null; do
     done
 }
 
+# TLS terminates at Vault under the CA generate-cloud-certs.sh minted, on
+# both profiles. Without this every call fails verification, and the only
+# way past that is the flag this repository forbids.
+CACERT="${REPO_ROOT}/ansible/files/tls/ca.crt"
+[[ -f "$CACERT" ]] || die "no CA at ${CACERT}; run generate-cloud-certs.sh first"
+export VAULT_CACERT="$CACERT"
+
+# Each cloud supplies three things: some node to ask who the leader is,
+# a way to turn the leader's private address back into an instance, and a
+# way to forward a local port to one. Everything after this block is
+# shared.
 if [[ "$CLOUD" == "azure" ]]; then
     RG="$(tf output -raw resource_group_name 2>/dev/null)" || die "no resource_group_name output"
     VMSS="$(tf output -raw vault_scale_set_name 2>/dev/null)" || die "no vault_scale_set_name output"
     BASTION="$(tf output -raw bastion_name 2>/dev/null)" \
         || die "no bastion_name output — this profile was applied with bastion_enabled = false"
-    CACERT="${REPO_ROOT}/ansible/files/tls/ca.crt"
-    [[ -f "$CACERT" ]] || die "no CA at ${CACERT}; run generate-cloud-certs.sh first"
-    export VAULT_CACERT="$CACERT"
+
+    # Ask which instances exist rather than assuming instance 0 does.
+    # Scale set instance ids are assigned once and never reused downwards,
+    # so every reconciliation increments them and a scale set that has
+    # replaced a node has no instance 0 at all -- the 2026-09-28 apply
+    # finished with instance 000005 on a three-instance scale set. The
+    # drill ran the following day against a cluster rebuilt from scratch,
+    # which is the only reason assuming 0 ever worked.
+    ANY_NODE="$(az vmss list-instances -g "$RG" -n "$VMSS" \
+        --query "[0].instanceId" -o tsv 2>/dev/null)"
+    [[ -n "$ANY_NODE" ]] || die "no instances in ${VMSS} — is the cluster up?"
 
     instance_id_of() {   # instance_id_of <private-ip>
         az vmss nic list -g "$RG" --vmss-name "$VMSS" \
@@ -196,35 +260,56 @@ if [[ "$CLOUD" == "azure" ]]; then
         TUNNEL_PID=$!
         wait_for_port "$2" || die "the tunnel to instance ${1} never listened on ${2}"
     }
-
-    log "Opening a tunnel to find the leader..."
-    tunnel_to 0 18200
-    export VAULT_ADDR="https://127.0.0.1:18200"
-    LEADER_IP="$(vault status -format=json 2>/dev/null \
-        | jq -r '.leader_address // ""' | sed -e 's#https\?://##' -e 's#:.*##')"
-    [[ -n "$LEADER_IP" ]] || die "could not read leader_address"
-    LEADER_ID="$(instance_id_of "$LEADER_IP")"
-    [[ -n "$LEADER_ID" ]] || die "could not map leader ${LEADER_IP} to an instance"
-    log "Leader is ${LEADER_IP} (instance ${LEADER_ID})."
-
-    cleanup_tunnel_only() {
-        local child
-        for child in $(ps -eo pid,ppid --no-headers 2>/dev/null \
-            | awk -v p="$TUNNEL_PID" '$2 == p { print $1 }'); do
-            kill "$child" 2>/dev/null || true
-        done
-        kill "$TUNNEL_PID" 2>/dev/null || true
-        TUNNEL_PID=""
-    }
-    cleanup_tunnel_only
-    tunnel_to "$LEADER_ID" 18201
-    export VAULT_ADDR="https://127.0.0.1:18201"
 else
-    # The AWS load balancer is reachable, and it routes to the active
-    # node, so no tunnel and no leader lookup.
-    VAULT_ADDR="$(tf output -raw vault_addr 2>/dev/null)" || die "no vault_addr output"
-    export VAULT_ADDR
+    ASG="$(tf output -raw autoscaling_group_name 2>/dev/null)" \
+        || die "no autoscaling_group_name output"
+    # Every aws call below needs a region and none of them should depend on
+    # whichever one happens to be configured locally being the one the
+    # cluster was applied into.
+    AWS_REGION="$(tf output -raw aws_region 2>/dev/null)" || die "no aws_region output"
+    export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+
+    ANY_NODE="$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$ASG" \
+        --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId | [0]" \
+        --output text 2>/dev/null)"
+    [[ -n "$ANY_NODE" && "$ANY_NODE" != "None" ]] \
+        || die "no InService instance in ${ASG} — is the cluster up?"
+
+    instance_id_of() {   # instance_id_of <private-ip>
+        aws ec2 describe-instances \
+            --filters "Name=private-ip-address,Values=$1" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId | [0]' \
+            --output text 2>/dev/null | sed 's/^None$//'
+    }
+    tunnel_to() {        # tunnel_to <instance-id> <local-port>
+        aws ssm start-session --target "$1" \
+            --document-name AWS-StartPortForwardingSession \
+            --parameters "portNumber=8200,localPortNumber=$2" \
+            >"${WORK}/tunnel.log" 2>&1 &
+        TUNNEL_PID=$!
+        wait_for_port "$2" \
+            || die "the port forward to ${1} never listened on ${2} — see ${WORK}/tunnel.log"
+    }
 fi
+
+log "Forwarding a port to ${ANY_NODE} to find the leader..."
+tunnel_to "$ANY_NODE" 18200
+export VAULT_ADDR="https://127.0.0.1:18200"
+LEADER_IP="$(vault status -format=json 2>/dev/null \
+    | jq -r '.leader_address // ""' | sed -e 's#https\?://##' -e 's#:.*##')"
+[[ -n "$LEADER_IP" ]] || die "could not read leader_address"
+LEADER_ID="$(instance_id_of "$LEADER_IP")"
+[[ -n "$LEADER_ID" ]] || die "could not map leader ${LEADER_IP} to an instance"
+log "Leader is ${LEADER_IP} (${LEADER_ID})."
+
+# A second port rather than reusing the first: the old forward may take a
+# moment to release, and binding a port that is still held fails in a way
+# that looks like the new target being unreachable.
+close_tunnel
+tunnel_to "$LEADER_ID" 18201
+export VAULT_ADDR="https://127.0.0.1:18201"
 
 vault status >/dev/null 2>&1 || die "cannot reach Vault at ${VAULT_ADDR}"
 log "Reached Vault at ${VAULT_ADDR}."
@@ -243,7 +328,7 @@ log "Reached Vault at ${VAULT_ADDR}."
 # exactly when the answer is the one you want. An absent key prints the
 # string "null", which is what actually means "not there".
 status_field() {
-    local path="$1" out deadline=$((SECONDS + 30))
+    local path="$1" out deadline=$((SECONDS + READ_TIMEOUT))
     while (( SECONDS < deadline )); do
         out="$(vault status -format=json 2>/dev/null | jq -r "${path}" 2>/dev/null || true)"
         if [[ -n "$out" && "$out" != "null" ]]; then
@@ -363,13 +448,13 @@ else
     # Not a pass and not a failure. Saying "do not rely on this backup"
     # because a read timed out is worse than saying nothing.
     UNKNOWN=$((UNKNOWN + 1))
-    printf '  ????  could not read the seal state within 30s\n'
+    printf '  ????  could not read the seal state within %ss\n' "$READ_TIMEOUT"
     printf '        the cluster may be settling after the restore; check with\n'
     printf '        vault status before trusting or distrusting this run\n'
 fi
 
 PEER_JSON=""
-PEER_DEADLINE=$((SECONDS + 30))
+PEER_DEADLINE=$((SECONDS + READ_TIMEOUT))
 while (( SECONDS < PEER_DEADLINE )); do
     PEER_JSON="$(vault operator raft list-peers -format=json 2>/dev/null || true)"
     [[ -n "$PEER_JSON" ]] && break
@@ -378,7 +463,7 @@ done
 
 if [[ -z "$PEER_JSON" ]]; then
     UNKNOWN=$((UNKNOWN + 1))
-    printf '  ????  could not read the peer list within 30s\n'
+    printf '  ????  could not read the peer list within %ss\n' "$READ_TIMEOUT"
     printf '        check with vault operator raft list-peers\n'
 else
     PEERS="$(jq -r '.data.config.servers | length' <<< "$PEER_JSON" 2>/dev/null || echo 0)"

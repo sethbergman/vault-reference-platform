@@ -58,7 +58,7 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            29 suites; each is a self-contained run-tests.sh
+tests/            31 suites; each is a self-contained run-tests.sh
 examples/policies/  Least-privilege HCL policies used by scripts and CI
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
@@ -358,6 +358,7 @@ Per-suite requirements:
 | Suite | Needs |
 |---|---|
 | agent, database, snapshot | bash, jq |
+| dr-drill-cloud | bash, jq, python3 |
 | audit | bash, jq, python3 |
 | audit-chain | bash, sha256sum |
 | docs-index | bash, awk, diff |
@@ -387,7 +388,7 @@ Per-suite requirements:
 
 ## CI
 
-`.github/workflows/ci.yml` runs 39 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 40 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
@@ -448,7 +449,7 @@ CI enforces several invariants worth knowing before you push:
 
 ### Watching a PR without burning the context window
 
-33 jobs means any "list the check runs" call returns 33 records, which
+40 jobs means any "list the check runs" call returns 40 records, which
 makes it the most expensive question available about this repository.
 Ask it when you need a per-job conclusion, and once.
 

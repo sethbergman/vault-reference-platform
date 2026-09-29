@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#
+# A stand-in for `vault`, for tests/dr-drill-cloud.
+#
+# It models Vault's real output rather than the output the drill wants,
+# which is the rule the integration suite exists to enforce: a shim that
+# emits a field the real tool does not have will agree with a bug forever.
+# So `status -format=json` carries `type` and not `seal_type`, and carries
+# no `ha_mode` at all, because the real command has neither.
+#
+# It is also stateful. A drill that writes a canary, snapshots, deletes the
+# canary and restores is a sequence, and a shim that answers each call in
+# isolation cannot tell a working restore from a no-op -- which is the one
+# thing this script exists to check.
+set -uo pipefail
+
+STATE="${FAKE_STATE:?FAKE_STATE not set}"
+mkdir -p "$STATE"
+
+{
+    printf 'vault'
+    for a in "$@"; do printf ' %s' "$a"; done
+    printf ' [VAULT_ADDR=%s VAULT_CACERT=%s]\n' \
+        "${VAULT_ADDR:-<unset>}" "${VAULT_CACERT:-<unset>}"
+} >> "${FAKE_LOG:-/dev/null}"
+
+case "$1 ${2:-}" in
+    "status -format=json")
+        [[ "${FAKE_STATUS_JSON_RC:-0}" == 0 ]] || exit "${FAKE_STATUS_JSON_RC}"
+        # Vault steps down and reloads its listener after a restore, so a
+        # read in that window comes back empty. That is the only moment the
+        # drill's "could not read" path is reachable: before the restore an
+        # unreadable status means no leader_address at all, and refusing to
+        # start is the right answer to that.
+        if [[ -f "${STATE}/restored" ]]; then
+            [[ "${FAKE_STATUS_JSON_RC_AFTER_RESTORE:-0}" == 0 ]]                 || exit "${FAKE_STATUS_JSON_RC_AFTER_RESTORE}"
+        fi
+        # Real fields only: `type`, `sealed`, `leader_address`.
+        printf '{"sealed":%s,"type":"%s","initialized":true,"leader_address":"https://%s:8200"}\n' \
+            "${FAKE_SEALED:-false}" "${FAKE_SEAL_TYPE:-awskms}" "${FAKE_LEADER_IP:-10.0.1.7}"
+        ;;
+    "status "*)
+        exit "${FAKE_STATUS_RC:-0}"
+        ;;
+    "secrets enable"*)
+        exit 0
+        ;;
+    "kv put")
+        # vault kv put <path> value=<v>
+        for a in "$@"; do
+            [[ "$a" == value=* ]] && printf '%s' "${a#value=}" > "${STATE}/canary"
+        done
+        exit "${FAKE_KV_PUT_RC:-0}"
+        ;;
+    "kv get")
+        [[ -f "${STATE}/canary" ]] || exit 2
+        cat "${STATE}/canary"
+        printf '\n'
+        ;;
+    "kv metadata")
+        [[ "${3:-}" == delete ]] || exit 1
+        [[ "${FAKE_DELETE_RC:-0}" == 0 ]] || exit "${FAKE_DELETE_RC}"
+        rm -f "${STATE}/canary"
+        ;;
+    "token create")
+        [[ "${FAKE_TOKEN_CREATE_RC:-0}" == 0 ]] || exit "${FAKE_TOKEN_CREATE_RC}"
+        printf 'hvs.after-the-snapshot' > "${STATE}/after_token"
+        cat "${STATE}/after_token"
+        printf '\n'
+        ;;
+    "token lookup")
+        if [[ -f "${STATE}/after_token" \
+              && "${VAULT_TOKEN:-}" == "$(cat "${STATE}/after_token")" ]]; then
+            # The whole point of the check: a restore replaces the token
+            # store, so a token minted after the snapshot stops existing.
+            if [[ -f "${STATE}/restored" && "${FAKE_TOKEN_SURVIVES:-false}" != true ]]; then
+                printf 'Error looking up token: permission denied\n' >&2
+                exit 2
+            fi
+        fi
+        exit 0
+        ;;
+    "operator raft")
+        case "${3:-} ${4:-}" in
+            "snapshot save")
+                [[ "${FAKE_SNAPSHOT_RC:-0}" == 0 ]] || exit "${FAKE_SNAPSHOT_RC}"
+                head -c "${FAKE_SNAPSHOT_BYTES:-24576}" /dev/zero > "$5"
+                # What the snapshot contains is what exists right now.
+                cp "${STATE}/canary" "${STATE}/snap" 2>/dev/null || rm -f "${STATE}/snap"
+                ;;
+            "snapshot restore")
+                [[ "${FAKE_RESTORE_RC:-0}" == 0 ]] || exit "${FAKE_RESTORE_RC}"
+                if [[ "${FAKE_RESTORE_IS_NOOP:-false}" == true ]]; then
+                    # Succeeds and changes nothing. Indistinguishable from a
+                    # real restore by exit code alone, which is why the
+                    # drill does not trust the exit code.
+                    exit 0
+                fi
+                touch "${STATE}/restored"
+                if [[ -f "${STATE}/snap" ]]; then
+                    cp "${STATE}/snap" "${STATE}/canary"
+                else
+                    rm -f "${STATE}/canary"
+                fi
+                ;;
+            "list-peers -format=json")
+                [[ "${FAKE_PEERS_RC:-0}" == 0 ]] || exit "${FAKE_PEERS_RC}"
+                n="${FAKE_PEERS:-3}"
+                v="${FAKE_VOTERS:-3}"
+                printf '{"data":{"config":{"servers":['
+                for ((i = 0; i < n; i++)); do
+                    [[ $i -gt 0 ]] && printf ','
+                    if [[ $i -lt $v ]]; then voter=true; else voter=false; fi
+                    printf '{"node_id":"node-%d","voter":%s}' "$i" "$voter"
+                done
+                printf ']}}}\n'
+                ;;
+            *) exit 1 ;;
+        esac
+        ;;
+    *)
+        exit 1
+        ;;
+esac

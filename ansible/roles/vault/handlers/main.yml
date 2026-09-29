@@ -1,5 +1,21 @@
 ---
 - name: Restart vault
+  # One node at a time. Handlers run at the end of the play across every
+  # host at once, so without this a change to vault.hcl -- this role's
+  # whole purpose -- restarts all three nodes simultaneously and the
+  # cluster has no leader, no quorum, and nothing serving, for as long as
+  # it takes them all to come back.
+  #
+  # A cluster that auto-unseals recovers from that on its own, which is
+  # why it has never been noticed. Recovering is not the same as staying
+  # up.
+  #
+  # What this guarantees is that only one node is being restarted at a
+  # time. Whether the next one starts before the previous one is serving
+  # again depends on whether the packaged unit is Type=notify, which has
+  # not been read off a running node yet; `systemctl show vault -p Type`
+  # settles it. Either way this is strictly better than all three.
+  throttle: 1
   ansible.builtin.systemd:
     name: vault
     state: restarted

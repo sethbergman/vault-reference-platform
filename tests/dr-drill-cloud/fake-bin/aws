@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# A stand-in for `aws`, for tests/dr-drill-cloud.
+#
+# `ssm start-session` really does bind the local port, because the drill
+# really does wait for it with a socket connect. A shim that logged the
+# call and returned would leave wait_for_port timing out, and every case
+# would pass or fail for the wrong reason.
+set -uo pipefail
+
+{
+    printf 'aws'
+    for a in "$@"; do printf ' %s' "$a"; done
+    printf ' [AWS_REGION=%s]\n' "${AWS_REGION:-<unset>}"
+} >> "${FAKE_LOG:-/dev/null}"
+
+case "$1 ${2:-}" in
+    "autoscaling describe-auto-scaling-groups")
+        [[ "${FAKE_ASG_RC:-0}" == 0 ]] || exit "${FAKE_ASG_RC}"
+        printf '%s\n' "${FAKE_ASG_FIRST_INSTANCE:-i-0aaaaaaaaaaaaaaa1}"
+        ;;
+    "ec2 describe-instances")
+        [[ "${FAKE_DESCRIBE_RC:-0}" == 0 ]] || exit "${FAKE_DESCRIBE_RC}"
+        # Only the leader's address maps to the leader's instance. Anything
+        # else gets None, the way the real query does -- so a drill that
+        # looked up the wrong address fails here rather than silently
+        # tunnelling somewhere arbitrary.
+        wanted=""
+        for a in "$@"; do
+            case "$a" in
+                Name=private-ip-address,Values=*) wanted="${a##*=}" ;;
+            esac
+        done
+        if [[ "${FAKE_DESCRIBE_FINDS_NOTHING:-false}" == true ]]; then
+            printf 'None\n'
+        elif [[ "$wanted" == "${FAKE_LEADER_IP:-10.0.1.7}" ]]; then
+            printf '%s\n' "${FAKE_LEADER_INSTANCE:-i-0bbbbbbbbbbbbbbb2}"
+        else
+            printf 'None\n'
+        fi
+        ;;
+    "ssm start-session")
+        [[ "${FAKE_SSM_RC:-0}" == 0 ]] || exit "${FAKE_SSM_RC}"
+        port=""
+        for a in "$@"; do
+            case "$a" in
+                *localPortNumber=*) port="${a##*localPortNumber=}"; port="${port%%,*}" ;;
+            esac
+        done
+        [[ -n "$port" ]] || exit 1
+        # exec, so the pid the drill backgrounded is the pid holding the
+        # port. close_tunnel kills that pid; an extra shell in between is
+        # how a tunnel survives its own teardown and the next bind fails.
+        exec python3 -c "
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', ${port})); s.listen(5)
+time.sleep(600)"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
