@@ -47,32 +47,45 @@ that part down.
 
 ## Architecture
 
-This is the topology `make deploy` actually stands up (local/CI). The AWS
-profile builds the same shape with a load balancer and KMS auto-unseal in
-front of it — see [`diagrams/architecture.md`](diagrams/architecture.md)
-and [`docs/deployment.md`](docs/deployment.md):
+This is what the cloud profiles build. `make deploy` stands up the same
+cluster locally with two differences: no load balancer, and Vault Transit
+in place of a cloud KMS — the same `seal` stanza shape against a
+single-node Vault that is Shamir-unsealed once and is the local root of
+trust. See [`diagrams/architecture.md`](diagrams/architecture.md),
+[`docs/auto-unseal.md`](docs/auto-unseal.md) and
+[`docs/deployment.md`](docs/deployment.md).
 
-```text
-    vault CLI / apps
-            │
-   ┌────────┼────────┐
-   │        │        │
-vault-0  vault-1  vault-2
-   │        │        │
-   └────────┼────────┘
-            │
-      Raft cluster
-            │
-   Transit auto-unseal
-            │
-      vault-unseal
- (Shamir-unsealed once —
-   the root of trust)
+```mermaid
+flowchart TD
+    U[Users / Applications] --> LB[Load Balancer]
+    LB --> V1[Vault Node 1]
+    LB --> V2[Vault Node 2]
+    LB --> V3[Vault Node 3]
+    V1 <--> V2
+    V2 <--> V3
+    V1 <--> V3
+    V1 --> R[(Raft Integrated Storage)]
+    V2 --> R
+    V3 --> R
+    R --> S[Snapshot / Backup Storage]
+    V1 --> AU[Auto-Unseal - Cloud KMS]
+    V2 --> AU
+    V3 --> AU
 ```
 
-One of the three holds leadership at any moment and the other two
-follow; which one is an election result, not a property of the node.
-`make status` shows the current split.
+One of the three holds leadership at any moment and the other two follow;
+which one is an election result, not a property of the node. `make status`
+shows the current split.
+
+**The load balancer keeps standbys in the pool on purpose.** It probes
+`/v1/sys/health?standbyok=true`, so a healthy standby answers 200 and
+keeps receiving traffic — Vault forwards what needs the leader. Ejecting
+them would leave one node serving everything and nothing saying why. That
+is item 4 of the verification checklist in
+[`docs/cloud-apply.md`](docs/cloud-apply.md), and the one operation it
+does *not* hold for is a snapshot: that is served by the leader alone,
+which is why `scripts/dr-drill-cloud.sh` looks the leader up rather than
+dialling the load balancer.
 
 ## Repository structure
 
