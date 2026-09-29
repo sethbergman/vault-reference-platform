@@ -573,6 +573,44 @@ run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
 assert_rc   "a dry run refuses on the same grounds" 1
 assert_says "naming the node whose SAN it is" "REFUSED  vault-1"
 
+
+# ---------------------------------------------------------------------------
+printf '\n=== The trust bundle the driver builds ===\n'
+# ---------------------------------------------------------------------------
+# It health-checks every node after every change, and during phase 2 half
+# of them are on each CA -- so it needs both, for the same reason phase 1
+# gives them to the nodes.
+#
+# The join is the part that broke. `vault read -field=certificate` emits no
+# trailing newline, and neither does the bundle --replace-ca installs from
+# it, so a plain append glues two PEM blocks into one unparseable line.
+# curl then rejects the whole file and every node reads as unreachable at
+# once -- which is what the integration suite re-run case caught, on the
+# only input that has been through --replace-ca.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+NO_NL_CA="${WORK}/no-trailing-newline.crt"
+printf '%s' "$(cat "${FIXTURES}/pkica.crt")" > "$NO_NL_CA"
+if [[ "$(tail -c1 "$NO_NL_CA" | wc -l)" -eq 0 ]]; then
+    ok "the fixture CA really has no trailing newline"
+else
+    bad "the fixture CA really has no trailing newline" "it ends with one"
+fi
+
+VAULT_CACERT="$NO_NL_CA" run_migrate --dry-run
+assert_rc   "a CA file with no trailing newline still builds a bundle" 0
+assert_says "and the bundle parses, with both certificates in it" "2 certificate(s)"
+
+# And with a bundle that cannot parse at all, it says so rather than
+# reporting every node unreachable.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+BAD_CA="${WORK}/not-a-certificate.crt"
+printf 'this is not a certificate\n' > "$BAD_CA"
+VAULT_CACERT="$BAD_CA" run_migrate --dry-run
+assert_rc   "a trust bundle that does not parse stops the run" 1
+assert_says "naming the file rather than blaming the cluster" "does not parse as PEM"
+
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------

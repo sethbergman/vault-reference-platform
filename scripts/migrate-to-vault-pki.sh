@@ -390,13 +390,37 @@ cleanup_bundle() { rm -f "$CA_BUNDLE"; }
 # conditional hands its status to the script, which is what
 # tests/lint/check_trap_exit.py exists to catch.
 trap cleanup_bundle EXIT
+# printf '\n' between the parts, not just cat. `vault read -field=` emits
+# no trailing newline and neither does the bundle --replace-ca installs
+# from it, so a plain append glues the two PEM blocks into one
+# unparseable line -- and curl then rejects the whole file, which reads as
+# every node being unreachable at once.
+BUNDLE_SOURCES=1          # the PKI CA, appended below
+BUNDLE_FROM="${MOUNT}"
 if [[ -n "${VAULT_CACERT:-}" && -r "${VAULT_CACERT}" ]]; then
     cat "${VAULT_CACERT}" > "$CA_BUNDLE"
+    printf '\n' >> "$CA_BUNDLE"
+    BUNDLE_SOURCES=2
+    BUNDLE_FROM="${VAULT_CACERT} and ${MOUNT}"
 fi
 vault read -field=certificate "${MOUNT}/cert/ca" >> "$CA_BUNDLE" 2>/dev/null \
     || die "Could not read the CA from ${MOUNT}. Has scripts/bootstrap-pki.sh been run? If this is a resumed migration and the leader is already serving a PKI certificate, point VAULT_CACERT at a bundle holding both CAs so this read can succeed."
+printf '\n' >> "$CA_BUNDLE"
+
+# Parsed before it is trusted. A bundle that does not parse does not fail
+# here -- it fails at every health check afterwards, identically, which
+# looks like a cluster that has gone away rather than a file that is
+# malformed.
+BUNDLE_CERTS="$(openssl crl2pkcs7 -nocrl -certfile "$CA_BUNDLE" 2>/dev/null \
+    | openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c '^subject' || true)"
+# One per source, not merely one. A VAULT_CACERT that is not a
+# certificate leaves the appended PKI CA parsing on its own, which is
+# enough to look fine and not enough to verify the half of the cluster
+# still on the old CA.
+[[ "${BUNDLE_CERTS:-0}" -ge "$BUNDLE_SOURCES" ]] \
+    || die "The combined trust bundle does not parse as PEM: ${BUNDLE_FROM} went in and openssl reads ${BUNDLE_CERTS:-0} certificate(s) out, wanting at least ${BUNDLE_SOURCES}."
 export VAULT_CACERT="$CA_BUNDLE"
-log "Trusting both CAs for this run (${CA_BUNDLE})."
+log "Trusting both CAs for this run (${BUNDLE_CERTS} certificate(s))."
 
 # Built before anything verifies anything, including the reachability
 # check below: with it after, a resumed migration reported its
