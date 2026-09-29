@@ -282,6 +282,68 @@ else:
         note(RULE, f"{len(units)} unit template(s), none of them")
 
 
+# --- 8 -------------------------------------------------------------------
+# Every restart of the Vault service has to be throttled to one host.
+#
+# Ansible's linear strategy runs a task on every host at once, up to the
+# fork count, so an unthrottled `state: restarted` takes the whole cluster
+# down together. A three-node Raft cluster with no node running has no
+# leader and no quorum; a cluster that auto-unseals comes back by itself,
+# which is why this survived a real apply unnoticed.
+#
+# The rule is about the Vault service specifically. Restarting
+# vault-snapshot.timer costs nothing, so it is not covered -- and naming
+# the service rather than matching every `state: restarted` is what keeps
+# this a rule about availability rather than a rule about spelling.
+RULE = "every Vault restart is throttled to one host"
+
+
+def task_chunks(text):
+    """Split a task or handler file into one chunk per list item.
+
+    Ansible tasks are YAML list items, so a chunk starts at a `- ` and
+    runs to the next one at the same indent. Text rather than a YAML
+    parse because this suite's stated requirements are bash and python3,
+    and PyYAML is not among them.
+    """
+    chunks, current, indent = [], [], None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("- ") and (indent is None or len(line) - len(stripped) == indent):
+            if current:
+                chunks.append("\n".join(current))
+            current, indent = [line], len(line) - len(stripped)
+        elif current:
+            current.append(line)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+task_files = sorted((ROOT / "ansible").glob("roles/*/*/main.yml"))
+task_files += sorted((ROOT / "ansible").glob("playbooks/*.yml"))
+restarts = []
+unthrottled = []
+for f in task_files:
+    for chunk in task_chunks(f.read_text()):
+        if "state: restarted" not in chunk:
+            continue
+        # `name: vault` and not vault-snapshot.timer, vault-agent, ...
+        if not re.search(r"^\s+name:\s+vault\s*$", chunk, re.M):
+            continue
+        restarts.append(f.relative_to(ROOT))
+        if not re.search(r"^\s+throttle:\s*1\s*$", chunk, re.M):
+            unthrottled.append(f.relative_to(ROOT))
+
+if not restarts:
+    fail(RULE, "no task restarts the vault service — this rule checked nothing")
+elif unthrottled:
+    fail(RULE, "restarts every node at once, which is an outage on a live "
+               "cluster: " + ", ".join(str(u) for u in unthrottled))
+else:
+    note(RULE, f"{len(restarts)} restart(s), all throttle: 1")
+
+
 for line in checked:
     print(f"OK {line}")
 for line in findings:
