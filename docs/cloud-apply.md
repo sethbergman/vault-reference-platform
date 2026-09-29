@@ -289,15 +289,94 @@ plugin needs `boto3` in the same Python that runs Ansible.
 
 ### What is still unproven
 
-- Snapshots to the bucket, a restore at the cloud destination, PKI and
-  audit on a real node — items 5 through 8 have now been skipped twice.
-- The `BucketNotEmpty` teardown path, for the same reason.
 - Any identity narrower than an administrator, on either profile.
+- The PKI migration, which is blocked on tooling rather than on a cluster.
 - Whether `vault operator raft autopilot state -format=json` arrives bare
   or wrapped in `.data`: this session read that command in text form
   only. The script accepts both and says so; settle it next time.
 - A refresh triggered the documented way, now that the trigger is fixed.
   What was watched was a refresh started from the CLI.
+
+## What the third AWS apply settled
+
+2026-09-29, same sandbox and shape: `az_count=2`, three `t3.small`,
+us-east-1, about ninety minutes, well under a dollar. It went in for
+items 6, 7 and 8, which three previous applies across two clouds had
+skipped, and got all three.
+
+| Item | Result |
+|---|---|
+| 1–5 | **Observed again**, unchanged |
+| **6. Snapshots reach the bucket** | **Observed.** The leader took one with the instance role and uploaded it; both standbys logged that they skipped. `sse: aws:kms` under the auto-unseal key |
+| **7. A restore works** | **Observed**, four for four, under a KMS seal — including the token check, which is what separates a restore from a merge |
+| **8. Audit devices** | **Observed.** Two devices, cluster-wide, with the trail hashed: `"client_token":"hmac-sha256:5976…"` |
+| 8. PKI migration | **Not reached, and not reachable** — see item 8 above. A tooling gap, not a cluster one |
+| The object in the bucket restores | **Observed**, and it is not on the checklist at all — see below |
+| The `BucketNotEmpty` teardown path | **Observed** on its first real run, with four objects in the bucket. Three previous applies never wrote one |
+
+### The whole backup chain, not just the restore path
+
+The drill takes its own snapshot, deliberately: fetching the newest
+uploaded one would restore to before the canary existed, and the drill
+could not then tell a working restore from a broken one. So the drill
+proves the restore path and says nothing about the bucket.
+
+The other half was done by hand and is worth repeating on the next apply.
+Write a secret, make the leader's timer upload a snapshot, write a second
+secret, then download that object and restore it:
+
+```text
+PASS  a secret written before the upload came back
+PASS  a secret written after the upload is gone
+seal: awskms   sealed: false   3 peers, all voters
+```
+
+Both assertions matter and neither is sufficient. The first alone passes
+against a restore that did nothing; the second alone passes against a
+restore that wiped the cluster. Together they say the object in S3 is a
+real snapshot of a real cluster, decryptable through KMS, and that
+restoring it replaces state rather than merging into it.
+
+`docs/disaster-recovery.md` had listed this as the step nobody had run:
+`tests/restore-from-object-store` does it against an emulated S3, which
+settles the upload and the download and nothing about KMS or a cluster.
+
+### Three things it found, none of which needed a failure
+
+- **The load balancer is internal**, and nothing said so. See
+  [Reaching the Vault API](deployment.md#reaching-the-vault-api). Every
+  operator instruction here read `terraform output -raw vault_addr` and
+  pointed a client at it, which from outside the VPC is
+  `dial tcp 10.0.10.170:8200: i/o timeout`. The default is right; the
+  documentation was missing.
+- **The apply sequence never initialised Vault.** `vault operator init`
+  appeared once, in an aside, and `configure-autopilot.sh` two lines
+  earlier needs a live unsealed cluster. Following the sequence as written
+  failed there.
+- **Two Azure Bastion tunnels orphaned the previous evening** were still
+  holding 18200 and 18201, more than a day after the resource group they
+  reached was destroyed. The drill's port check waited for the port to
+  *accept a connection* and could not tell its own tunnel from anyone's,
+  so it would not have failed — it would have reported on a cluster that
+  no longer existed. It refuses a held port by name now.
+
+### And one open question closed
+
+The packaged `vault.service` is **`Type=notify`** with
+`NotifyAccess=main`, read off all three nodes. So `systemctl restart
+vault` returns when Vault has signalled readiness rather than when systemd
+has started the process, and `throttle: 1` on the restart handler is a
+genuine rolling restart: each node is serving again before the next is
+touched.
+
+### A thing that reads as a failure and is not
+
+**The audit log is empty on the standbys.** Two of three nodes have
+`/etc/vault.d/audit/` with nothing in it, and the leader has both files
+growing. That is correct: the device is cluster-wide configuration, but
+each node writes only what it serves, and standbys forward almost
+everything to the leader. An empty file on a standby is evidence the
+cluster is working, not evidence the audit device is not.
 
 ## What the Azure apply settled
 
@@ -410,10 +489,8 @@ Sweep the subscription after a teardown; do not read the resource group.
   cluster: see item 8 above. Snapshots, a restore and audit devices were
   all settled on 2026-09-29.
 - Any identity narrower than an administrator, on either profile.
-- Whether the packaged `vault.service` is `Type=notify`. It decides
-  whether a throttled rolling restart waits for each node to be serving
-  again or only for systemd to have started it. One command settles it:
-  `systemctl show vault -p Type`.
+- Whether any identity narrower than an administrator can drive any of
+  this. Both profiles have only ever been applied and operated as one.
 - VNet flow logs. Azure blocked creating NSG flow logs on 2025-06-30 and
   `azurerm` 3.x cannot create the replacement, so `enable_flow_logs`
   defaults to false. That is a real reduction in posture, recorded as
@@ -631,6 +708,30 @@ cd ansible && ansible-playbook -i inventory/aws_ec2.yml \
     --private-key ~/.ssh/<your-key>.pem playbooks/site.yml
 cd ..
 
+# THE LOAD BALANCER IS INTERNAL. terraform/aws/variables.tf defaults
+# internal_lb = true, so `terraform output -raw vault_addr` is a name
+# resolving to a private address and a client outside the VPC gets
+# "dial tcp 10.0.10.170:8200: i/o timeout". Forward a port instead. This
+# is the Azure position exactly; the difference is only that Azure's docs
+# said so. Leave this running in another terminal.
+aws ssm start-session --target <an-instance-id> \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "portNumber=8200,localPortNumber=18200"
+
+# Then, in this one. 127.0.0.1 verifies: every leaf carries DNS:localhost
+# and IP:127.0.0.1, so nothing here needs -tls-skip-verify.
+export VAULT_ADDR=https://127.0.0.1:18200
+export VAULT_CACERT="$PWD/ansible/files/tls/ca.crt"
+
+# Nothing before this point initialises Vault, and everything after it
+# needs a live unsealed cluster. Under a KMS seal this returns RECOVERY
+# keys, not unseal keys -- they are what generate-root and rekey need, and
+# this file is the only copy. The nodes unseal themselves; no key is held
+# by a person at any point.
+umask 077
+vault operator init -format=json > ~/vault-aws-init.json
+export VAULT_TOKEN="$(jq -r .root_token ~/vault-aws-init.json)"
+
 # So a node the autoscaling group launches later signs its own
 # certificate at boot. Item 10 is where that gets watched.
 ./scripts/publish-bootstrap-ca.sh --cluster-name vault-reference
@@ -654,12 +755,14 @@ That is one step, and it is the step that did not happen on any of the
 first three applies. It is written down here for that reason.
 
 ```bash
-# Everything below talks to the cluster, so it needs an address, the CA,
-# and a token. The load balancer is fine for these — only the DR drill
-# needs the leader specifically, and it finds the leader itself.
-export VAULT_ADDR="$(terraform -chdir=terraform/aws output -raw vault_addr)"
-export VAULT_CACERT="$PWD/ansible/files/tls/ca.crt"
-export VAULT_TOKEN=...        # from the `vault operator init` you ran
+# VAULT_ADDR, VAULT_CACERT and VAULT_TOKEN are already set if you are
+# continuing from the sequence above — the forwarded port, not the load
+# balancer, which is internal.
+#
+# dr-drill-cloud.sh is the exception and needs no help: it opens its own
+# forward, because a snapshot is served by the leader alone and the one
+# you have open may not be it. Stop the forward above before running it,
+# or it will collide on 18200.
 
 # The snapshot job needs a credential of its own. The instance role gets
 # the file into the bucket; this is what gets the snapshot out of Vault,

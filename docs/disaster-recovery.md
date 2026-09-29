@@ -198,10 +198,34 @@ It also corrupts a byte of the downloaded copy and requires `snapshot
 inspect` to refuse it. A guard that accepts damaged input would have
 accepted the good input for no reason.
 
-What this does not settle is anything about a real account: that the
-instance role can reach the bucket, that server-side encryption leaves
-the object restorable, or that a multipart upload of a much larger
-snapshot behaves the same. See [cloud-apply.md](cloud-apply.md).
+What an emulator cannot settle is anything about a real account. Two of
+those three were settled by hand on 2026-09-29, against the third AWS
+apply:
+
+```text
+PASS  a secret written before the upload came back
+PASS  a secret written after the upload is gone
+seal: awskms   sealed: false   3 peers, all voters
+```
+
+The leader's own timer took that snapshot with the **instance role** and
+uploaded it under SSE-KMS with the auto-unseal key; it was downloaded,
+decrypted and restored from outside the cluster. So the instance role
+does reach the bucket, and server-side encryption does leave the object
+restorable.
+
+What is still unsettled is the third: a **multipart upload** of a much
+larger snapshot. Everything measured so far is around 24 KB, which is one
+PUT. A production snapshot is not, and the multipart path has never run
+here against anything.
+
+The drill does not do this. `dr-drill-cloud.sh` takes its own snapshot on
+purpose — fetching the newest uploaded one would restore to before its
+canary existed, and it could not then tell a working restore from a
+broken one. So the drill proves the restore path and says nothing about
+the bucket; this is the other half, and it is worth redoing by hand on
+each apply until something automates it. See
+[cloud-apply.md](cloud-apply.md).
 
 ## Testing
 

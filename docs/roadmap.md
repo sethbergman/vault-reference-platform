@@ -237,7 +237,23 @@ The blockers are, in order:
    node, the `BucketNotEmpty` teardown path, and any identity narrower
    than an administrator. Those sit under "After v1.0" below.
 
-   What that session did not reach: snapshots to the bucket, PKI
+   A third session on 2026-09-29 reached them. Checklist items 6, 7 and
+   the audit half of 8 are settled on AWS as well as on Azure, and one
+   thing that is not on the checklist at all: the object the leader's
+   timer uploaded was downloaded, decrypted through KMS and restored,
+   with a secret written before it coming back and one written after it
+   gone. `tests/restore-from-object-store` had only ever settled that
+   against an emulated S3. The `BucketNotEmpty` teardown path ran for the
+   first time too, with four objects in the bucket.
+
+   It found three things without anything failing: the load balancer is
+   internal by default and no document said so, the apply sequence never
+   initialised Vault at all, and two Azure Bastion tunnels orphaned the
+   previous evening were still holding the ports the drill wanted — which
+   the drill would not have noticed, because waiting for a port to accept
+   a connection cannot distinguish your tunnel from anyone's.
+
+   What the 2026-09-24 session did not reach: snapshots to the bucket, PKI
    certificates and audit devices on a real node, and the refresh. Those
    need a cluster standing again, and the roles are off by default.
 2. **A real Azure apply.** Done once, on 2026-09-28, and **closed**.
