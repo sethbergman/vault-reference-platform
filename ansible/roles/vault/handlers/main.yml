@@ -10,11 +10,11 @@
   # why it has never been noticed. Recovering is not the same as staying
   # up.
   #
-  # What this guarantees is that only one node is being restarted at a
-  # time. Whether the next one starts before the previous one is serving
-  # again depends on whether the packaged unit is Type=notify, which has
-  # not been read off a running node yet; `systemctl show vault -p Type`
-  # settles it. Either way this is strictly better than all three.
+  # The packaged unit is Type=notify with NotifyAccess=main -- read off
+  # all three nodes of the 2026-09-29 AWS cluster -- so `systemctl restart`
+  # returns when Vault has signalled readiness, not when systemd has
+  # started the process. This is therefore a real rolling restart: each
+  # node is serving again before the next is touched.
   throttle: 1
   ansible.builtin.systemd:
     name: vault
