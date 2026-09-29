@@ -53,23 +53,26 @@ front of it — see [`diagrams/architecture.md`](diagrams/architecture.md)
 and [`docs/deployment.md`](docs/deployment.md):
 
 ```text
-            vault CLI / apps
-                    │
-    ┌───────────────┼───────────────┐
-    │               │               │
- vault-0         vault-1         vault-2
- (leader)        (follower)      (follower)
-    │               │               │
-    └───────────────┼───────────────┘
-                    │
-              Raft cluster
-                    │
-           Transit auto-unseal
-                    │
-              vault-unseal
-         (Shamir-unsealed once —
-           the root of trust)
+    vault CLI / apps
+            │
+   ┌────────┼────────┐
+   │        │        │
+vault-0  vault-1  vault-2
+   │        │        │
+   └────────┼────────┘
+            │
+      Raft cluster
+            │
+   Transit auto-unseal
+            │
+      vault-unseal
+ (Shamir-unsealed once —
+   the root of trust)
 ```
+
+One of the three holds leadership at any moment and the other two
+follow; which one is an election result, not a property of the node.
+`make status` shows the current split.
 
 ## Repository structure
 
