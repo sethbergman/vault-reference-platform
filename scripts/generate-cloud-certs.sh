@@ -148,7 +148,16 @@ while [[ $# -gt 0 ]]; do
         --inventory)    INVENTORY="$2"; shift 2 ;;
         --hosts-json)   HOSTS_JSON="$2"; shift 2 ;;
         --out)          OUT_DIR="$2"; shift 2 ;;
-        --extra-san)    EXTRA_SANS+=("$2"); shift 2 ;;
+        --extra-san)
+            # An empty one builds `subjectAltName=...,DNS:` and openssl
+            # refuses the whole extension with "invalid null value" -- a
+            # failure that reads as a signing problem rather than a
+            # mistyped argument. Easy to produce: --extra-san "$LB" with
+            # LB unset passes an empty string rather than nothing.
+            [[ -n "${2:-}" ]] || die "--extra-san was given an empty value"
+            EXTRA_SANS+=("$2")
+            shift 2
+            ;;
         --days)         DAYS_LEAF="$2"; shift 2 ;;
         --add-missing)  ADD_MISSING=true; shift ;;
         --force)        FORCE=true; shift ;;
@@ -279,15 +288,32 @@ if [[ "$ADD_MISSING" == true ]]; then
     # passed. Carrying it over is the difference between a replacement
     # clients can reach through the load balancer and one they cannot.
     EXISTING_LEAF=""
-    while read -r node _; do
+    EXISTING_IP=""
+    while read -r node ip; do
         [[ -n "$node" ]] || continue
-        if [[ -f "${node}.crt" ]]; then EXISTING_LEAF="${node}.crt"; break; fi
+        if [[ -f "${node}.crt" ]]; then
+            EXISTING_LEAF="${node}.crt"
+            EXISTING_IP="$ip"
+            break
+        fi
     done <<< "$HOSTS"
 
     if [[ -n "$EXISTING_LEAF" ]]; then
+        # DNS *and* IP. An Azure load balancer has no name to give, only
+        # an address, so #114 made an extra SAN that looks like an address
+        # an IP entry -- and reading DNS alone lost it here, which is the
+        # very thing this carry-over exists to stop.
+        #
+        # The exclusions are the SANs the leaf loop puts on every
+        # certificate anyway: the node's own name and address, the cluster
+        # servername, localhost and 127.0.0.1. Carrying an address over
+        # from a *different* node's leaf would give the replacement a
+        # peer's identity.
         CARRIED="$(openssl x509 -in "$EXISTING_LEAF" -noout -ext subjectAltName 2>/dev/null \
-            | tr ',' '\n' | sed -n 's/^ *DNS://p' \
-            | grep -vxF -e "${EXISTING_LEAF%.crt}" -e "$CLUSTER_SERVERNAME" -e localhost || true)"
+            | tr ',' '\n' \
+            | sed -n -e 's/^ *DNS://p' -e 's/^ *IP Address://p' \
+            | grep -vxF -e "${EXISTING_LEAF%.crt}" -e "$CLUSTER_SERVERNAME" \
+                        -e localhost -e 127.0.0.1 -e "$EXISTING_IP" || true)"
         while read -r name; do
             [[ -n "$name" ]] || continue
             if [[ " ${EXTRA_SANS[*]-} " == *" ${name} "* ]]; then continue; fi
@@ -352,10 +378,14 @@ extendedKeyUsage=serverAuth,clientAuth
 subjectAltName=${SAN}
 EOF
 
+    # stderr is kept. openssl names the problem exactly -- a malformed
+    # SAN, an unreadable CA key, an exhausted serial -- and muting it
+    # leaves "Failed to sign" as the only evidence, which is a sentence
+    # nobody can act on.
     openssl x509 -req -in "${node}.csr" -CA ca.crt -CAkey ca.key \
         -CAcreateserial -out "${node}.crt" -days "$DAYS_LEAF" -sha256 \
         -extfile "${node}.ext" \
-        2>/dev/null || die "Failed to sign the certificate for ${node}"
+        || die "Failed to sign the certificate for ${node} (openssl's reason is above)"
 
     rm -f "${node}.csr" "${node}.ext"
 
