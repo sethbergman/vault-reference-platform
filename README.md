@@ -55,12 +55,12 @@ and [`docs/deployment.md`](docs/deployment.md):
 ```text
             vault CLI / apps
                     │
-    ┌───────────────┬───────────────┐
+    ┌───────────────┼───────────────┐
     │               │               │
  vault-0         vault-1         vault-2
-(leader)       (follower)      (follower)
+ (leader)        (follower)      (follower)
     │               │               │
-    └───────────────┴───────────────┘
+    └───────────────┼───────────────┘
                     │
               Raft cluster
                     │
