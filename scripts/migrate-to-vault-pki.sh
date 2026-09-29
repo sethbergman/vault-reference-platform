@@ -12,6 +12,25 @@
 #       --domain vault.internal \
 #       --reload-cmd 'docker compose -f docker/dev/docker-compose.yml kill -s HUP {node}'
 #
+# THE DRIVER TRUSTS BOTH CAS, FOR THE SAME REASON THE NODES DO
+#
+# Phase 1 makes every node trust the bootstrap CA and the PKI CA at once,
+# because during phase 2 some peers present one and some the other. The
+# driver is in exactly that position: it health-checks every node after
+# every change, and half of them are on each CA while it works.
+#
+# It used to check them with the bundle it was given, which holds the
+# bootstrap CA. The first node to be swapped then failed verification, and
+# a node the driver could not verify is indistinguishable from a node that
+# did not come back:
+#
+#   ERROR: <node> is not healthy after the certificate swap -- stopping.
+#
+# ...about a node serving the new certificate perfectly, in a cluster with
+# every voter present. So it builds a combined bundle for the run from the
+# CA it was given plus the PKI CA it already reads, and uses that for its
+# own checks. Nothing on disk changes.
+#
 # WHY THIS EXISTS
 #
 # scripts/issue-node-cert.sh swaps one node's certificate. Doing that to a
@@ -33,6 +52,37 @@
 # Running step 3 while any node still presents a bootstrap certificate
 # partitions the cluster. This script refuses to, and checks rather than
 # assumes — see the guard in phase_prune.
+#
+# THE SANS COME FROM THE NODE, NOT FROM THIS SCRIPT
+#
+# Each node's new certificate carries the names its current one carries.
+# This script does not decide them, because it cannot: the profiles
+# disagree about which names matter and both are right.
+#
+#   The local profile joins by `leader_api_addr = https://vault-0:8200`,
+#   so a peer verifies the container name and DNS:vault-0 is load-bearing.
+#
+#   The cloud profiles set `leader_tls_servername =
+#   <cluster>.vault.internal`, so that is the name every follower verifies
+#   the leader by -- and the instance id nothing verifies at all.
+#
+# It used to ask for `--alt-names <node>,localhost --ip-sans 127.0.0.1`,
+# which is wrong twice over. The bare node name is refused by the role
+# bootstrap-pki.sh creates (allowed_domains is vault.internal,localhost --
+# neither `vault-0` nor `i-0abc` is under it), and the list leaves out the
+# cluster servername and the node's own address. The second is the
+# dangerous one: a certificate swap does not disturb established Raft
+# connections, so a cluster that has lost the name its peers verify by
+# keeps working until something restarts.
+#
+# So: carry over. Narrowing the set is `--drop-san`, widening it is the
+# role's own `--extra-domains` at bootstrap time, and neither happens by
+# accident.
+#
+# Before anything is installed, every node's carried set is test-issued
+# against the role and thrown away. A name the role will not sign stops
+# the run with that name in the message, rather than at the first swap
+# with the cluster half migrated.
 #
 # ORDERING WITHIN THE SWAP
 #
@@ -83,6 +133,8 @@
 #   --nodes <list>       Required. name=host:port pairs, comma separated.
 #   --tls-dir <dir>      Where certificates live (default: /etc/vault.d/tls)
 #   --domain <domain>    Domain for issued common names (default: vault.internal)
+#   --drop-san <name>    Do not carry this SAN over to the new certificate.
+#                        Repeatable. See "THE SANS COME FROM THE NODE".
 #   --mount <path>       PKI mount (default: pki)
 #   --role <name>        PKI role (default: vault-node)
 #   --reload-cmd <cmd>   How to reload a node. {node} is substituted.
@@ -130,6 +182,7 @@ RELOAD_CMD="systemctl reload vault"
 KEY_MODE="0600"
 NODE_EXEC=""
 REMOTE_ISSUE="/usr/local/bin/vault-issue-node-cert.sh"
+declare -a DROP_SANS=()
 PHASE="all"
 HEALTH_RETRIES=30
 DRY_RUN=false
@@ -148,6 +201,7 @@ while [[ $# -gt 0 ]]; do
         --nodes)      NODES="$2"; shift 2 ;;
         --tls-dir)    TLS_DIR="$2"; shift 2 ;;
         --domain)     DOMAIN="$2"; shift 2 ;;
+        --drop-san)   DROP_SANS+=("$2"); shift 2 ;;
         --mount)      MOUNT="$2"; shift 2 ;;
         --role)       ROLE="$2"; shift 2 ;;
         --reload-cmd) RELOAD_CMD="$2"; shift 2 ;;
@@ -239,6 +293,41 @@ served_issuer() {
         | openssl x509 -noout -issuer 2>/dev/null || true
 }
 
+# served_sans <host:port> <dns|ip> — the SANs a node is serving right now.
+#
+# Read off the wire rather than off disk, for the same reason on_pki is: a
+# certificate written and never reloaded is not the one in use, and the
+# one in use is the set of names that currently works.
+served_sans() {
+    echo | openssl s_client -connect "$1" 2>/dev/null \
+        | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+        | tr ',' '\n' \
+        | sed -n -e 's/^ *DNS://p' -e 's/^ *IP Address:/IP:/p' \
+        | while read -r san; do
+            case "$2:$san" in
+                dns:IP:*) ;;
+                dns:*)    printf '%s\n' "$san" ;;
+                ip:IP:*)  printf '%s\n' "${san#IP:}" ;;
+                ip:*)     ;;
+            esac
+          done
+}
+
+# carried_sans <node> <dns|ip> — served, minus anything --drop-san named.
+carried_sans() {
+    local node="$1" kind="$2" san out=""
+    while read -r san; do
+        [[ -n "$san" ]] || continue
+        local drop=false d
+        for d in ${DROP_SANS+"${DROP_SANS[@]}"}; do
+            [[ "$san" == "$d" ]] && drop=true
+        done
+        [[ "$drop" == true ]] && continue
+        out="${out:+${out},}${san}"
+    done < <(served_sans "${NODE_ADDR[$node]}" "$kind")
+    printf '%s' "$out"
+}
+
 # node_healthy <host:port> — 200 active, 429 standby; anything else is not.
 # http_code_of <url>
 #
@@ -287,6 +376,55 @@ on_pki() {
     [[ -n "$PKI_SUBJECT" && "$issuer" == *"$PKI_SUBJECT"* ]]
 }
 
+# The driver's own trust, for the duration of the run. See the note at the
+# top: half the cluster is on each CA while phase 2 proceeds, so a bundle
+# with only one of them makes the other half unverifiable — and a node
+# this script cannot verify looks exactly like a node that did not come
+# back.
+#
+# A file rather than an in-place edit of whatever VAULT_CACERT pointed at:
+# that is the operator's, and this is a fact about this run.
+CA_BUNDLE="$(mktemp)"
+cleanup_bundle() { rm -f "$CA_BUNDLE"; }
+# Not `[[ -n "$CA_BUNDLE" ]] && rm -f ...` — a trap handler ending in a
+# conditional hands its status to the script, which is what
+# tests/lint/check_trap_exit.py exists to catch.
+trap cleanup_bundle EXIT
+# printf '\n' between the parts, not just cat. `vault read -field=` emits
+# no trailing newline and neither does the bundle --replace-ca installs
+# from it, so a plain append glues the two PEM blocks into one
+# unparseable line -- and curl then rejects the whole file, which reads as
+# every node being unreachable at once.
+BUNDLE_SOURCES=1          # the PKI CA, appended below
+BUNDLE_FROM="${MOUNT}"
+if [[ -n "${VAULT_CACERT:-}" && -r "${VAULT_CACERT}" ]]; then
+    cat "${VAULT_CACERT}" > "$CA_BUNDLE"
+    printf '\n' >> "$CA_BUNDLE"
+    BUNDLE_SOURCES=2
+    BUNDLE_FROM="${VAULT_CACERT} and ${MOUNT}"
+fi
+vault read -field=certificate "${MOUNT}/cert/ca" >> "$CA_BUNDLE" 2>/dev/null \
+    || die "Could not read the CA from ${MOUNT}. Has scripts/bootstrap-pki.sh been run? If this is a resumed migration and the leader is already serving a PKI certificate, point VAULT_CACERT at a bundle holding both CAs so this read can succeed."
+printf '\n' >> "$CA_BUNDLE"
+
+# Parsed before it is trusted. A bundle that does not parse does not fail
+# here -- it fails at every health check afterwards, identically, which
+# looks like a cluster that has gone away rather than a file that is
+# malformed.
+BUNDLE_CERTS="$(openssl crl2pkcs7 -nocrl -certfile "$CA_BUNDLE" 2>/dev/null \
+    | openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c '^subject' || true)"
+# One per source, not merely one. A VAULT_CACERT that is not a
+# certificate leaves the appended PKI CA parsing on its own, which is
+# enough to look fine and not enough to verify the half of the cluster
+# still on the old CA.
+[[ "${BUNDLE_CERTS:-0}" -ge "$BUNDLE_SOURCES" ]] \
+    || die "The combined trust bundle does not parse as PEM: ${BUNDLE_FROM} went in and openssl reads ${BUNDLE_CERTS:-0} certificate(s) out, wanting at least ${BUNDLE_SOURCES}."
+export VAULT_CACERT="$CA_BUNDLE"
+log "Trusting both CAs for this run (${BUNDLE_CERTS} certificate(s))."
+
+# Built before anything verifies anything, including the reachability
+# check below: with it after, a resumed migration reported its
+# already-migrated node as unreachable.
 # Every gate in this script runs from here, against these addresses. A
 # node this machine cannot reach reads as "not active" and "not on PKI",
 # which are the two answers that make the run unsafe rather than failed --
@@ -304,6 +442,8 @@ EXPECTED_VOTERS="$(voter_count)"
 PKI_SUBJECT="$(pki_ca_subject)"
 [[ -n "$PKI_SUBJECT" ]] \
     || die "Could not read the CA from ${MOUNT} — has scripts/bootstrap-pki.sh been run?"
+
+
 
 # ---------------------------------------------------------------------------
 # Order: standbys first, the active node last
@@ -349,6 +489,31 @@ for n in "${NODE_NAMES[@]}"; do
         log "  ${n} (${NODE_ADDR[$n]}) is already serving a PKI certificate"
     fi
 done
+
+# Every node's carried SANs, test-issued and discarded. A name the role
+# will not sign is a thing to learn here, with the cluster untouched,
+# rather than at the first swap with it half migrated.
+log ""
+log "Checking the role will issue what each node currently serves..."
+declare -a REFUSED=()
+for n in "${NODE_NAMES[@]}"; do
+    dns="$(carried_sans "$n" dns)"
+    ips="$(carried_sans "$n" ip)"
+    log "  ${n}: ${dns:-<no dns sans>} / ${ips:-<no ip sans>}"
+    if ! err="$(vault write -format=json "${MOUNT}/issue/${ROLE}" \
+            common_name="${n}.${DOMAIN}" \
+            alt_names="$dns" ip_sans="$ips" ttl=5m 2>&1 >/dev/null)"; then
+        REFUSED+=("${n}: $(sed -n 's/^\* //p' <<< "$err" | head -3 | tr '\n' ';')")
+    fi
+done
+
+if [[ ${#REFUSED[@]} -gt 0 ]]; then
+    log ""
+    for r in "${REFUSED[@]}"; do log "  REFUSED  ${r}"; done
+    die "The ${ROLE} role will not issue what these nodes serve. Either widen the role (bootstrap-pki.sh --force --extra-domains <names>) or drop the name from the certificate (--drop-san <name>) if nothing verifies it. Nothing has been changed."
+fi
+log "  the role will issue all of them."
+
 
 if [[ "$DRY_RUN" == true ]]; then
     log ""
@@ -403,8 +568,8 @@ phase_swap() {
         log "${n}: issuing and installing a PKI certificate..."
         run_issue "$n" \
             --common-name "${n}.${DOMAIN}" \
-            --alt-names "${n},localhost" \
-            --ip-sans "127.0.0.1" \
+            --alt-names "$(carried_sans "$n" dns)" \
+            --ip-sans "$(carried_sans "$n" ip)" \
             --mount "$MOUNT" \
             --role "$ROLE" \
             --force \

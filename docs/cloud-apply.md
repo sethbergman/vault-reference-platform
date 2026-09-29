@@ -290,8 +290,9 @@ plugin needs `boto3` in the same Python that runs Ansible.
 ### What is still unproven
 
 - Any identity narrower than an administrator, on either profile.
-- The PKI migration. The driver can drive a cloud cluster as of
-  2026-09-29 (`--node-exec`), and has not yet been watched doing it.
+- Any identity narrower than an administrator — which is now the whole
+  of what item 8 leaves open, since the migration itself was observed on
+  2026-09-29.
 - Whether `vault operator raft autopilot state -format=json` arrives bare
   or wrapped in `.data`: this session read that command in text form
   only. The script accepts both and says so; settle it next time.
@@ -486,9 +487,9 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 ### What Azure has still not proven
 
-- The PKI migration. The tooling gap is closed — see item 8 above — and
-  no cluster has been watched migrating. Snapshots, a restore and audit
-  devices were all settled on 2026-09-29.
+- Nothing on the checklist. Items 1 through 8 were all observed by
+  2026-09-29; 9 and 10 on 2026-09-24. What is left is not a checklist
+  item: no identity narrower than an administrator has driven any of it.
 - Any identity narrower than an administrator, on either profile.
 - Whether any identity narrower than an administrator can drive any of
   this. Both profiles have only ever been applied and operated as one.
@@ -1234,6 +1235,44 @@ values rather than plaintext.
 
 **The audit half was observed on Azure, 2026-09-29**: two devices enabled
 cluster-wide, entries being written with hashed values.
+
+**Observed on AWS, 2026-09-29.** All three nodes serving
+`CN=vault.internal Root CA`, one trust bundle entry each, three voters
+throughout:
+
+```text
+i-023d7733be318810a | issuer=CN=vault.internal Root CA
+i-08d945589b25a8e7d | issuer=CN=vault.internal Root CA
+i-0fa273114ae129823 | issuer=CN=vault.internal Root CA
+```
+
+Getting there took six fixes, and the shape of all six is worth more than
+the result. **Not one of them was a crash.** Each was either a silent
+narrowing or a feature that had never worked:
+
+| | |
+|---|---|
+| The driver invented the SAN list | The bare node name is refused by this repo's own PKI role — on every profile |
+| …and left out `leader_tls_servername` | A swap does not disturb established Raft connections, so the cluster keeps working until something restarts |
+| `bootstrap-pki.sh --force` | Documented, unusable, and would have invalidated every live certificate had it worked |
+| `vault_pki_alt_names` | Asks for a name `allowed_domains` refuses, so the renewal timer had never renewed anything |
+| `--node-exec`'s prerequisite | Unstated; surfaced as `/bin/sh: /etc/vault.d/pki.env: No such file or directory` |
+| The driver's own health check | Trusted one CA during the phase whose whole purpose is trusting two |
+
+The last is the one to remember. Phase 1 exists so that every node trusts
+both CAs while phase 2 proceeds — and the driver, which health-checks
+every node after every change, checked them with the bundle it was given.
+The first swapped node then failed verification, and **a node the driver
+cannot verify is indistinguishable from a node that did not come back.**
+
+What held throughout: the driver stopped at the first node every time, in
+the trust phase or right after one swap, and the cluster never lost a
+voter. The ordering and the gates were right. What was wrong was
+everything they were gating.
+
+**One thing to do after the prune:** your own `VAULT_CACERT` is now stale,
+because nothing presents the bootstrap CA any more. The same lesson as the
+driver's, one layer out.
 
 **The PKI half needs `--node-exec`.** Until 2026-09-29 the driver took one
 `--tls-dir` for the whole cluster, which is right for three containers

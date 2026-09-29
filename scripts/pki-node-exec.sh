@@ -41,6 +41,13 @@
 #
 # DELIBERATE BEHAVIOURS
 #
+#   It refuses a node that has not been prepared. The env file and the
+#   issue script come from ansible/roles/vault_pki, which is off by
+#   default -- so the common mistake is to run the migration against a
+#   cluster whose playbook never enabled it, and the raw failure is a
+#   shell reporting a missing file from inside a phase that is otherwise
+#   going fine.
+#
 #   It refuses a node the inventory does not know. Without boto3 in
 #   Ansible's interpreter the aws_ec2 plugin returns an EMPTY inventory
 #   and exits 0, so `ansible <node>` warns about an unmatched pattern,
@@ -99,6 +106,21 @@ command -v ansible >/dev/null 2>&1 || die "ansible not found on PATH"
 # rollout means the driver's next step believes something happened.
 if ! ansible-inventory -i "$INVENTORY" --host "$NODE" >/dev/null 2>&1; then
     die "the inventory at ${INVENTORY} does not know a host called '${NODE}'. If this is aws_ec2 or azure_rm, the usual cause is a missing SDK in Ansible's own interpreter -- the plugin then returns an empty inventory and exits 0. See docs/deployment.md#reaching-the-nodes."
+fi
+
+# The node has to have been prepared. ansible/roles/vault_pki installs the
+# issue script and writes the env file with the credentials it uses; the
+# role is off by default and the documented enable step for a cloud
+# cluster turns on snapshots and audit, not PKI. Without it the remote
+# shell reports "/etc/vault.d/pki.env: No such file or directory", which
+# is true and tells nobody what to do about it.
+#
+# Checked once, up front, rather than discovered on whichever node the
+# migration reaches first.
+PROBE="test -r $(printf '%q' "$ENV_FILE") && test -x $(printf '%q' "$1")"
+if ! ansible "$NODE" -i "$INVENTORY" --become -m shell -a "$PROBE" \
+        ${PRIVATE_KEY:+--private-key "$PRIVATE_KEY"} >/dev/null 2>&1; then
+    die "${NODE} is missing ${ENV_FILE} or ${1}. Those come from ansible/roles/vault_pki, which is off by default -- run the playbook with vault_pki_enabled=true before migrating. See docs/security.md#doing-the-migration."
 fi
 
 # Build the remote script. printf %q on every argument, so a value with a

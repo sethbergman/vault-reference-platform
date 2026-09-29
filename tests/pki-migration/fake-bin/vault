@@ -32,5 +32,32 @@ if [[ "$*" == *"/cert/ca"* ]]; then
     exit 0
 fi
 
+# vault write <mount>/issue/<role> ... -- the test issue the driver does
+# before installing anything, to find out whether the role will sign what
+# each node currently serves.
+#
+# FAKE_ROLE_REFUSES is a space-separated list of names the role rejects,
+# and the shim reports them the way Vault does, one per refused name. A
+# boolean would only prove the driver stops; the useful assertion is which
+# name it hands back to the operator.
+if [[ "$*" == *"/issue/"* ]]; then
+    refused=""
+    for name in ${FAKE_ROLE_REFUSES:-}; do
+        [[ "$*" == *"${name}"* ]] && refused="${refused}${name} "
+    done
+    if [[ -n "$refused" ]]; then
+        echo "Error writing data to pki/issue/vault-node: Error making API request." >&2
+        echo "" >&2
+        echo "Code: 400. Errors:" >&2
+        echo "" >&2
+        for name in $refused; do
+            echo "* subject alternate name ${name} not allowed by this role" >&2
+        done
+        exit 2
+    fi
+    printf '{"data":{"certificate":"-----BEGIN CERTIFICATE-----\\nfake\\n-----END CERTIFICATE-----"}}\n'
+    exit 0
+fi
+
 echo "fake vault: unhandled command: $*" >&2
 exit 64

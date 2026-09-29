@@ -359,8 +359,17 @@ The blockers are, in order:
    a bind mount and wrong for three machines that each read their own
    `/etc/vault.d/tls`. `--node-exec` runs the per-node work on the node
    instead, through the script and the credentials
-   `ansible/roles/vault_pki` already puts there. **It has not been watched
-   migrating a real cluster**, which is now the whole of what is missing.
+   `ansible/roles/vault_pki` already puts there.
+
+   **A fourth AWS apply on 2026-09-29 watched it work**, and found six
+   more defects on the way — none of them a crash. The driver invented
+   each node's SANs and invented them wrong, in a way that would have
+   dropped the name every follower verifies the leader by; its own health
+   check trusted one CA during the phase whose purpose is trusting two;
+   `bootstrap-pki.sh --force` could not reconfigure anything and would
+   have invalidated every live certificate if it had; and the role
+   default asks for a name the role refuses, so the renewal timer had
+   never renewed anything. Checklist item 8 is settled on AWS.
    Two further fixes are deliberately partial and say so in their
    commits — orphaned Bastion tunnels, and VNet flow logs, which need
    azurerm 4.x.
