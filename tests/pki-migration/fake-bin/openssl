@@ -32,11 +32,41 @@ if [[ "${1:-}" == "s_client" ]]; then
     # literal matches on the machine it was written on and nowhere else.
     # It arrives in FAKE_PKI_ISSUER, read from the fixture by the same
     # binary the driver will use.
+    # Two consumers now: the issuer read, and the SAN read. Both are fed
+    # from this one s_client, so it emits the address as well -- the SAN
+    # branch has no other way to know which node it is describing.
     case "$issuer" in
         pki)       printf 'ISSUER:%s\n' "${FAKE_PKI_ISSUER:?FAKE_PKI_ISSUER is not set}" ;;
         bootstrap) printf 'ISSUER:CN=a bootstrap CA, not the pki fixture\n' ;;
         none)      : ;;
     esac
+    printf 'ADDR:%s\n' "$addr"
+    exit 0
+fi
+
+# x509 -ext subjectAltName reading from stdin. The driver reads each
+# node's SANs off the wire to carry them onto the new certificate, so the
+# shim has to have some -- and they have to be per node, because the whole
+# reason the driver carries them rather than inventing them is that the
+# profiles disagree about which ones matter.
+#
+# FAKE_NODE_SANS maps address -> a `|`-separated SAN list, space
+# separated between nodes, e.g.
+#   "127.0.0.1:8200=DNS:vault-0|IP:127.0.0.1 127.0.0.1:8210=DNS:vault-1"
+# Anything unlisted gets FAKE_DEFAULT_SANS.
+if [[ "${1:-}" == "x509" && "$*" == *"subjectAltName"* ]]; then
+    marker="$(cat)"
+    addr="$(sed -n 's/^ADDR://p' <<< "$marker" | head -1)"
+    sans="${FAKE_DEFAULT_SANS:-DNS:localhost|IP:127.0.0.1}"
+    for pair in ${FAKE_NODE_SANS:-}; do
+        [[ "${pair%%=*}" == "$addr" ]] && sans="${pair#*=}"
+    done
+    # openssl spells an address SAN "IP Address:", not "IP:". The knob
+    # uses the short form because a test should be readable; the rendering
+    # is the real one, because the driver parses what openssl prints.
+    printf 'X509v3 Subject Alternative Name: \n'
+    printf '    %s\n' "$(printf '%s' "$sans" \
+        | tr '|' ',' | sed -e 's/,/, /g' -e 's/IP:/IP Address:/g')"
     exit 0
 fi
 

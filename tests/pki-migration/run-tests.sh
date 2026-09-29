@@ -55,6 +55,12 @@ reset_scenario() {
     export FAKE_DEFAULT_ISSUER=bootstrap
     export FAKE_NODE_ISSUERS=""
     export FAKE_NODE_HEALTH=""
+    # What each node currently serves, and what the role will not sign.
+    # Both default to the permissive case so a test that does not care
+    # about SANs is not quietly testing them.
+    export FAKE_NODE_SANS=""
+    export FAKE_DEFAULT_SANS="DNS:localhost|IP:127.0.0.1"
+    export FAKE_ROLE_REFUSES=""
     export FAKE_ACTIVE_ADDR="127.0.0.1:8200"
     export FAKE_DEFAULT_HEALTH=429
     export VAULT_ADDR=https://127.0.0.1:8200
@@ -361,8 +367,8 @@ issue_has "--remote-issue changes the path used on the node" \
 reset_scenario
 export FAKE_DEFAULT_ISSUER=bootstrap
 run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
-issue_has "a swap sends the identity and nothing about this machine" \
-          "exec vault-1 :: /usr/local/bin/vault-issue-node-cert.sh --common-name vault-1.vault.internal --alt-names vault-1,localhost --ip-sans 127.0.0.1 --mount pki --role vault-node --force"
+issue_has "a swap sends the identity and the node's own SANs" \
+          "exec vault-1 :: /usr/local/bin/vault-issue-node-cert.sh --common-name vault-1.vault.internal --alt-names localhost --ip-sans 127.0.0.1 --mount pki --role vault-node --force"
 issue_lacks "and the active node is not the one it starts with" "exec vault-0"
 
 reset_scenario
@@ -476,6 +482,96 @@ assert_rc   "no --node is refused" 1
 
 wrapper --node vault-0 --env-file /etc/vault.d/other.env --dry-run -- /bin/true
 assert_says "--env-file changes what is sourced" ". /etc/vault.d/other.env"
+
+
+# ---------------------------------------------------------------------------
+printf '\n=== The SANs come from the node ===\n'
+# ---------------------------------------------------------------------------
+# The driver used to ask for `<node>,localhost` and `127.0.0.1`. Both
+# halves were wrong: the bare node name is refused by the role
+# bootstrap-pki.sh creates, and the invented list leaves out whatever else
+# the cluster runs on. The fourth AWS apply found both by probing the role
+# before driving it.
+#
+# The two profiles disagree about which names matter, which is why
+# inventing cannot work. Modelled here as the two shapes.
+
+# Cloud-shaped: leader_tls_servername is <cluster>.vault.internal, so that
+# name is load-bearing and the instance id is not.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ACTIVE_ADDR="127.0.0.1:8220"
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:vault-reference.vault.internal|DNS:localhost|IP:10.0.1.7|IP:127.0.0.1"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
+issue_has "every served DNS SAN is carried onto the new certificate" \
+          "--alt-names i-0abc,vault-reference.vault.internal,localhost"
+issue_has "and every served IP SAN, including the node's own address" \
+          "--ip-sans 10.0.1.7,127.0.0.1"
+
+# Local-shaped: no leader_tls_servername at all, peers join by
+# `leader_api_addr = https://vault-0:8200`, so DNS:vault-0 is the name
+# they verify. A rule that dropped bare names would break this profile
+# while fixing the other one.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ACTIVE_ADDR="127.0.0.1:8220"
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:vault-0|DNS:localhost|IP:127.0.0.1"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
+issue_has "the container name a local peer verifies is carried too" \
+          "--alt-names vault-0,localhost"
+
+# Narrowing is a decision somebody makes, not something that happens.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ACTIVE_ADDR="127.0.0.1:8220"
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:vault-reference.vault.internal|DNS:localhost|IP:127.0.0.1"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap --drop-san i-0abc
+issue_has "--drop-san removes the name it names" \
+          "--alt-names vault-reference.vault.internal,localhost"
+
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ACTIVE_ADDR="127.0.0.1:8220"
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:i-0abcdef|DNS:localhost|IP:127.0.0.1"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap --drop-san i-0abc
+issue_has "and only that name — not one it is a prefix of" \
+          "--alt-names i-0abcdef,localhost"
+
+# ---------------------------------------------------------------------------
+printf '\n=== It asks the role before it installs anything ===\n'
+# ---------------------------------------------------------------------------
+# A name the role will not sign is a thing to learn with the cluster
+# untouched, rather than at the first swap with it half migrated.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:localhost|IP:127.0.0.1"
+export FAKE_ROLE_REFUSES="i-0abc"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
+assert_rc        "a SAN the role will not sign stops the run" 1
+assert_says      "and the refusal names the SAN" "i-0abc"
+assert_says      "and says which node it belongs to" "REFUSED  vault-0"
+assert_says      "offering the two ways out" "--extra-domains"
+assert_says      "including the one that narrows the certificate" "--drop-san"
+assert_says      "and saying nothing was touched" "Nothing has been changed."
+issue_lacks      "with nothing installed anywhere" "exec vault-"
+
+# The check is the role's answer, not a guess about it: a name that looks
+# unusual but is allowed does not stop anything.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:localhost|IP:127.0.0.1"
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "a role that signs them all lets the run proceed" 0
+assert_says "saying so once" "the role will issue all of them"
+
+# --dry-run reaches it too: the plan is the place an operator finds out.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_NODE_SANS="127.0.0.1:8210=DNS:nope|DNS:localhost|IP:127.0.0.1"
+export FAKE_ROLE_REFUSES="nope"
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "a dry run refuses on the same grounds" 1
+assert_says "naming the node whose SAN it is" "REFUSED  vault-1"
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
