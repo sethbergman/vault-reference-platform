@@ -290,7 +290,8 @@ plugin needs `boto3` in the same Python that runs Ansible.
 ### What is still unproven
 
 - Any identity narrower than an administrator, on either profile.
-- The PKI migration, which is blocked on tooling rather than on a cluster.
+- The PKI migration. The driver can drive a cloud cluster as of
+  2026-09-29 (`--node-exec`), and has not yet been watched doing it.
 - Whether `vault operator raft autopilot state -format=json` arrives bare
   or wrapped in `.data`: this session read that command in text form
   only. The script accepts both and says so; settle it next time.
@@ -485,9 +486,9 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 ### What Azure has still not proven
 
-- The PKI migration — and it is blocked on tooling rather than on a
-  cluster: see item 8 above. Snapshots, a restore and audit devices were
-  all settled on 2026-09-29.
+- The PKI migration. The tooling gap is closed — see item 8 above — and
+  no cluster has been watched migrating. Snapshots, a restore and audit
+  devices were all settled on 2026-09-29.
 - Any identity narrower than an administrator, on either profile.
 - Whether any identity narrower than an administrator can drive any of
   this. Both profiles have only ever been applied and operated as one.
@@ -1234,26 +1235,36 @@ values rather than plaintext.
 **The audit half was observed on Azure, 2026-09-29**: two devices enabled
 cluster-wide, entries being written with hashed values.
 
-**The PKI half cannot be done with the tool this repository ships**, which
-was settled by reading rather than by spending a cluster on it.
-`scripts/migrate-to-vault-pki.sh` takes one `--tls-dir` and one
-`--reload-cmd` for the whole cluster, and writes each certificate into
-that directory through `issue-node-cert.sh`. That is right for the local
-Docker profile, where three containers bind-mount the same
-`docker/dev/tls` and the certificates differ only by `--cert-name`. On a
-cloud cluster every node reads `/etc/vault.d/tls/vault.crt` out of its own
-filesystem, and there is no shared directory to write into.
+**The PKI half needs `--node-exec`.** Until 2026-09-29 the driver took one
+`--tls-dir` for the whole cluster, which is right for three containers
+sharing a bind mount and wrong for three machines that each read their
+own `/etc/vault.d/tls/vault.crt` — run as it was, it would have issued
+three certificates into the operator's own directory and reported
+success. See [Where the certificates
+live](security.md#where-the-certificates-live-decides-how-it-runs) in
+`security.md`.
 
-The phases can be driven one node at a time — `--phase trust` on each,
-then `--phase swap` on each in turn, then `--phase prune` — and that is
-probably the shape of the answer. Note what it costs: the guard that makes
-phase 3 safe checks that **every node in `--nodes`** already presents a
-PKI certificate, and with one node listed it checks one. Running the
-prune three times, once per node, is three runs of a guard that cannot see
-the partition it exists to prevent.
+The migration itself is one command, plus one forwarded port per node
+because every gate in it runs from where you launch it:
 
-So this is a gap in the tooling rather than an item waiting for a cluster,
-and it is the one thing on the checklist a real apply would not settle.
+```bash
+./scripts/bootstrap-pki.sh     # once, before any of this
+
+# Set once: the driver takes them as two long arguments.
+NODES=i-0aaa=127.0.0.1:18201,i-0bbb=127.0.0.1:18202,i-0ccc=127.0.0.1:18203
+
+EXEC="./scripts/pki-node-exec.sh"
+EXEC="$EXEC --inventory ansible/inventory/aws_ec2.yml"
+EXEC="$EXEC --private-key ~/.ssh/vault-reference.pem"
+EXEC="$EXEC --node {node} --"
+
+./scripts/migrate-to-vault-pki.sh \
+    --nodes "$NODES" --node-exec "$EXEC" --dry-run
+```
+
+Drop `--dry-run` when the plan reads right. Expect the issuer to change
+from the self-signed bootstrap CA to the Vault PKI CA, and the cluster to
+keep every voter throughout — the driver stops if it does not.
 
 #### Three fixes the hardening needed
 
