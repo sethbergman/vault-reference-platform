@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Stand-in for ansible-inventory, for tests/pki-migration.
+#
+# FAKE_INVENTORY_HOSTS is the space-separated list of hosts the inventory
+# knows. A host outside it fails the way a real --host does for a name the
+# inventory has never heard of -- which is also, and this is the point,
+# exactly what a plugin returning an EMPTY inventory looks like.
+set -uo pipefail
+
+printf 'ansible-inventory %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+
+want=""
+prev=""
+for a in "$@"; do
+    [[ "$prev" == "--host" ]] && want="$a"
+    prev="$a"
+done
+[[ -n "$want" ]] || exit 0
+
+for h in ${FAKE_INVENTORY_HOSTS:-}; do
+    if [[ "$h" == "$want" ]]; then printf '{}\n'; exit 0; fi
+done
+
+printf 'ERROR! Could not match supplied host pattern, ignoring: %s\n' "$want" >&2
+exit 1

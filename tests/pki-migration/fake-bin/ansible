@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# Stand-in for ansible, for tests/pki-migration. Records the whole
+# invocation, including the -a payload, so the remote script the wrapper
+# built can be asserted on as one argument rather than as words.
+set -uo pipefail
+
+{
+    printf 'ansible'
+    for a in "$@"; do printf ' [%s]' "$a"; done
+    printf '\n'
+} >> "${FAKE_LOG:-/dev/null}"
+
+exit "${FAKE_ANSIBLE_RC:-0}"

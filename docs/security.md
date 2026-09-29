@@ -222,6 +222,83 @@ Each phase gates on the node coming back healthy *and* the cluster still
 having every voter before moving on. A run that fails stops where it is
 and says which nodes were untouched.
 
+#### Where the certificates live decides how it runs
+
+A cluster's certificates sit in one of two places, and the driver has a
+mode for each. Picking the wrong one is not subtle — it does nothing to
+the cluster and says it succeeded.
+
+| | Shared directory | Per node |
+|---|---|---|
+| Profile | Local Docker | AWS, Azure |
+| Where the files are | One directory this machine writes | `/etc/vault.d/tls` on each node |
+| Files differ by | `--cert-name` | Nothing; every node has `vault.crt` |
+| Reload | `--reload-cmd`, from here | `systemctl reload vault`, there |
+| Flag | *(default)* | `--node-exec` |
+
+**The default is the local profile's**, where three containers bind-mount
+the same `docker/dev/tls`. Run it unchanged against a cloud cluster and it
+issues three certificates into *your* `/etc/vault.d/tls`, reloads nothing,
+and reports three successes.
+
+**`--node-exec` runs the per-node work on the node.** Everything it needs
+is already there: `ansible/roles/vault_pki` installs `issue-node-cert.sh`
+at `/usr/local/bin/vault-issue-node-cert.sh` and writes
+`/etc/vault.d/pki.env` with `VAULT_ADDR`, `VAULT_CACERT` and the AppRole
+the renewal timer uses. So the per-node invocation passes **fewer** flags,
+not more — the node's own defaults are the right ones, and supplying
+yours would supply the wrong ones.
+
+`scripts/pki-node-exec.sh` is the wrapper to pass. It runs one command on
+one node, as root, with that env file sourced, over the same Ansible
+inventory the playbooks use:
+
+```bash
+# One forwarded port per node, in their own terminals.
+aws ssm start-session --target i-0aaa \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "portNumber=8200,localPortNumber=18201"
+```
+
+```bash
+# Set once: the driver takes them as two long arguments.
+NODES=i-0aaa=127.0.0.1:18201,i-0bbb=127.0.0.1:18202,i-0ccc=127.0.0.1:18203
+
+EXEC="./scripts/pki-node-exec.sh"
+EXEC="$EXEC --inventory ansible/inventory/aws_ec2.yml"
+EXEC="$EXEC --private-key ~/.ssh/vault-reference.pem"
+EXEC="$EXEC --node {node} --"
+
+./scripts/migrate-to-vault-pki.sh \
+    --nodes "$NODES" --node-exec "$EXEC" --dry-run
+```
+
+It is a script rather than a documented one-liner because the quoting is
+the hard part, and getting it wrong happens *mid-migration* — the worst
+moment for a cluster to be partly migrated. Arguments are quoted with
+`printf %q` and handed over as one remote script.
+
+It also refuses a node the inventory does not know. Without boto3 in
+Ansible's own interpreter the `aws_ec2` plugin returns an **empty**
+inventory and exits 0, so `ansible <node> -a ...` warns about an unmatched
+pattern, runs nowhere, and succeeds. That has cost three sessions here,
+and during a certificate rollout it would leave the driver believing a
+node's trust bundle had changed when nothing had run at all.
+
+#### What still runs from where you launch it
+
+Every health check, the voter count, and the "is this node serving a PKI
+certificate yet" test. Those are the gates, and **a gate that runs on the
+node it is gating is not a gate**. So `--nodes` must carry addresses your
+machine can reach — on a cloud profile, one forwarded port per node — and
+the driver refuses to start if any of them does not answer.
+
+That refusal is newer than it should be. An unreachable node used to read
+as "not active" and "not on PKI", which are the two answers that make a
+run *unsafe* rather than failed: the swap order's one guarantee is that
+the leader is touched last, and with no node appearing active that order
+is arbitrary.
+
 #### What else trusts the bundle
 
 Vault is not the only thing that reads the trust bundle, and the prune is

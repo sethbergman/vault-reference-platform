@@ -353,13 +353,17 @@ The blockers are, in order:
    no systemd, so none of it had ever run.
 
    Still unreached on Azure: the PKI migration, and any identity narrower
-   than an administrator. The PKI one is not waiting for a cluster —
-   `migrate-to-vault-pki.sh` takes a single `--tls-dir` for every node,
-   which is right for three containers sharing a bind mount and wrong for
-   three machines that each read their own `/etc/vault.d/tls`. A cloud
-   migration needs per-node delivery the script does not have. Two further
-   fixes are deliberately partial and say so in their commits — orphaned
-   Bastion tunnels, and VNet flow logs, which need azurerm 4.x.
+   than an administrator. The PKI one was blocked on tooling rather than
+   on a cluster until 2026-09-29 — `migrate-to-vault-pki.sh` took a single
+   `--tls-dir` for every node, which is right for three containers sharing
+   a bind mount and wrong for three machines that each read their own
+   `/etc/vault.d/tls`. `--node-exec` runs the per-node work on the node
+   instead, through the script and the credentials
+   `ansible/roles/vault_pki` already puts there. **It has not been watched
+   migrating a real cluster**, which is now the whole of what is missing.
+   Two further fixes are deliberately partial and say so in their
+   commits — orphaned Bastion tunnels, and VNet flow logs, which need
+   azurerm 4.x.
 3. **Off-host audit collection**, so a compromised host cannot reach the
    evidence. The trail now outlives the node, an edit to it is
    detectable, and the anchors that make it detectable now leave the
