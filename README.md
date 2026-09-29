@@ -29,13 +29,14 @@ that part down.
   network, autoscaling group, load balancer, KMS auto-unseal, snapshot
   bucket. `terraform/azure` builds the same shape with a VM scale set,
   Key Vault auto-unseal, and a blob container. The AWS profile applies
-  and destroys cleanly against an emulated AWS API on every PR, and was
-  applied to a real account once, on 2026-09-17 — which found ten
-  defects; a second on 2026-09-24 watched a replacement node heal
-  itself. `terraform/azure` was applied once, on 2026-09-28, which found
-  nineteen more — it could not have applied as written, on any
-  subscription. See [`docs/cloud-apply.md`](docs/cloud-apply.md) for what
-  those sessions settled and what they did not.
+  and destroys cleanly against an emulated AWS API on every PR, and has
+  been applied to a real account four times — 2026-09-17, 09-24 and twice
+  on 09-29 — which between them worked through the whole verification
+  checklist. `terraform/azure` was applied twice, on 2026-09-28 and
+  09-29; the first found nineteen defects and could not have applied as
+  written, on any subscription. See
+  [`docs/cloud-apply.md`](docs/cloud-apply.md) for what those sessions
+  settled and what they did not.
 - **HA by default** — the reference topology is a multi-node Raft cluster
   behind a load balancer from the start, not bolted on as a "v2" feature.
 - **Operable, not just deployable** — runbooks and disaster-recovery
@@ -244,8 +245,9 @@ See [`docs/deployment.md`](docs/deployment.md).
 
 ## Before a cloud apply
 
-`terraform/aws` has been applied to a real account twice, on 2026-09-17
-and 2026-09-24; `terraform/azure` once, on 2026-09-28. The emulated apply
+`terraform/aws` has been applied to a real account four times, on
+2026-09-17, 09-24 and twice on 09-29; `terraform/azure` twice, on
+2026-09-28 and 09-29. The emulated apply
 in CI settles that the AWS configuration is one the API accepts; it says
 nothing about whether the cluster it describes comes up, which is what
 those sessions were for — and what they found is in
@@ -459,20 +461,36 @@ feature breaks, not that the code exists.
 
 What stands between here and v1.0, in order:
 
-1. **A real AWS apply.** Done twice, 2026-09-17 and 2026-09-24, and
-   **closed** by the second. Settled: the instance profile, the KMS key
+1. **A real AWS apply.** Done four times — 2026-09-17, 09-24 and twice
+   on 09-29 — and **closed**. Settled: the instance profile, the KMS key
    policy and the `seal` stanza agree, peers find each other by tag, the
    load balancer keeps standbys in the pool, the Ansible handoff works, a
    snapshot restores under the KMS seal, and — the one that kept this
    item open — **a terminated leader's replacement now signs its own
    certificate at boot, auto-unseals and rejoins Raft with nobody
    touching it**, watched on a real node. An instance refresh was watched
-   too, keeping quorum across all three nodes. Thirteen defects were
-   fixed between the two sessions, seven of them in code no test here
-   could reach. Still never reached: snapshots to the bucket, PKI and
-   audit on a real node, and any identity narrower than an administrator.
-   See [`docs/cloud-apply.md`](docs/cloud-apply.md).
-2. **A real Azure apply.** Done once, 2026-09-28, and **closed**.
+   too, keeping quorum across all three nodes.
+
+   The 2026-09-29 sessions finished the checklist. **Snapshots reach the
+   bucket** under the instance role; **a restore passes four ways** under
+   the KMS seal, including the post-snapshot token check that separates a
+   restore from a merge; **audit devices** come up cluster-wide with a
+   hashed trail; and **the PKI migration** moved all three nodes onto
+   Vault-issued certificates without the cluster losing a voter. The
+   object the timer wrote was also downloaded, decrypted through KMS and
+   restored — the whole backup chain, which only an emulator had ever
+   answered for.
+
+   Roughly thirty defects across the four sessions, and the pattern is
+   worth more than the count: **almost none was a crash.** They were
+   silent narrowings and features that had never worked — a `--force`
+   flag that could not reconfigure anything, a migration that asked its
+   own PKI role for a name the role refuses, a health check that trusted
+   one CA during the phase whose purpose is trusting two. Still never
+   reached: any identity narrower than an administrator. See
+   [`docs/cloud-apply.md`](docs/cloud-apply.md).
+2. **A real Azure apply.** Done twice, 2026-09-28 and 09-29, and
+   **closed**.
    Settled: **auto-unseal through Key Vault**, **a replacement node
    signing its own certificate** from a CA it fetched with its own
    managed identity, **Raft discovery by scale-set enumeration**, and
@@ -487,9 +505,17 @@ What stands between here and v1.0, in order:
    all: the storage account and its customer-managed key undid each
    other on alternate applies, moving snapshot encryption between Key
    Vault and Microsoft-managed keys while everything reported success.
-   Still never reached: snapshots to the container, a restore, PKI and
-   audit on a real node, and any identity narrower than an
-   administrator. See [`docs/cloud-apply.md`](docs/cloud-apply.md).
+
+   A second session on 2026-09-29 settled snapshots into the container, a
+   restore under the Key Vault seal, and audit devices — the first time
+   any of the three had been reached on either cloud. Getting there took
+   three systemd fixes that are not about snapshots or audit at all: the
+   packaged unit leaves `/etc` read-only, so Vault cannot open its own
+   audit log, and `ProtectHome=true` stops the Vault CLI before it
+   contacts Vault, because it opens `$HOME/.vault` ahead of any
+   subcommand. Still never reached: the PKI migration on Azure, and any
+   identity narrower than an administrator. See
+   [`docs/cloud-apply.md`](docs/cloud-apply.md).
 3. **Off-host audit shipping.** The audit trail now outlives the node,
    an edit to it is detectable, and the anchors that make it detectable
    now leave the machine. `scripts/ship-anchors.sh` writes each one to an

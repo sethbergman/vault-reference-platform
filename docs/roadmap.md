@@ -33,8 +33,12 @@ and which parts are a plausible-looking configuration nobody has run.
 
 ## The honest gap
 
-**`terraform/aws` has been applied to a real account twice, on
-2026-09-17 and 2026-09-24, and `terraform/azure` once, on 2026-09-28.**
+**`terraform/aws` has been applied to a real account four times, on
+2026-09-17, 09-24 and twice on 09-29; `terraform/azure` twice, on
+2026-09-28 and 09-29.** The AWS verification checklist is complete. That
+is not the same as the profile being proven: no identity narrower than an
+administrator has driven any of it, and roughly thirty defects across
+those sessions say what a fifth one would still be for.
 
 `terraform/aws` and `terraform/azure` are covered by `terraform test`
 against mocked providers, and that catches more than it might sound like

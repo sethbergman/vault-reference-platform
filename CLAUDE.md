@@ -140,13 +140,15 @@ one-way door and a restart of vault-unseal an unrecoverable one.
 | Profile | Provisioning | Seal | Proven by |
 |---|---|---|---|
 | local/CI | docker-compose | Vault Transit (`vault-unseal`) | integration suite, every PR |
-| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and two real applies (2026-09-17, 2026-09-24) — partly proven, see `docs/cloud-apply.md` |
-| Azure | `terraform/azure` | Azure Key Vault | `terraform test` (mocked) and one real apply (2026-09-28) — partly proven, see `docs/cloud-apply.md` |
+| AWS | `terraform/aws` | AWS KMS | `terraform test` (mocked), an emulated apply, and four real applies (2026-09-17, 09-24, and twice on 09-29) — checklist items 1-10 all observed, see `docs/cloud-apply.md` |
+| Azure | `terraform/azure` | Azure Key Vault | `terraform test` (mocked) and two real applies (2026-09-28, 09-29) — items 6, 7 and audit observed; the PKI migration is not, see `docs/cloud-apply.md` |
 | bare/other | Ansible alone | Shamir (role default) | not exercised |
 
-**`terraform/aws` has been applied to a real account twice, on
-2026-09-17 and 2026-09-24, and `terraform/azure` once, on 2026-09-28.**
-Do not describe either as working or proven. `docs/cloud-apply.md`
+**`terraform/aws` has been applied to a real account four times
+(2026-09-17, 09-24, and twice on 09-29) and `terraform/azure` twice
+(2026-09-28, 09-29).** The AWS verification checklist is complete; that
+is not the same as the profile being proven, and no identity narrower
+than an administrator has driven any of it. `docs/cloud-apply.md`
 records what each session settled — auto-unseal, peer discovery, health
 checks, the handoff, a restore — what it observed failing, and what it
 never reached. The AWS sessions' headline finding was that **the cluster
@@ -156,10 +158,15 @@ instance id that does not exist until launch. A replacement now signs its
 own leaf at boot from a bootstrap CA published to SSM
 (`scripts/issue-bootstrap-cert.sh`), and on 2026-09-24 a second apply
 watched that work on a real node — blocker 1 is closed, and an instance
-refresh kept quorum across all three nodes. What neither session reached
-is listed in `docs/cloud-apply.md`: snapshots to the bucket, a restore,
-PKI and audit on a real node, and any identity narrower than an
-administrator.
+refresh kept quorum across all three nodes.
+
+The 2026-09-29 sessions closed the rest: snapshots to the bucket, a
+restore checked four ways, audit devices, the PKI migration, and the
+backup chain end to end — the object the timer wrote, downloaded,
+decrypted through KMS and restored. Across all four sessions **almost no
+defect was a crash**; they were silent narrowings and features that had
+never worked. Expect that shape. What remains unreached is any identity
+narrower than an administrator.
 
 **The Azure apply found nineteen defects, and the profile could not have
 applied as written** — not on that subscription, not on any. None was
