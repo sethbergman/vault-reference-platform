@@ -566,44 +566,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-printf '\n=== A destroy can take the load balancer apart ===\n'
-# ---------------------------------------------------------------------------
-# terraform test cannot see this: nothing in the configuration is wrong,
-# and mocked providers do not enforce Azure's ordering rules. It only
-# appears on a real destroy, which is the least convenient moment -- the
-# run stops partway and leaves whatever it had not reached still billing.
-#
-# azurerm_lb_rule and the scale set both reference the same probe, and
-# neither references the other, so Terraform may destroy them at once.
-# Azure refuses to remove a rule whose probe is still a scale set's health
-# probe. Depending on the scale set here reverses that on the way down.
-#
-# Checked as text because depends_on is not an attribute: it does not
-# appear in a plan, a state file, or anything terraform test can assert
-# on.
-LB_TF="${REPO_ROOT}/terraform/azure/lb.tf"
-if [[ -f "$LB_TF" ]] && python3 - "$LB_TF" <<'PY'
-import re, sys
-
-src = open(sys.argv[1]).read()
-m = re.search(r'resource\s+"azurerm_lb_rule"\s+"vault"\s*\{(.*?)\n\}', src, re.S)
-if not m:
-    sys.exit(1)
-body = m.group(1)
-# The dependency has to name the scale set specifically. A depends_on on
-# anything else would satisfy a looser grep and order nothing.
-sys.exit(0 if re.search(
-    r'depends_on\s*=\s*\[[^\]]*azurerm_linux_virtual_machine_scale_set\.vault',
-    body, re.S) else 1)
-PY
-then
-    ok "the load balancer rule is destroyed after the scale set that uses its probe"
-else
-    bad "the load balancer rule is destroyed after the scale set that uses its probe" \
-        "without depends_on, Azure refuses with CannotRemoveRuleUsedByProbeUsedByVMSS and the destroy stops partway"
-fi
-
-# ---------------------------------------------------------------------------
 printf '\n=== Cross-resource invariants a real apply charged us for ===\n'
 # ---------------------------------------------------------------------------
 # Nine of the nineteen defects the first Azure apply found were visible in

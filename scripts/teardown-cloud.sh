@@ -183,6 +183,42 @@ fi
 # ---------------------------------------------------------------------------
 # Destroy
 # ---------------------------------------------------------------------------
+if [[ "$CLOUD" == "azure" ]]; then
+    step "Removing the scale set before destroy sequences the rest"
+    # Azure refuses to remove a load balancing rule while a scale set
+    # still references that rule's probe:
+    #
+    #   CannotRemoveRuleUsedByProbeUsedByVMSS
+    #
+    # And it refuses to create the scale set unless the rule already
+    # exists, because a probe no rule sends traffic through cannot be
+    # adopted as a health probe:
+    #
+    #   CannotUseInactiveHealthProbe
+    #
+    # Those are opposite orders, and depends_on in the configuration can
+    # only express one of them plus its reverse. The create order wins
+    # there, so the destroy order is arranged here instead.
+    #
+    # The first real teardown stopped on this, after the Bastion, the NAT
+    # gateway, the addresses and the scale set were already gone and
+    # before the load balancer and the VNet. So it left the cheap
+    # resources running behind a run that had reported failure, which is
+    # the shape of teardown failure most likely to be read as success.
+    if tf state list 2>/dev/null | grep -qx "azurerm_linux_virtual_machine_scale_set.vault"; then
+        if tf destroy -auto-approve -no-color \
+            -target=azurerm_linux_virtual_machine_scale_set.vault 2>&1 | tail -8 >&2; then
+            log "Scale set removed."
+        else
+            log "WARNING: could not remove the scale set on its own."
+            log "         destroy below will probably stop on"
+            log "         CannotRemoveRuleUsedByProbeUsedByVMSS."
+        fi
+    else
+        log "No scale set in state; nothing to remove first."
+    fi
+fi
+
 step "terraform destroy"
 if tf destroy -auto-approve -no-color 2>&1 | tail -30 >&2; then
     log "Destroy completed."

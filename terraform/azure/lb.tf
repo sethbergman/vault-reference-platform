@@ -76,21 +76,31 @@ resource "azurerm_lb_rule" "vault" {
   backend_address_pool_ids       = [azurerm_lb_backend_address_pool.vault.id]
   probe_id                       = azurerm_lb_probe.vault.id
 
-  # Destroy order, not create order. This rule and the scale set both
-  # reference the same probe and neither references the other, so
-  # Terraform is free to destroy them at the same time -- and Azure
-  # refuses the rule while the scale set still points at the probe:
+  # There is deliberately no depends_on here, and it is worth saying why
+  # rather than leaving the next person to rediscover it.
   #
-  #   CannotRemoveRuleUsedByProbeUsedByVMSS: ... cannot be removed
-  #   because the rule references the load balancer probe ... used as
-  #   health probe by VM scale set. To remove this rule, please update VM
-  #   scale set to remove the reference to the probe.
+  # Azure wants opposite orders for create and destroy. Creating, the
+  # scale set cannot adopt a probe that no load balancing rule sends
+  # traffic through, so this rule must exist first:
   #
-  # A destroy is the reverse of a create, so depending on the scale set
-  # here puts the rule after it going down. The first real teardown hit
-  # this, stopped partway, and left the load balancer and VNet behind --
-  # billing, and looking like a teardown that had finished.
-  depends_on = [azurerm_linux_virtual_machine_scale_set.vault]
+  #   CannotUseInactiveHealthProbe: ... cannot use probe vault-health as
+  #   a HealthProbe because load balancing rules () that send traffic to
+  #   the scale set IPs ... do not use this probe.
+  #
+  # Destroying, the rule cannot be removed while the scale set still
+  # references that probe, so the scale set must go first:
+  #
+  #   CannotRemoveRuleUsedByProbeUsedByVMSS
+  #
+  # depends_on gives one order and its exact reverse, so it cannot
+  # satisfy both. Adding it here fixed the destroy and broke the apply.
+  # The dependency Terraform already infers from probe_id is the one
+  # that has to win, because an apply that cannot build the cluster is
+  # worse than a destroy that stops with resources still standing.
+  #
+  # scripts/teardown-cloud.sh removes the scale set before calling
+  # destroy, which is the same job it already does for everything else
+  # `terraform destroy` cannot sequence on its own.
 
   # Vault's own request forwarding sends writes received by a standby on
   # to the leader, so client affinity buys nothing and would unbalance the
