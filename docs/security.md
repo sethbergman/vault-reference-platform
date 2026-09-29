@@ -285,6 +285,87 @@ pattern, runs nowhere, and succeeds. That has cost three sessions here,
 and during a certificate rollout it would leave the driver believing a
 node's trust bundle had changed when nothing had run at all.
 
+#### The names on the new certificate come from the old one
+
+The driver does not decide a node's SANs. It reads what the node is
+serving and asks for the same set, because the profiles disagree about
+which names matter and both are right:
+
+- The **local** profile joins by `leader_api_addr = https://vault-0:8200`,
+  so a peer verifies the container name and `DNS:vault-0` is load-bearing.
+- The **cloud** profiles set `leader_tls_servername`, so
+  `<cluster>.vault.internal` is what every follower verifies the leader
+  by — and the instance id is a name nothing checks.
+
+It used to ask for `<node>,localhost` and `127.0.0.1`, which was wrong
+twice. The bare node name is **refused** by the role `bootstrap-pki.sh`
+creates — `allowed_domains` is `vault.internal,localhost`, and neither
+`vault-0` nor `i-0abc` is under it:
+
+```text
+* subject alternate name i-023d7733be318810a not allowed by this role
+```
+
+And the invented set left out the cluster servername and the node's own
+address. That half is the dangerous one: **a certificate swap does not
+disturb established Raft connections**, so a cluster that has quietly lost
+the name its peers verify by keeps working until something restarts.
+
+Narrowing the set is `--drop-san <name>`, and widening what the role will
+sign is `bootstrap-pki.sh --extra-domains`. Neither happens by accident.
+
+Before it installs anything, the driver test-issues each node's carried
+set against the role and throws the result away. A name the role will not
+sign stops the run with that name in the message:
+
+```text
+REFUSED  i-023d...: subject alternate name vault-2026...elb... not allowed
+ERROR: ... Nothing has been changed.
+```
+
+On a cloud profile expect to widen the role for the load balancer's DNS
+name, and to drop the instance ids — nothing verifies them there, and they
+change with every replacement, so they cannot live in a role durably.
+
+#### The node has to have been prepared
+
+Per-node mode runs the issue script **on** the node, using the credentials
+in `/etc/vault.d/pki.env`. Both come from `ansible/roles/vault_pki`, which
+is off by default — and the enable step for a cloud cluster turns on
+snapshots and audit, not PKI. Run the playbook with
+`vault_pki_enabled=true` first, or the migration reaches its first node
+and reports a missing file.
+
+`pki-node-exec.sh` checks for both before it runs anything, and says which
+role puts them there.
+
+#### The driver trusts both CAs, for the reason the nodes do
+
+Phase 1 exists so every node trusts both CAs while phase 2 proceeds. The
+driver is in the same position — it health-checks every node after every
+change, and half of them are on each CA while it works — and it used to
+check them with the bundle it was given, which holds the bootstrap CA. The
+first swapped node then failed verification, and **a node the driver
+cannot verify is indistinguishable from a node that did not come back**:
+
+```text
+ERROR: <node> is not healthy after the certificate swap — stopping.
+```
+
+…about a node serving the new certificate correctly, in a cluster with
+every voter present. It builds a combined bundle for the run now, from the
+CA it was given plus the PKI CA it already reads. Nothing on disk changes.
+
+#### `--force` on bootstrap-pki.sh does not replace the root
+
+It reconfigures the role, the issuing URLs and the policy. It used to fall
+through to regenerating the root, which Vault refuses outright — *"issuer
+name already in use"* — so the one documented way to widen an existing
+role did not work at all. Making it succeed would have been worse:
+replacing the root invalidates every certificate already issued from that
+mount, including the ones the nodes are serving. A new root is a new
+`--mount`.
+
 #### What still runs from where you launch it
 
 Every health check, the voter count, and the "is this node serving a PKI
