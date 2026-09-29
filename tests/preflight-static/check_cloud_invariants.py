@@ -248,6 +248,40 @@ else:
     fail(RULE, "one of the two certificate issuers is missing")
 
 
+# --- 7 -------------------------------------------------------------------
+# The Vault CLI reads $HOME/.vault to find its token helper before running
+# any subcommand -- including `vault status`, which needs no token. With
+# ProtectHome=true that open fails with EACCES and the CLI exits before it
+# has spoken to Vault, so the calling script reports whatever it was
+# trying to do as impossible:
+#
+#   snapshot:  "Could not reach Vault at https://127.0.0.1:8200"
+#   pki renew: a renewal timer that has never renewed anything
+#
+# Three units set it and all three were broken by it, on a real cluster,
+# undetected because the local profile runs Vault in Docker with no
+# systemd at all.
+#
+# tmpfs is the replacement rather than read-only: both let the CLI run,
+# and tmpfs hides the contents of every home directory instead of exposing
+# them for reading.
+RULE = "no unit sets ProtectHome=true"
+units = sorted((ROOT / "ansible").glob("roles/*/templates/*.service.j2"))
+if not units:
+    fail(RULE, "no systemd unit templates found — this rule checked nothing")
+else:
+    offenders = []
+    for u in units:
+        for i, line in enumerate(u.read_text().splitlines(), 1):
+            if line.strip() == "ProtectHome=true":
+                offenders.append(f"{u.relative_to(ROOT)}:{i}")
+    if offenders:
+        fail(RULE, "ProtectHome=true stops the Vault CLI before it starts; "
+                   "use tmpfs: " + ", ".join(offenders))
+    else:
+        note(RULE, f"{len(units)} unit template(s), none of them")
+
+
 for line in checked:
     print(f"OK {line}")
 for line in findings:

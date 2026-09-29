@@ -891,6 +891,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== generate-cloud-certs: the three ways today went wrong ===\n'
+# ---------------------------------------------------------------------------
+
+# An empty --extra-san built `subjectAltName=...,DNS:` and openssl refused
+# the whole extension. Easy to produce by accident: --extra-san "$LB" with
+# LB unset passes an empty string rather than passing nothing.
+EMPTY_RC=0
+EMPTY_OUT="$("$GEN" --cluster-name vault-reference --extra-san "" \
+    --hosts-json /dev/null --out "${WORK}/empty-san" 2>&1)" || EMPTY_RC=$?
+if [[ "$EMPTY_RC" != "0" && "$EMPTY_OUT" == *"empty value"* ]]; then
+    ok "an empty --extra-san is refused before anything is signed"
+else
+    bad "an empty --extra-san is refused before anything is signed" \
+        "exit ${EMPTY_RC}: ${EMPTY_OUT}"
+fi
+
+# openssl names the problem precisely; the script used to send that to
+# /dev/null and report "Failed to sign the certificate", which is a
+# sentence nobody can act on. Forced here by making the CA key
+# unreadable, which is a different failure from a malformed SAN and
+# should still arrive with openssl's own words attached.
+STDERR_DIR="${WORK}/stderr-shown"
+"$GEN" --cluster-name vault-reference --hosts-json "$INV_JSON" \
+    --out "$STDERR_DIR" >/dev/null 2>&1
+chmod 000 "${STDERR_DIR}/ca.key"
+SEC_JSON="${WORK}/second-host.json"
+cat > "$SEC_JSON" <<'SECEOF'
+{"_meta": {"hostvars": {
+   "i-0aaa": {"private_ip_address": "10.0.1.10"},
+   "i-0ccc": {"private_ip_address": "10.0.3.12"}
+ }},
+ "vault_nodes": {"hosts": ["i-0aaa", "i-0ccc"]}}
+SECEOF
+STDERR_RC=0
+STDERR_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$SEC_JSON" \
+    --out "$STDERR_DIR" --add-missing 2>&1)" || STDERR_RC=$?
+chmod 600 "${STDERR_DIR}/ca.key"
+if [[ "$STDERR_RC" != "0" ]] && grep -qiE "openssl|unable to load|permission" <<< "$STDERR_OUT"; then
+    ok "a signing failure arrives with openssl's reason, not just 'Failed to sign'"
+else
+    bad "a signing failure arrives with openssl's reason, not just 'Failed to sign'" \
+        "exit ${STDERR_RC}: $(tail -3 <<< "$STDERR_OUT")"
+fi
+
+# The carry-over exists so a replacement keeps the extra SANs the cluster
+# was issued with. Azure's load balancer has no name, only an address, so
+# its SAN is an IP entry -- and reading only DNS entries lost it, which is
+# the exact failure the carry-over was written to prevent.
+CARRY_DIR="${WORK}/carry-ip"
+"$GEN" --cluster-name vault-reference --hosts-json "$INV_JSON" \
+    --extra-san 10.9.9.9 --out "$CARRY_DIR" >/dev/null 2>&1
+CARRY_RC=0
+CARRY_OUT="$("$GEN" --cluster-name vault-reference --hosts-json "$SEC_JSON" \
+    --out "$CARRY_DIR" --add-missing 2>&1)" || CARRY_RC=$?
+if [[ "$CARRY_RC" == "0" ]] && openssl x509 -in "${CARRY_DIR}/i-0ccc.crt" \
+        -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:10.9.9.9"; then
+    ok "a replacement inherits an IP extra SAN, not just a DNS one"
+else
+    bad "a replacement inherits an IP extra SAN, not just a DNS one" \
+        "exit ${CARRY_RC}: ${CARRY_OUT}"
+fi
+
+# And it must not inherit the *other* node's own address as its identity:
+# every leaf already carries its own IP, and carrying a peer's would make
+# two nodes claim one address.
+if openssl x509 -in "${CARRY_DIR}/i-0ccc.crt" -noout -ext subjectAltName 2>/dev/null \
+        | grep -q "IP Address:10.0.1.10"; then
+    bad "a replacement does not inherit a peer's address" \
+        "i-0ccc carries i-0aaa's 10.0.1.10"
+else
+    ok "a replacement does not inherit a peer's address"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
 # ---------------------------------------------------------------------------
 printf 'passed: %d\nfailed: %d\nskipped: %d\n' "$PASS" "$FAIL" "$SKIP"
