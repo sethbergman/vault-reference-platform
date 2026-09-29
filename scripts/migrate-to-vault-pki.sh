@@ -43,6 +43,42 @@
 # state, so it is the one touched last, when the procedure has already
 # worked twice.
 #
+# TWO MODES, BECAUSE CERTIFICATES LIVE IN ONE OF TWO PLACES
+#
+# Shared directory (the default). Every node's certificate sits in one
+# directory this script can write, and they differ by --cert-name. That is
+# the local Docker profile: three containers bind-mounting docker/dev/tls.
+#
+# Per node (--node-exec). Every node reads /etc/vault.d/tls/vault.crt off
+# its own filesystem and there is no shared directory at all. That is both
+# cloud profiles, and until --node-exec existed this script could not
+# drive them -- it would have issued three certificates into the
+# operator's own /etc/vault.d/tls, reloaded nothing, and reported success
+# three times.
+#
+# In per-node mode the work runs ON the node, through the script
+# ansible/roles/vault_pki installs at /usr/local/bin/vault-issue-node-cert.sh
+# with the credentials it writes to /etc/vault.d/pki.env. So the per-node
+# invocation passes FEWER flags, not more: the node's own defaults --
+# /etc/vault.d/tls, vault.crt, `systemctl reload vault`, VAULT_ADDR from
+# pki.env -- are the right ones, and supplying the operator's versions of
+# them would be supplying the wrong ones.
+#
+# --node-exec is a command with {node} substituted, to which the issue
+# script and its arguments are appended. Its contract is: run this on that
+# node, as root, with /etc/vault.d/pki.env in the environment.
+# scripts/pki-node-exec.sh does exactly that over the Ansible inventory
+# this repository already uses to reach nodes, and is what the docs tell
+# you to pass.
+#
+# WHAT THIS STILL DOES FROM WHERE YOU RUN IT
+#
+# Every health check, the voter count, and the "is this node serving a PKI
+# certificate yet" test. Those are the gates, and a gate that runs on the
+# node it is gating is not a gate. So --nodes must be addresses this
+# machine can reach: on a cloud profile that is one forwarded port per
+# node, and the script refuses to start if any of them does not answer.
+#
 # Options:
 #   --nodes <list>       Required. name=host:port pairs, comma separated.
 #   --tls-dir <dir>      Where certificates live (default: /etc/vault.d/tls)
@@ -54,13 +90,31 @@
 #   --key-mode <mode>    Mode for installed keys (default: 0600)
 #   --phase <p>          trust, swap, prune, or all (default: all)
 #   --issue-script <p>   Path to issue-node-cert.sh (default: alongside
-#                        this script)
+#                        this script). Shared-directory mode only.
+#   --node-exec <cmd>    Run the per-node work on the node. {node} is
+#                        substituted; the issue script and its arguments
+#                        are appended. Switches to per-node mode.
+#   --remote-issue <p>   Path to issue-node-cert.sh ON the node
+#                        (default: /usr/local/bin/vault-issue-node-cert.sh,
+#                        where ansible/roles/vault_pki puts it)
 #   --health-retries <n> How many 2s attempts a node gets to come back
 #                        healthy after each change (default: 30)
 #   --dry-run            Print the plan and exit
 #
-# Requirements: vault, jq, openssl, and a VAULT_TOKEN that can issue from
-# the PKI role. Run scripts/bootstrap-pki.sh first.
+# Example (local Docker profile, shared directory):
+#   ./migrate-to-vault-pki.sh \
+#       --nodes vault-0=127.0.0.1:8200,vault-1=127.0.0.1:8210 \
+#       --tls-dir docker/dev/tls \
+#       --reload-cmd 'docker compose -f docker/dev/docker-compose.yml kill -s HUP {node}'
+#
+# Example (a cloud cluster, per node). One forwarded port per node, and
+# the node names are whatever the inventory calls them:
+#   ./migrate-to-vault-pki.sh \
+#       --nodes i-0aaa=127.0.0.1:18201,i-0bbb=127.0.0.1:18202,i-0ccc=127.0.0.1:18203 \
+#       --node-exec './scripts/pki-node-exec.sh --inventory ansible/inventory/aws_ec2.yml --private-key ~/.ssh/k.pem --node {node} --'
+#
+# Requirements: vault, jq, openssl, curl, and a VAULT_TOKEN that can issue
+# from the PKI role. Run scripts/bootstrap-pki.sh first.
 
 set -euo pipefail
 
@@ -74,6 +128,8 @@ MOUNT="pki"
 ROLE="vault-node"
 RELOAD_CMD="systemctl reload vault"
 KEY_MODE="0600"
+NODE_EXEC=""
+REMOTE_ISSUE="/usr/local/bin/vault-issue-node-cert.sh"
 PHASE="all"
 HEALTH_RETRIES=30
 DRY_RUN=false
@@ -98,6 +154,8 @@ while [[ $# -gt 0 ]]; do
         --key-mode)   KEY_MODE="$2"; shift 2 ;;
         --phase)      PHASE="$2"; shift 2 ;;
         --issue-script) ISSUE="$2"; shift 2 ;;
+        --node-exec)    NODE_EXEC="$2"; shift 2 ;;
+        --remote-issue) REMOTE_ISSUE="$2"; shift 2 ;;
         --health-retries) HEALTH_RETRIES="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         -h|--help)    usage ;;
@@ -114,7 +172,12 @@ esac
 command -v vault   >/dev/null 2>&1 || die "vault not found on PATH"
 command -v jq      >/dev/null 2>&1 || die "jq not found on PATH"
 command -v openssl >/dev/null 2>&1 || die "openssl not found on PATH"
-[[ -x "$ISSUE" ]] || die "${ISSUE} is missing or not executable"
+# In per-node mode the issue script that matters is the one on the node,
+# so the local copy is neither used nor required.
+if [[ -z "$NODE_EXEC" ]]; then
+    [[ -x "$ISSUE" ]] || die "${ISSUE} is missing or not executable"
+fi
+command -v curl >/dev/null 2>&1 || die "curl not found on PATH"
 [[ -n "${VAULT_ADDR:-}" ]] || die "VAULT_ADDR is not set"
 
 # ---------------------------------------------------------------------------
@@ -140,6 +203,35 @@ done
 # ---------------------------------------------------------------------------
 # reload_for <node> — the reload command with {node} substituted.
 reload_for() { printf '%s' "${RELOAD_CMD//\{node\}/$1}"; }
+
+# run_issue <node> <args...> — issue-node-cert.sh, wherever it has to run.
+#
+# The two modes differ in which flags are right, not only in where the
+# command runs. In shared-directory mode this script supplies all of them,
+# because it is writing another node's files from outside. In per-node
+# mode it supplies none of them, because the node's own defaults are
+# correct and the operator's are not: --tls-dir is the node's, the file is
+# vault.crt and not <node>.crt, the reload is a local `systemctl reload`,
+# and VAULT_ADDR comes from /etc/vault.d/pki.env.
+run_issue() {
+    local node="$1"; shift
+
+    if [[ -z "$NODE_EXEC" ]]; then
+        "$ISSUE" "$@" \
+            --tls-dir "$TLS_DIR" \
+            --cert-name "$node" \
+            --key-mode "$KEY_MODE" \
+            --reload-cmd "$(reload_for "$node")" \
+            --verify-addr "${NODE_ADDR[$node]}"
+        return
+    fi
+
+    local -a exec_cmd
+    # shellcheck disable=SC2206  # word splitting is the point: it is a command
+    exec_cmd=( ${NODE_EXEC//\{node\}/$node} )
+    [[ ${#exec_cmd[@]} -gt 0 ]] || die "--node-exec expanded to nothing for ${node}"
+    "${exec_cmd[@]}" "$REMOTE_ISSUE" "$@"
+}
 
 # served_issuer <host:port> — issuer DN of the certificate a node presents.
 served_issuer() {
@@ -195,6 +287,19 @@ on_pki() {
     [[ -n "$PKI_SUBJECT" && "$issuer" == *"$PKI_SUBJECT"* ]]
 }
 
+# Every gate in this script runs from here, against these addresses. A
+# node this machine cannot reach reads as "not active" and "not on PKI",
+# which are the two answers that make the run unsafe rather than failed --
+# so find out now, by name, rather than at the third phase.
+declare -a UNREACHABLE=()
+for n in "${NODE_NAMES[@]}"; do
+    [[ "$(http_code_of "https://${NODE_ADDR[$n]}/v1/sys/health?standbyok=true")" == "000" ]] \
+        && UNREACHABLE+=("${n} (${NODE_ADDR[$n]})")
+done
+if [[ ${#UNREACHABLE[@]} -gt 0 ]]; then
+    die "Cannot reach ${UNREACHABLE[*]}. Every health check and the swap order are decided from here, so an address this machine cannot reach is not a node this script can sequence. On a cloud profile that means one forwarded port per node."
+fi
+
 EXPECTED_VOTERS="$(voter_count)"
 PKI_SUBJECT="$(pki_ca_subject)"
 [[ -n "$PKI_SUBJECT" ]] \
@@ -212,12 +317,25 @@ for n in "${NODE_NAMES[@]}"; do
         SWAP_ORDER+=("$n")
     fi
 done
-[[ -n "$ACTIVE_NODE" ]] && SWAP_ORDER+=("$ACTIVE_NODE")
+# An `if`, not `[[ ... ]] && ...`. That form is the whole command of its
+# statement, so when no node reports active it returns 1 and set -e exits
+# here -- with no message, which is the worst way for a migration driver
+# to stop.
+if [[ -n "$ACTIVE_NODE" ]]; then
+    SWAP_ORDER+=("$ACTIVE_NODE")
+else
+    die "No node reports active. The swap order exists to touch the leader last, and without one it would be arbitrary. Check the cluster has a leader before migrating its certificates."
+fi
 
 # ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
 log "Cluster: ${#NODE_NAMES[@]} node(s), ${EXPECTED_VOTERS} voter(s)"
+if [[ -n "$NODE_EXEC" ]]; then
+    log "Mode:    per node — ${REMOTE_ISSUE} runs on each node"
+else
+    log "Mode:    shared directory — ${TLS_DIR} on this machine"
+fi
 log "PKI CA:  ${PKI_SUBJECT}"
 log "Active:  ${ACTIVE_NODE:-<none found>}"
 log ""
@@ -267,13 +385,7 @@ phase_trust() {
 
     for n in "${NODE_NAMES[@]}"; do
         log "${n}: adding the PKI CA to its trust bundle..."
-        "$ISSUE" \
-            --ca-only \
-            --mount "$MOUNT" \
-            --tls-dir "$TLS_DIR" \
-            --cert-name "$n" \
-            --reload-cmd "$(reload_for "$n")" \
-            --verify-addr "${NODE_ADDR[$n]}" \
+        run_issue "$n" --ca-only --mount "$MOUNT" \
             >&2 || die "Could not update the trust bundle on ${n}"
         gate "$n" "the trust update"
     done
@@ -289,18 +401,13 @@ phase_swap() {
         fi
 
         log "${n}: issuing and installing a PKI certificate..."
-        "$ISSUE" \
+        run_issue "$n" \
             --common-name "${n}.${DOMAIN}" \
             --alt-names "${n},localhost" \
             --ip-sans "127.0.0.1" \
             --mount "$MOUNT" \
             --role "$ROLE" \
-            --tls-dir "$TLS_DIR" \
-            --cert-name "$n" \
-            --key-mode "$KEY_MODE" \
             --force \
-            --reload-cmd "$(reload_for "$n")" \
-            --verify-addr "${NODE_ADDR[$n]}" \
             >&2 || die "Certificate swap failed on ${n} — stopping. Remaining nodes are untouched."
 
         # issue-node-cert.sh already confirms the node serves the new
@@ -332,14 +439,7 @@ phase_prune() {
 
     for n in "${NODE_NAMES[@]}"; do
         log "${n}: replacing the trust bundle with the PKI chain only..."
-        "$ISSUE" \
-            --ca-only \
-            --replace-ca \
-            --mount "$MOUNT" \
-            --tls-dir "$TLS_DIR" \
-            --cert-name "$n" \
-            --reload-cmd "$(reload_for "$n")" \
-            --verify-addr "${NODE_ADDR[$n]}" \
+        run_issue "$n" --ca-only --replace-ca --mount "$MOUNT" \
             >&2 || die "Could not prune the trust bundle on ${n}"
         gate "$n" "the trust bundle prune"
     done
