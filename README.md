@@ -345,7 +345,7 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs twenty-seven checks on every PR. Eight are static:
+GitHub Actions runs 41 checks on every PR. Eight are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, a shell-invariants check for patterns shellcheck has no
 opinion about, a docs-index check that fails when
@@ -356,8 +356,9 @@ against the Ansible layer which finishes the node — and security scanning
 (gitleaks for committed secrets, Trivy for Terraform and Dockerfile
 misconfigurations — see [`docs/security.md`](docs/security.md)).
 
-Eleven run against fixtures and shims — fast, no credentials, and able to
-reach failure modes a live cluster will not reproduce on demand:
+Seventeen run against fixtures and shims — fast, no credentials, and able
+to reach failure modes a live cluster will not reproduce on demand. The
+ones worth knowing about:
 
 - **Terraform to Ansible handoff** — generates `group_vars` from saved
   `terraform output -json` payloads and renders the real role template
@@ -395,17 +396,23 @@ reach failure modes a live cluster will not reproduce on demand:
   `terraform apply`, that a missing key pair fails rather than warns, and
   that teardown empties the versioned bucket *before* calling destroy and
   keeps paging until the listing is empty.
+- **Cloud DR drill** — that it forwards a port to the *leader* rather than
+  trusting a load balancer that keeps standbys in the pool, that every
+  call carries the CA, and that a restore which silently did nothing is
+  caught by a token minted after the snapshot still working.
 
-One sits between the two. `tests/cloud-apply-emulated` runs a real
+Four sit between the two. `tests/cloud-apply-emulated` runs a real
 `terraform apply` of the AWS profile, through the real AWS provider,
 against an implementation of the AWS API — so the configuration is
 applied rather than planned, and destroyed again, without an account or a
 bill. An emulator is not AWS: nothing boots and no health check runs, so
 it is evidence the profile is applyable and not that the cluster works.
 It shortens no claim in [`docs/cloud-apply.md`](docs/cloud-apply.md); it
-removes the ones that never belonged there.
+removes the ones that never belonged there. The other three drive the
+state backend, the audit-anchor bucket, and a snapshot read back out of
+object storage the same way.
 
-The remaining seven bring up the Docker Compose cluster and exercise it
+The remaining twelve bring up the Docker Compose cluster and exercise it
 for real:
 
 - **Deploy + smoke test** — auto-unseals the full 3-node Raft cluster and
