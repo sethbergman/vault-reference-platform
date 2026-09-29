@@ -139,6 +139,21 @@ chmod +x "${WORK}/bin/issue-node-cert.sh"
 # at the stub with --issue-script rather than relying on PATH order.
 ISSUE_STUB="${WORK}/bin/issue-node-cert.sh"
 
+# A stand-in for --node-exec. It records the node and the entire argv it
+# was handed, one line per call, so the per-node invocation can be pinned
+# exactly. "Does not contain --reload-cmd" would pass against a driver
+# that passed nothing at all, or the wrong path, or no node.
+cat > "${WORK}/bin/node-exec" <<'EXEC'
+#!/usr/bin/env bash
+set -uo pipefail
+node="$1"; shift
+printf 'exec %s :: %s
+' "$node" "$*" >> "${ISSUE_LOG}"
+exit "${FAKE_EXEC_RC:-0}"
+EXEC
+chmod +x "${WORK}/bin/node-exec"
+NODE_EXEC_STUB="${WORK}/bin/node-exec {node}"
+
 if PATH="${FAKE_BIN}:${PATH}" command -v vault | grep -q "fake-bin"; then
     ok "the vault shim shadows any real vault on PATH"
 else
@@ -301,6 +316,166 @@ else
     bad "trust updates happen before the bundle is replaced" \
         "first --ca-only at line ${FIRST_ANY}, first --replace-ca at ${FIRST_REPLACE}"
 fi
+
+
+# ---------------------------------------------------------------------------
+printf '\n=== Per-node mode: the work runs on the node ===\n'
+# ---------------------------------------------------------------------------
+# Until --node-exec existed this driver could not migrate a cloud cluster
+# at all: it would have issued three certificates into the operator's own
+# /etc/vault.d/tls, reloaded nothing, and reported success three times.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase trust
+assert_rc   "a trust phase runs per node" 0
+assert_says "and the plan says which mode it is in" "Mode:    per node"
+
+# Pinned, not grepped. This is the whole argv for one node, so a flag
+# appearing that should not -- or the remote path being wrong, or {node}
+# not being substituted -- fails here.
+issue_has "vault-0's work runs on vault-0, with the node's own defaults" \
+          "exec vault-0 :: /usr/local/bin/vault-issue-node-cert.sh --ca-only --mount pki"
+issue_has "and so does vault-2's" \
+          "exec vault-2 :: /usr/local/bin/vault-issue-node-cert.sh --ca-only --mount pki"
+
+# The operator's flags are the wrong flags on a node, and each of these
+# would be wrong in its own way: --tls-dir is this machine's, the file on
+# a node is vault.crt and not <node>.crt, the reload is a local systemctl,
+# and VAULT_ADDR comes from /etc/vault.d/pki.env. Paired with the pinned
+# assertions above, which is what makes an absence assertion mean
+# something.
+issue_lacks "the operator's --reload-cmd is not sent to the node" "--reload-cmd"
+issue_lacks "nor the operator's --cert-name"                      "--cert-name"
+issue_lacks "nor the operator's --verify-addr"                    "--verify-addr"
+
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+run_migrate --node-exec "$NODE_EXEC_STUB" \
+            --remote-issue /opt/vault/issue.sh --phase trust
+issue_has "--remote-issue changes the path used on the node" \
+          ":: /opt/vault/issue.sh --ca-only"
+
+# vault-0 is the active node here, so the first node swapped is vault-1 --
+# which is the swap order's whole guarantee, and the stub does not change
+# what a node serves, so the driver correctly stops after it.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
+issue_has "a swap sends the identity and nothing about this machine" \
+          "exec vault-1 :: /usr/local/bin/vault-issue-node-cert.sh --common-name vault-1.vault.internal --alt-names vault-1,localhost --ip-sans 127.0.0.1 --mount pki --role vault-node --force"
+issue_lacks "and the active node is not the one it starts with" "exec vault-0"
+
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase prune
+issue_has "a prune replaces the bundle on the node" \
+          ":: /usr/local/bin/vault-issue-node-cert.sh --ca-only --replace-ca --mount pki"
+
+# Still the active node last. Asserted from the plan rather than from the
+# calls: the stub never changes what a node serves, so a real swap run
+# stops after the first node by design and never reaches the last one.
+# The order is a decision, and the decision is what this pins.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ACTIVE_ADDR="127.0.0.1:8210"
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_says "the active node is still swapped last in per-node mode" \
+            "2. swap   vault-0 vault-2 vault-1  (active node last)"
+assert_says "and the plan names the active node it found" "Active:  vault-1"
+
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase prune
+assert_rc   "and the prune still refuses while a node serves bootstrap" 1
+assert_says "naming every laggard" "Refusing to prune"
+
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+run_migrate --node-exec "   " --phase trust
+assert_rc   "a --node-exec that expands to nothing is refused" 1
+assert_says "rather than running the command locally by accident" "expanded to nothing"
+
+# In per-node mode the local copy is neither used nor needed, so requiring
+# it would refuse a correct invocation from a machine that has only the
+# driver checked out.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+RC=0
+OUT="$(FAKE_LOG="${WORK}/calls.log" ISSUE_LOG="${WORK}/issue-calls.log" \
+    PATH="${FAKE_BIN}:${WORK}/bin:${PATH}" \
+    "$MIGRATE" --nodes "$NODES" --health-retries 2 \
+    --issue-script /nonexistent/issue-node-cert.sh \
+    --node-exec "$NODE_EXEC_STUB" --phase trust 2>&1)" || RC=$?
+assert_rc "a missing local issue script does not block per-node mode" 0
+
+# ---------------------------------------------------------------------------
+printf '\n=== Two things it used to get wrong by being quiet ===\n'
+# ---------------------------------------------------------------------------
+# Every gate runs from where this script runs. A node it cannot reach
+# reads as "not active" and "not on PKI" -- the two answers that make a
+# run unsafe rather than failed.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+export FAKE_NODE_HEALTH="127.0.0.1:8210=000"
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase trust
+assert_rc        "a node this machine cannot reach stops the run" 1
+assert_says      "naming it and its address" "vault-1 (127.0.0.1:8210)"
+assert_says      "and saying why that matters here" "forwarded port per node"
+issue_lacks      "before anything is changed anywhere" "exec vault-0"
+
+# `[[ -n "$ACTIVE_NODE" ]] && SWAP_ORDER+=(...)` was the whole command of
+# its statement, so under set -e a cluster with no leader exited 1 there
+# with no output at all.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=pki
+export FAKE_ACTIVE_ADDR="127.0.0.1:9999"      # no node is active
+run_migrate --node-exec "$NODE_EXEC_STUB" --phase swap
+assert_rc   "a cluster with no active node stops the run" 1
+assert_says "and says so, rather than exiting silently" "No node reports active"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The wrapper the docs tell you to pass ===\n'
+# ---------------------------------------------------------------------------
+NODE_EXEC_SCRIPT="${REPO_ROOT}/scripts/pki-node-exec.sh"
+
+INV="${WORK}/inv.ini"
+printf '[vault_nodes]\nvault-0\nvault-1\n' > "$INV"
+
+# The shims stand in for ansible: this suite's requirements are bash, jq,
+# python3 and openssl, and CI's runner for it has no ansible at all. What
+# is under test is the wrapper's own logic -- which nodes it accepts, and
+# how it quotes -- not ansible.
+export FAKE_INVENTORY_HOSTS="vault-0 vault-1"
+
+wrapper() {
+    RC=0
+    OUT="$(PATH="${FAKE_BIN}:${WORK}/bin:${PATH}"         "$NODE_EXEC_SCRIPT" --inventory "$INV" "$@" 2>&1)" || RC=$?
+}
+
+wrapper --node vault-0 --dry-run -- /usr/local/bin/vault-issue-node-cert.sh --ca-only
+assert_rc   "a known node is accepted" 0
+assert_says "and the remote script sources the env file first" \
+            "set -a; . /etc/vault.d/pki.env; set +a; exec"
+assert_says "before running the command"  "vault-issue-node-cert.sh --ca-only"
+
+wrapper --node vault-9 --dry-run -- /bin/true
+assert_rc   "a node the inventory does not know is refused" 1
+assert_says "and it names the cause that has actually caused it" \
+            "empty inventory and exits 0"
+
+wrapper --node vault-0 --dry-run -- /bin/echo "two words"
+assert_says "an argument containing a space stays one argument" \
+            "/bin/echo two\\ words"
+
+wrapper --node vault-0 --dry-run
+assert_rc   "no command is refused" 1
+assert_says "and it says where the command goes" "everything after --"
+
+wrapper --dry-run -- /bin/true
+assert_rc   "no --node is refused" 1
+
+wrapper --node vault-0 --env-file /etc/vault.d/other.env --dry-run -- /bin/true
+assert_says "--env-file changes what is sourced" ". /etc/vault.d/other.env"
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'
