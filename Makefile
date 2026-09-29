@@ -147,10 +147,10 @@ rotate-secret-id: ## Issue a fresh AppRole secret_id (ROLE=name)
 ##@ Tests
 
 .PHONY: test
-test: test-fast ## Every suite that needs no cluster (seconds)
+test: test-fast ## Every suite that needs no cluster (a few minutes)
 
 .PHONY: test-fast
-test-fast: ## Shim suites only — no Docker, no credentials
+test-fast: ## Shim suites only — no Docker, no credentials (~2-3 min)
 	@fail=0; for s in $(FAST_SUITES); do \
 		printf '\n\033[36m=== %s ===\033[0m\n' "$$s"; \
 		./tests/$$s/run-tests.sh || fail=1; \
@@ -169,6 +169,12 @@ test-cluster: ## The integration suite against a real 3-node cluster (minutes)
 
 .PHONY: test-all
 test-all: test-fast test-cluster ## Everything, including the real cluster
+
+.PHONY: dr-drill-cloud
+dr-drill-cloud: ## The restore drill against a real cloud cluster (CLOUD=aws|azure)
+	@[ -n "$(CLOUD)" ] || { echo "usage: make dr-drill-cloud CLOUD=aws|azure"; exit 2; }
+	@echo "Needs VAULT_TOKEN, and a cluster you do not mind restoring."
+	./scripts/dr-drill-cloud.sh --cloud $(CLOUD)
 
 ##@ Cloud, without spending anything
 
@@ -198,6 +204,11 @@ state-backend: ## The remote state backend and the ordering it needs
 preflight-cloud: ## Pre-apply checks needing credentials (CLOUD=aws|azure)
 	@[ -n "$(CLOUD)" ] || { echo "usage: make preflight-cloud CLOUD=aws|azure"; exit 2; }
 	./scripts/preflight-cloud.sh --cloud $(CLOUD)
+
+.PHONY: teardown-cloud
+teardown-cloud: ## Remove what terraform destroy cannot (CLOUD=aws|azure)
+	@[ -n "$(CLOUD)" ] || { echo "usage: make teardown-cloud CLOUD=aws|azure"; exit 2; }
+	./scripts/teardown-cloud.sh --cloud $(CLOUD)
 
 ##@ Lint — these mirror CI exactly
 
