@@ -134,7 +134,7 @@ ok()   { PASS=$((PASS + 1)); green "  PASS  $1"; }
 bad()  { FAIL=$((FAIL + 1)); red   "  FAIL  $1"; [[ -n "${2:-}" ]] && printf '        %s\n' "$2"; return 0; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 

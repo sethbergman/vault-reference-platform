@@ -44,8 +44,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 LOG=""
 CHAIN=""
@@ -62,7 +60,7 @@ say()   { [[ "$QUIET" == true ]] || printf '%s\n' "$*"; }
 die()   { red "ERROR: $*"; exit 2; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 2
 }
 
@@ -77,6 +75,12 @@ while [[ $# -gt 0 ]]; do
         *) die "Unknown argument: $1" ;;
     esac
 done
+
+# Below the argument loop, not above it: usage() ends in `exit 1`, and an
+# EXIT trap armed above it runs on that exit -- so `--help` made a
+# directory and removed it again.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 if [[ -z "$LOG" && -z "$CHAIN" ]]; then
     FROM_COMPOSE=true

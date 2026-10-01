@@ -100,15 +100,13 @@ ENDPOINT=""
 FETCH_TO=""
 ALLOW_UNLOCKED=false
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 log()  { printf '[ship-anchors] %s\n' "$*" >&2; }
 warn() { printf '\033[33m[ship-anchors] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m[ship-anchors] ERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 2
 }
 
@@ -126,6 +124,12 @@ while [[ $# -gt 0 ]]; do
         *) die "Unknown argument: $1" ;;
     esac
 done
+
+# Below the argument loop, not above it: usage() ends in `exit 1`, and an
+# EXIT trap armed above it runs on that exit -- so `--help` made a
+# directory and removed it again.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 [[ -n "$BUCKET" ]] || die "--bucket is required"
 command -v aws >/dev/null 2>&1 || die "aws not found on PATH"

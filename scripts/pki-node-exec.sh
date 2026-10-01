@@ -93,7 +93,7 @@ log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 

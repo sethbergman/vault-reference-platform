@@ -102,7 +102,7 @@ bad()  { FAIL=$((FAIL + 1)); red   "  FAIL  $1"; [[ -n "${2:-}" ]] && printf '  
 die() { red "ERROR: $*"; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 

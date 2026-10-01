@@ -66,7 +66,7 @@ RESOURCE_GROUP="${AZURE_BASTION_RESOURCE_GROUP:-}"
 TIMEOUT="30"
 
 usage() {
-    grep '^#' "$0" | sed 's/^# \{0,1\}//' | sed '1d'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 0
 }
 

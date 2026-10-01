@@ -66,7 +66,7 @@ log()  { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 die()  { log "ERROR: $*"; exit 1; }
 
 usage() {
-    sed -e '1d' -e '/^[^#]/,$d' -e 's/^# \{0,1\}//' "$0"
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 

@@ -14,7 +14,10 @@
 #
 # The first was about shell, which is what this suite was named for.
 # Prose drifts the same way and the second check is about that, so the
-# scope is the invariant rather than the language it is written in.
+# scope is the invariant rather than the language it is written in. The
+# third is about neither: it runs every script's --help, because a script
+# that documents itself by printing its own header only does so while the
+# printing stops where the header does.
 #
 # Requirements: bash, python3, and a checkout carrying its tags
 
@@ -76,6 +79,29 @@ if OUT="$(python3 "${SCRIPT_DIR}/check_version_claim.py" 2>&1)"; then
     ok "README, roadmap and tags agree on the newest release"
 else
     bad "README, roadmap and tags agree on the newest release" "$OUT"
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== --help prints the header and nothing below it ===\n'
+# ---------------------------------------------------------------------------
+# Every script here documents itself by printing its own header back, so the
+# header is the help text and cannot drift from it. That only holds if the
+# printing stops at the first line of code, and for a long time it did not:
+# `grep '^#' "$0"` matches the body's section dividers and standalone
+# comments too, which sit at column 0 as well.
+#
+# 1284 lines of internal commentary across 34 scripts' --help output.
+# `bootstrap-dev-cluster.sh --help` printed 185 lines of which 124 were its
+# own body comments, and nobody noticed, because nobody reads 185 lines of
+# help -- which is the whole failure, not a side effect of it.
+#
+# This runs each script's --help rather than checking which sed it uses, so a
+# script that grows a comment block below the code and starts leaking it
+# fails here even if the idiom is right.
+if OUT="$(python3 "${SCRIPT_DIR}/check_usage_text.py" 2>&1)"; then
+    ok "every script's --help is its header"
+else
+    bad "every script's --help is its header" "$OUT"
 fi
 
 printf '\n'
