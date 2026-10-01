@@ -57,7 +57,7 @@ log()  { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -e '1d' -e '/^[^#]/,$d' -e 's/^# \{0,1\}//' "$0"
     exit 1
 }
 
@@ -72,8 +72,13 @@ cleanup() {
         compose down -v >&2 2>/dev/null || true
     fi
 }
-trap cleanup EXIT
-
+# Arguments first, and the trap after. usage() ends in `exit 1`, so with the
+# trap already armed `--help` printed the help and then ran cleanup: the
+# teardown path, `docker compose down -v`, against the operator's cluster and
+# its volumes. Getting the help you asked for is what kept it quiet.
+#
+# Nothing in this loop needs cleaning up after. KEEP_RUNNING has to be
+# settled before the trap can mean anything anyway.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-running) KEEP_RUNNING=true; shift ;;
@@ -81,6 +86,8 @@ while [[ $# -gt 0 ]]; do
         *) die "Unknown argument: $1" ;;
     esac
 done
+
+trap cleanup EXIT
 
 command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
 command -v jq     >/dev/null 2>&1 || die "jq not found on PATH"
