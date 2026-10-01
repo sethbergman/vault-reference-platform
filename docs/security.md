@@ -336,8 +336,9 @@ snapshots and audit, not PKI. Run the playbook with
 `vault_pki_enabled=true` first, or the migration reaches its first node
 and reports a missing file.
 
-`pki-node-exec.sh` checks for both before it runs anything, and says which
-role puts them there.
+`pki-node-exec.sh` checks for both before it runs anything — as the first
+thing the one connection runs, so neither check costs a round trip of its
+own — and says which of the two is missing and which role puts it there.
 
 #### The driver trusts both CAs, for the reason the nodes do
 

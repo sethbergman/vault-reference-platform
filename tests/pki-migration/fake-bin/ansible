@@ -3,6 +3,21 @@
 # Stand-in for ansible, for tests/pki-migration. Records the whole
 # invocation, including the -a payload, so the remote script the wrapper
 # built can be asserted on as one argument rather than as words.
+#
+# And then RUNS that payload, in a shell, the way `-m shell` runs it on the
+# node. The wrapper's prerequisite checks and its "did anything run" marker
+# are inside that payload now, so a shim that only recorded the call could
+# not reach them -- and `sh` here is dash, which is also what /bin/sh is on
+# a Debian-family node, so the %q quoting is exercised rather than assumed.
+#
+# FAKE_INVENTORY_HOSTS is the space-separated list of hosts the inventory
+# knows. A host outside it gets what a real unmatched pattern gets: a
+# warning on stderr, nothing on stdout, and exit 0. That is also, and this
+# is the point, exactly what a plugin returning an EMPTY inventory looks
+# like.
+#
+# FAKE_ANSIBLE_UNREACHABLE models ansible failing to connect: no markers
+# and a non-zero status, which must not be read as an empty inventory.
 set -uo pipefail
 
 {
@@ -11,4 +26,36 @@ set -uo pipefail
     printf '\n'
 } >> "${FAKE_LOG:-/dev/null}"
 
-exit "${FAKE_ANSIBLE_RC:-0}"
+host="${1:-}"
+payload=""
+prev=""
+for a in "$@"; do
+    [[ "$prev" == "-a" ]] && payload="$a"
+    prev="$a"
+done
+
+known=false
+for h in ${FAKE_INVENTORY_HOSTS:-}; do
+    [[ "$h" == "$host" ]] && known=true
+done
+
+if [[ "$known" != true ]]; then
+    printf '[WARNING]: Could not match supplied host pattern, ignoring: %s\n' \
+        "$host" >&2
+    exit 0
+fi
+
+if [[ "${FAKE_ANSIBLE_UNREACHABLE:-false}" == true ]]; then
+    printf '%s | UNREACHABLE! => {"changed": false, "msg": "Failed to connect to the host via ssh", "unreachable": true}\n' "$host"
+    exit 4
+fi
+
+out="$(sh -c "$payload" 2>&1)"
+rc=$?
+
+if [[ "$rc" -eq 0 ]]; then
+    printf '%s | CHANGED | rc=0 >>\n%s\n' "$host" "$out"
+    exit 0
+fi
+printf '%s | FAILED | rc=%d >>\n%s\nnon-zero return code\n' "$host" "$rc" "$out"
+exit 2

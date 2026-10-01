@@ -48,13 +48,28 @@
 #   shell reporting a missing file from inside a phase that is otherwise
 #   going fine.
 #
-#   It refuses a node the inventory does not know. Without boto3 in
-#   Ansible's interpreter the aws_ec2 plugin returns an EMPTY inventory
-#   and exits 0, so `ansible <node>` warns about an unmatched pattern,
-#   does nothing, and succeeds. That has cost three sessions here. A
-#   command that silently ran nowhere, in the middle of a certificate
-#   rollout, would leave the cluster's trust in a state the driver
-#   believes it is not in.
+#   It refuses a node that ran nothing. Without boto3 in Ansible's
+#   interpreter the aws_ec2 plugin returns an EMPTY inventory and exits 0,
+#   so `ansible <node>` warns about an unmatched pattern, does nothing, and
+#   succeeds. That has cost three sessions here. A command that silently
+#   ran nowhere, in the middle of a certificate rollout, would leave the
+#   cluster's trust in a state the driver believes it is not in.
+#
+#   Both of those are checked inside the one connection, by the remote
+#   script, rather than by an ansible run each. Three round trips per call
+#   was most of a seventeen-minute migration -- the driver calls this eight
+#   times for a three-node cluster, and ansible spends longer starting up
+#   and resolving an aws_ec2 inventory than the work takes. They report
+#   through markers on stdout because `ansible -m shell` does not pass the
+#   remote exit status back: it exits 2 for any failed task and nothing
+#   else.
+#
+#   A connection that fails is not a node that ran nothing. Unreachable is
+#   ansible's own failure and is passed through as one -- diagnosing it as
+#   a missing SDK would send the reader to the wrong half of the problem.
+#
+#   --dry-run makes no connection. It used to make two, which is a strange
+#   thing for a dry run to do on a cluster mid-migration.
 #
 #   The credentials are sourced on the node, never passed to it. The env
 #   file is root-readable on the node and this script never reads it, so
@@ -100,33 +115,20 @@ done
 [[ -f "$INVENTORY" ]] || die "no inventory at ${INVENTORY}"
 command -v ansible >/dev/null 2>&1 || die "ansible not found on PATH"
 
-# The inventory has to know this node. An aws_ec2 plugin without boto3
-# returns an empty inventory and exit 0, so `ansible <node> -a ...` prints
-# a warning, runs nowhere, and succeeds -- which during a certificate
-# rollout means the driver's next step believes something happened.
-if ! ansible-inventory -i "$INVENTORY" --host "$NODE" >/dev/null 2>&1; then
-    die "the inventory at ${INVENTORY} does not know a host called '${NODE}'. If this is aws_ec2 or azure_rm, the usual cause is a missing SDK in Ansible's own interpreter -- the plugin then returns an empty inventory and exits 0. See docs/deployment.md#reaching-the-nodes."
-fi
-
-# The node has to have been prepared. ansible/roles/vault_pki installs the
-# issue script and writes the env file with the credentials it uses; the
-# role is off by default and the documented enable step for a cloud
-# cluster turns on snapshots and audit, not PKI. Without it the remote
-# shell reports "/etc/vault.d/pki.env: No such file or directory", which
-# is true and tells nobody what to do about it.
-#
-# Checked once, up front, rather than discovered on whichever node the
-# migration reaches first.
-PROBE="test -r $(printf '%q' "$ENV_FILE") && test -x $(printf '%q' "$1")"
-if ! ansible "$NODE" -i "$INVENTORY" --become -m shell -a "$PROBE" \
-        ${PRIVATE_KEY:+--private-key "$PRIVATE_KEY"} >/dev/null 2>&1; then
-    die "${NODE} is missing ${ENV_FILE} or ${1}. Those come from ansible/roles/vault_pki, which is off by default -- run the playbook with vault_pki_enabled=true before migrating. See docs/security.md#doing-the-migration."
-fi
-
 # Build the remote script. printf %q on every argument, so a value with a
 # space in it stays one argument on the far side -- the whole reason this
 # is a script and not a documented one-liner.
-REMOTE="set -a; . $(printf '%q' "$ENV_FILE"); set +a; exec"
+#
+# The two prerequisite checks lead it, so they cost no connection of their
+# own, and they report through a marker on stdout: `ansible -m shell` exits
+# 2 for any failed task and does not pass the remote status back, so an
+# exit code could not say which of them failed.
+MARK="__pki_node_exec__"
+
+REMOTE="if ! test -r $(printf '%q' "$ENV_FILE"); then echo ${MARK}:no-env; exit 90; fi
+if ! test -x $(printf '%q' "$1"); then echo ${MARK}:no-cmd; exit 91; fi
+echo ${MARK}:ran
+set -a; . $(printf '%q' "$ENV_FILE"); set +a; exec"
 for arg in "$@"; do
     REMOTE+=" $(printf '%q' "$arg")"
 done
@@ -143,4 +145,39 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 log "${NODE}: $*"
-ansible "${ANSIBLE_ARGS[@]}"
+
+OUTPUT="$(mktemp)"
+# Not `[[ -n "$OUTPUT" ]] && rm -f ...` -- a trap handler ending in a false
+# conditional sets the script's exit status to 1 on the way out, which
+# tests/lint/check_trap_exit.py exists to catch.
+trap 'rm -f "$OUTPUT"' EXIT
+
+RC=0
+ansible "${ANSIBLE_ARGS[@]}" > "$OUTPUT" || RC=$?
+
+# Buffering costs nothing: `ansible -m shell` collects the remote output and
+# prints it when the task finishes, so there was no live progress to lose.
+# The markers are this script's own protocol and are not the operator's to
+# read, so they come back out here.
+grep -v "^${MARK}:" "$OUTPUT" || true
+
+if grep -q "^${MARK}:no-env" "$OUTPUT"; then
+    die "${NODE} has no readable ${ENV_FILE}. It comes from ansible/roles/vault_pki, which is off by default -- run the playbook with vault_pki_enabled=true before migrating. See docs/security.md#doing-the-migration."
+elif grep -q "^${MARK}:no-cmd" "$OUTPUT"; then
+    die "${NODE} has no executable ${1}. It comes from ansible/roles/vault_pki, which is off by default -- run the playbook with vault_pki_enabled=true before migrating. See docs/security.md#doing-the-migration."
+fi
+
+# Ansible is happy and nothing reported having run: the host pattern matched
+# no host. Without boto3 the aws_ec2 plugin returns an EMPTY inventory and
+# exits 0, so that is what a missing SDK looks like from here -- a command
+# that ran nowhere and succeeded, which during a certificate rollout leaves
+# the driver's next step believing something happened.
+#
+# Gated on RC being 0 deliberately. An unreachable host is ansible's own
+# failure and also produces no marker; calling that a missing SDK would
+# send the reader to the wrong half of the problem.
+if [[ "$RC" -eq 0 ]] && ! grep -q "^${MARK}:ran" "$OUTPUT"; then
+    die "nothing ran on '${NODE}' and ansible reported no error, which means the host pattern matched no host. If this is aws_ec2 or azure_rm, the usual cause is a missing SDK in Ansible's own interpreter -- the plugin then returns an empty inventory and exits 0. See docs/deployment.md#reaching-the-nodes."
+fi
+
+exit "$RC"
