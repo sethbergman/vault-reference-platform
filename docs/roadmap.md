@@ -30,6 +30,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.18 | Rate limit quotas, and the three ways of setting one that write successfully and protect nothing — including the quota that refuses its own deletion |
 | v0.19 | The path from a running cluster to a configured one, which had three breaks in it: three nodes arriving as one Ansible host, no way to reach any of them, and a certificate check no correct certificate could pass |
 | v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which kept blocker 1 open until the second apply closed it on 2026-09-24 |
+| v0.21 | Both clouds applied for real and the AWS checklist finished: nineteen Azure defects in a profile that could not have applied as written, blocker 1 closed by a replacement node signing its own certificate, and the PKI migration sequenced across a live cluster — six more defects, and not one of them a crash |
 
 ## The honest gap
 
@@ -51,18 +52,31 @@ create anything, and a plan that succeeds is not a deployment that works.
 applies and destroys it on every PR against an implementation of the AWS
 API, so the configuration is known to apply in one pass with every
 request accepted — the shape of the profile, not its behaviour, because
-an emulator boots nothing. Then one real apply, on 2026-09-17, observed
-the behaviour: KMS auto-unseal, peer discovery by tag, health checks
-keeping standbys in the pool, the Ansible handoff, and a snapshot
-restored under the KMS seal. It also observed instance replacement
-failing, and took ten defects to get that far.
+an emulator boots nothing. Then four real applies observed the behaviour,
+and [cloud-apply.md](cloud-apply.md) records what each settled: KMS
+auto-unseal, peer discovery by tag, health checks keeping standbys in the
+pool, the Ansible handoff, snapshots reaching the bucket and read back out
+of it through KMS, audit devices on a real node, and the PKI migration
+sequenced across a live cluster. The first of them also watched instance
+replacement fail, which kept blocker 1 open until the second watched a
+replacement sign its own certificate and an instance refresh hold quorum
+across all three nodes.
 
-So treat `terraform/aws` as proven in the parts
-[cloud-apply.md](cloud-apply.md) names and unproven everywhere else —
-snapshots to the bucket, PKI and audit on a real node, and an instance
-refresh, none of which that session reached. Treat `terraform/azure` as
-reviewed and tested, not as proven: it has no real apply and no emulated
-one.
+`terraform/azure` has had two applies of its own. They settled auto-unseal
+through Key Vault, a replacement node signing its own certificate from a
+CA it fetched with its own managed identity, Raft discovery by scale-set
+enumeration, reachability through Bastion, snapshots, a restore, and
+audit. The first found nineteen defects and established that the profile
+could not have applied as written — not on that subscription, not on any —
+while all 30 of its assertions against mocked providers passed throughout,
+and still do. The PKI migration is the one thing the AWS sessions reached
+that Azure has not: it was blocked on tooling rather than on a cluster,
+and the tooling exists now.
+
+So treat both profiles as proven in the parts
+[cloud-apply.md](cloud-apply.md) names, and unproven in the one that
+decides who is able to operate them. Every session ran as an
+administrator.
 
 The local profile is different: `tests/integration` runs the operational
 scripts against a real three-node Raft cluster on every PR, so the
