@@ -19,6 +19,11 @@ case "${1:-}" in
         exit 0
         ;;
     providers)
+        # Real terraform writes to stderr before failing, and which message
+        # it is decides what the pre-flight should tell the operator.
+        if [[ "${FAKE_TF_PROVIDERS_RC:-0}" != "0" ]]; then
+            printf '%s\n' "${FAKE_TF_PROVIDERS_ERR:-Error: Initialization required.}" >&2
+        fi
         exit "${FAKE_TF_PROVIDERS_RC:-0}"
         ;;
     state)
