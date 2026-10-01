@@ -61,6 +61,10 @@ reset_scenario() {
     export FAKE_NODE_SANS=""
     export FAKE_DEFAULT_SANS="DNS:localhost|IP:127.0.0.1"
     export FAKE_ROLE_REFUSES=""
+    # The serial real Vault returns from an issue, and whether revoking it
+    # works. An empty serial is a response the driver cannot undo.
+    export FAKE_ISSUE_SERIAL="3f:9c:12:aa:7b:04:e1:55"
+    export FAKE_REVOKE_RC=0
     export FAKE_ACTIVE_ADDR="127.0.0.1:8200"
     export FAKE_DEFAULT_HEALTH=429
     export VAULT_ADDR=https://127.0.0.1:8200
@@ -82,15 +86,23 @@ run_migrate() {
     OUT="$(FAKE_LOG="$logfile" ISSUE_LOG="${WORK}/issue-calls.log" \
         PATH="${FAKE_BIN}:${WORK}/bin:${PATH}" \
         "$MIGRATE" --nodes "$NODES" --tls-dir "${WORK}/tls"         --issue-script "$ISSUE_STUB" --health-retries 2 "$@" 2>&1)" || RC=$?
-    # shellcheck disable=SC2034  # kept for debugging a failing run
     LOG="$(cat "$logfile")"
     ISSUE_LOG="$(cat "${WORK}/issue-calls.log" 2>/dev/null || true)"
 }
 
 assert_rc()   { if [[ "$RC" == "$2" ]]; then ok "$1"; else bad "$1" "expected ${2}, got ${RC}: ${OUT}"; fi; }
 assert_says() { if [[ "$OUT" == *"$2"* ]]; then ok "$1"; else bad "$1" "output lacked: ${2}"; fi; }
+assert_lacks() { if [[ "$OUT" != *"$2"* ]]; then ok "$1"; else bad "$1" "output contained: ${2}"; fi; }
 issue_has()   { if [[ "$ISSUE_LOG" == *"$2"* ]]; then ok "$1"; else bad "$1" "no issue call matching: ${2}"; fi; }
 issue_lacks() { if [[ "$ISSUE_LOG" != *"$2"* ]]; then ok "$1"; else bad "$1" "unexpected issue call: ${2}"; fi; }
+log_has()     { if [[ "$LOG" == *"$2"* ]]; then ok "$1"; else bad "$1" "no vault call matching: ${2}"; fi; }
+# Pinned by count, not by presence: "a revoke happened" passes against a
+# driver that revokes one of three test certificates and leaks the rest.
+log_count()   {
+    local n
+    n="$(grep -cF -- "$3" <<< "$LOG" || true)"
+    if [[ "$n" == "$2" ]]; then ok "$1"; else bad "$1" "expected ${2} vault calls matching '${3}', got ${n}"; fi
+}
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -610,6 +622,63 @@ printf 'this is not a certificate\n' > "$BAD_CA"
 VAULT_CACERT="$BAD_CA" run_migrate --dry-run
 assert_rc   "a trust bundle that does not parse stops the run" 1
 assert_says "naming the file rather than blaming the cluster" "does not parse as PEM"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The test issue does not leave certificates behind ===\n'
+# ---------------------------------------------------------------------------
+# Vault has no dry-run issue, so asking the role whether it will sign what
+# a node serves mints a real certificate. The role bootstrap-pki.sh creates
+# sets no no_store, so one that is not revoked stays in storage for its
+# whole TTL -- three per run of a check that wanted nothing but the answer,
+# accumulating over every retry of a migration that did not work first time.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc  "the pre-flight test-issue runs on a dry run" 0
+log_count  "one test certificate is issued per node" 3 "pki/issue/vault-node"
+log_count  "and each one is revoked again" 3 "write pki/revoke serial_number="
+log_has    "by the serial the issue response carried" \
+           "write pki/revoke serial_number=3f:9c:12:aa:7b:04:e1:55"
+
+# A node whose SANs the role refuses was never issued anything, so there is
+# no serial to revoke. Revoking one anyway would fail, and the failure
+# would read as the cleanup being broken rather than as nothing to clean.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:localhost|IP:127.0.0.1"
+export FAKE_ROLE_REFUSES="i-0abc"
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc    "a refused SAN still stops the run" 1
+log_count    "and only the certificates that were issued are revoked" 2 \
+             "write pki/revoke serial_number="
+# A refusal means nothing was issued, so nothing is in storage. Reporting
+# otherwise sends the operator looking for a certificate that is not there.
+assert_lacks "and it is not reported as leaving a certificate behind" \
+             "carried no serial"
+
+# Cleanup that fails is a warning, not an abort: the check it belongs to
+# has already answered, and the answer is the thing the operator came for.
+# Silence would be the wrong half to pick -- a certificate is in storage.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_REVOKE_RC=2
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "a revoke that fails does not stop the run" 0
+assert_says "but it says which certificate was left behind" \
+            "could not revoke test certificate 3f:9c:12:aa:7b:04:e1:55"
+
+# And a response with no serial in it at all, which is the case where the
+# driver cannot clean up even in principle. It has to say so: this is the
+# only way the operator learns there is something in storage to find.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ISSUE_SERIAL=""
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "an issue response with no serial does not stop the run" 0
+assert_says "but it says the certificate could not be revoked" \
+            "carried no serial"
+log_count   "and nothing is revoked by an empty serial" 0 \
+            "write pki/revoke serial_number="
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'

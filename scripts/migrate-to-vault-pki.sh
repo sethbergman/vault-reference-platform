@@ -490,9 +490,14 @@ for n in "${NODE_NAMES[@]}"; do
     fi
 done
 
-# Every node's carried SANs, test-issued and discarded. A name the role
+# Every node's carried SANs, test-issued and revoked again. A name the role
 # will not sign is a thing to learn here, with the cluster untouched,
 # rather than at the first swap with it half migrated.
+#
+# Vault has no dry-run issue, so each of these is a real certificate and
+# has to be revoked on the way out. The role bootstrap-pki.sh creates does
+# not set no_store, so one left behind stays in storage for its whole TTL
+# -- three per run, and a migration gets retried until it works.
 log ""
 log "Checking the role will issue what each node currently serves..."
 declare -a REFUSED=()
@@ -500,10 +505,20 @@ for n in "${NODE_NAMES[@]}"; do
     dns="$(carried_sans "$n" dns)"
     ips="$(carried_sans "$n" ip)"
     log "  ${n}: ${dns:-<no dns sans>} / ${ips:-<no ip sans>}"
-    if ! err="$(vault write -format=json "${MOUNT}/issue/${ROLE}" \
+    # One combined capture reads both halves without a temp file: on
+    # success this is the JSON from stdout, on refusal the errors from
+    # stderr. The serial is only in the first, and is what undoes it.
+    if ! out="$(vault write -format=json "${MOUNT}/issue/${ROLE}" \
             common_name="${n}.${DOMAIN}" \
-            alt_names="$dns" ip_sans="$ips" ttl=5m 2>&1 >/dev/null)"; then
-        REFUSED+=("${n}: $(sed -n 's/^\* //p' <<< "$err" | head -3 | tr '\n' ';')")
+            alt_names="$dns" ip_sans="$ips" ttl=5m 2>&1)"; then
+        REFUSED+=("${n}: $(sed -n 's/^\* //p' <<< "$out" | head -3 | tr '\n' ';')")
+        continue
+    fi
+    serial="$(jq -r '.data.serial_number // empty' <<< "$out" 2>/dev/null || true)"
+    if [[ -z "$serial" ]]; then
+        log "  WARNING  ${n}: the issue response carried no serial, so the test certificate could not be revoked and stays in storage until it expires"
+    elif ! vault write "${MOUNT}/revoke" serial_number="$serial" >/dev/null 2>&1; then
+        log "  WARNING  ${n}: could not revoke test certificate ${serial} - it stays in storage until it expires"
     fi
 done
 

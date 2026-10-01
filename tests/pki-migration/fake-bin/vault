@@ -55,7 +55,23 @@ if [[ "$*" == *"/issue/"* ]]; then
         done
         exit 2
     fi
-    printf '{"data":{"certificate":"-----BEGIN CERTIFICATE-----\\nfake\\n-----END CERTIFICATE-----"}}\n'
+    printf '{"data":{"certificate":"-----BEGIN CERTIFICATE-----\\nfake\\n-----END CERTIFICATE-----"'
+    # ${VAR-d}, not ${VAR:-d}: an empty FAKE_ISSUE_SERIAL is a response
+    # carrying no usable serial, which is a case the driver has to report.
+    printf ',"serial_number":"%s"}}\n' "${FAKE_ISSUE_SERIAL-3f:9c:12:aa:7b:04:e1:55}"
+    exit 0
+fi
+
+# vault write <mount>/revoke serial_number=... -- undoing a test issue.
+# The role has no no_store, so an unrevoked one stays in storage for its
+# whole TTL. FAKE_REVOKE_RC models the revoke failing, which has to warn
+# rather than abort: the check it belongs to has already answered.
+if [[ "$*" == *"/revoke"* ]]; then
+    if [[ "${FAKE_REVOKE_RC:-0}" != "0" ]]; then
+        echo "Error writing data to pki/revoke: Error making API request." >&2
+        exit "${FAKE_REVOKE_RC}"
+    fi
+    printf '{"data":{"revocation_time":1759276800}}\n'
     exit 0
 fi
 
