@@ -5,129 +5,65 @@
 # Usage:
 #   ./migrate-to-vault-pki.sh --nodes <name>=<host:port>,... [options]
 #
-# Example (local Docker profile):
-#   ./migrate-to-vault-pki.sh \
-#       --nodes vault-0=127.0.0.1:8200,vault-1=127.0.0.1:8210,vault-2=127.0.0.1:8220 \
-#       --tls-dir docker/dev/tls \
-#       --domain vault.internal \
-#       --reload-cmd 'docker compose -f docker/dev/docker-compose.yml kill -s HUP {node}'
-#
-# THE DRIVER TRUSTS BOTH CAS, FOR THE SAME REASON THE NODES DO
-#
-# Phase 1 makes every node trust the bootstrap CA and the PKI CA at once,
-# because during phase 2 some peers present one and some the other. The
-# driver is in exactly that position: it health-checks every node after
-# every change, and half of them are on each CA while it works.
-#
-# It used to check them with the bundle it was given, which holds the
-# bootstrap CA. The first node to be swapped then failed verification, and
-# a node the driver could not verify is indistinguishable from a node that
-# did not come back:
-#
-#   ERROR: <node> is not healthy after the certificate swap -- stopping.
-#
-# ...about a node serving the new certificate perfectly, in a cluster with
-# every voter present. So it builds a combined bundle for the run from the
-# CA it was given plus the PKI CA it already reads, and uses that for its
-# own checks. Nothing on disk changes.
-#
 # WHY THIS EXISTS
 #
 # scripts/issue-node-cert.sh swaps one node's certificate. Doing that to a
-# whole cluster is not a loop around it: get the ordering wrong and the
-# nodes stop trusting each other, which presents as a network fault and
-# is diagnosed as one.
-#
-# Nodes verify their peers with tls_client_ca_file. A node whose trust
-# bundle does not contain the CA that signed its peer's certificate will
-# refuse that peer. So there is exactly one safe order:
+# whole cluster is not a loop around it. Nodes verify their peers with
+# tls_client_ca_file, so a node whose bundle lacks the CA that signed its
+# peer's certificate refuses that peer -- which presents as a network fault
+# and gets diagnosed as one. There is exactly one safe order:
 #
 #   1. TRUST  every node's bundle gains the PKI CA, keeping the bootstrap
 #             CA. Nothing swaps yet. After this, every node trusts both.
 #   2. SWAP   one node at a time moves onto a PKI certificate. Its peers
-#             already trust the new CA (step 1), and it still trusts them
-#             because it kept the old one.
+#             already trust the new CA, and it still trusts them because it
+#             kept the old one. Standbys first, the active node last.
 #   3. PRUNE  once every node is on PKI, the bootstrap CA comes out.
 #
 # Running step 3 while any node still presents a bootstrap certificate
-# partitions the cluster. This script refuses to, and checks rather than
-# assumes — see the guard in phase_prune.
+# partitions the cluster. This script refuses to, checking on the wire
+# rather than on disk. Every phase gates on the node coming back healthy
+# AND the cluster still having every voter; a run that fails stops where it
+# is and says which nodes it did not touch.
 #
-# THE SANS COME FROM THE NODE, NOT FROM THIS SCRIPT
+# Start with --dry-run: it prints the plan, names the active node, asks the
+# role whether it will sign what each node currently serves, and changes
+# nothing.
 #
-# Each node's new certificate carries the names its current one carries.
-# This script does not decide them, because it cannot: the profiles
-# disagree about which names matter and both are right.
+# DELIBERATE BEHAVIOURS
 #
-#   The local profile joins by `leader_api_addr = https://vault-0:8200`,
-#   so a peer verifies the container name and DNS:vault-0 is load-bearing.
+# Each of these is here because the obvious alternative has failed in
+# practice. docs/security.md#doing-the-migration is the long form.
 #
-#   The cloud profiles set `leader_tls_servername =
-#   <cluster>.vault.internal`, so that is the name every follower verifies
-#   the leader by -- and the instance id nothing verifies at all.
+#   The new certificate carries the SANs the old one carries, because this
+#   script cannot choose them: the local profile's peers verify the
+#   container name, the cloud profiles' verify <cluster>.vault.internal,
+#   and both are right. Narrowing is --drop-san; widening is the role's own
+#   --extra-domains at bootstrap time. Neither happens by accident.
 #
-# It used to ask for `--alt-names <node>,localhost --ip-sans 127.0.0.1`,
-# which is wrong twice over. The bare node name is refused by the role
-# bootstrap-pki.sh creates (allowed_domains is vault.internal,localhost --
-# neither `vault-0` nor `i-0abc` is under it), and the list leaves out the
-# cluster servername and the node's own address. The second is the
-# dangerous one: a certificate swap does not disturb established Raft
-# connections, so a cluster that has lost the name its peers verify by
-# keeps working until something restarts.
+#   Every node's carried set is test-issued against the role before
+#   anything is installed, then revoked. A name the role will not sign
+#   stops the run with that name in the message, rather than at the first
+#   swap with the cluster half migrated.
 #
-# So: carry over. Narrowing the set is `--drop-san`, widening it is the
-# role's own `--extra-domains` at bootstrap time, and neither happens by
-# accident.
+#   The driver trusts both CAs for its own checks, because during phase 2
+#   some peers present one and some the other. Checking with the bundle it
+#   was handed reported a node serving the new certificate perfectly as a
+#   node that had not come back. It builds a combined bundle for the run;
+#   nothing on disk changes.
 #
-# Before anything is installed, every node's carried set is test-issued
-# against the role and thrown away. A name the role will not sign stops
-# the run with that name in the message, rather than at the first swap
-# with the cluster half migrated.
+#   --node-exec runs the per-node work ON the node, for the profiles where
+#   each node reads its certificate off its own filesystem -- both cloud
+#   profiles. That invocation passes FEWER flags, not more, because the
+#   node's own defaults are the right ones. Without it this script issued
+#   three certificates into the operator's own /etc/vault.d/tls, reloaded
+#   nothing, and reported success three times.
 #
-# ORDERING WITHIN THE SWAP
-#
-# Standbys first, the active node last. A certificate swap does not cost
-# leadership (Vault reloads on SIGHUP without restarting), so this is not
-# about avoiding an election. It is about what is still true if the run
-# fails halfway: the leader is the node you least want in an unknown
-# state, so it is the one touched last, when the procedure has already
-# worked twice.
-#
-# TWO MODES, BECAUSE CERTIFICATES LIVE IN ONE OF TWO PLACES
-#
-# Shared directory (the default). Every node's certificate sits in one
-# directory this script can write, and they differ by --cert-name. That is
-# the local Docker profile: three containers bind-mounting docker/dev/tls.
-#
-# Per node (--node-exec). Every node reads /etc/vault.d/tls/vault.crt off
-# its own filesystem and there is no shared directory at all. That is both
-# cloud profiles, and until --node-exec existed this script could not
-# drive them -- it would have issued three certificates into the
-# operator's own /etc/vault.d/tls, reloaded nothing, and reported success
-# three times.
-#
-# In per-node mode the work runs ON the node, through the script
-# ansible/roles/vault_pki installs at /usr/local/bin/vault-issue-node-cert.sh
-# with the credentials it writes to /etc/vault.d/pki.env. So the per-node
-# invocation passes FEWER flags, not more: the node's own defaults --
-# /etc/vault.d/tls, vault.crt, `systemctl reload vault`, VAULT_ADDR from
-# pki.env -- are the right ones, and supplying the operator's versions of
-# them would be supplying the wrong ones.
-#
-# --node-exec is a command with {node} substituted, to which the issue
-# script and its arguments are appended. Its contract is: run this on that
-# node, as root, with /etc/vault.d/pki.env in the environment.
-# scripts/pki-node-exec.sh does exactly that over the Ansible inventory
-# this repository already uses to reach nodes, and is what the docs tell
-# you to pass.
-#
-# WHAT THIS STILL DOES FROM WHERE YOU RUN IT
-#
-# Every health check, the voter count, and the "is this node serving a PKI
-# certificate yet" test. Those are the gates, and a gate that runs on the
-# node it is gating is not a gate. So --nodes must be addresses this
-# machine can reach: on a cloud profile that is one forwarded port per
-# node, and the script refuses to start if any of them does not answer.
+#   The gates stay on this machine: every health check, the voter count and
+#   the "is it serving PKI yet" test, since a gate that runs on the node it
+#   is gating is not a gate. So --nodes must be addresses this machine can
+#   reach -- on a cloud profile one forwarded port per node, and the script
+#   refuses to start if one of them does not answer.
 #
 # Options:
 #   --nodes <list>       Required. name=host:port pairs, comma separated.
