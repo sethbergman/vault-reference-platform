@@ -1111,9 +1111,13 @@ fi
 
 printf '\n=== Pre-flight: plan ===\n'
 
+# Pinned to a directory this suite makes. It used to run against the real
+# terraform/aws, which has no .terraform in a fresh checkout and does have
+# one on any machine where somebody has run init -- so the case answered a
+# question about the checkout rather than about the script.
 reset_scenario
 export FAKE_TF_PROVIDERS_RC=1
-run_preflight --cloud aws
+run_preflight --cloud aws --dir "$WITH_KEY"
 if grep -q "not initialised" <<< "$OUT" && ! logged "plan"; then
     ok "an uninitialised directory is reported, and plan is not attempted"
 else
@@ -1132,6 +1136,34 @@ else
     bad "and it says the plan is still unchecked, and to run again after init" \
         "the first real run skipped the plan and said only 'run init'"
 fi
+
+# Initialised and still refusing is a different finding, and the two ask
+# for opposite things. `terraform providers` resolves the backend, so an
+# expired token fails it -- and this was reported as "not initialised",
+# naming the one thing that was fine. Running init does not fix a token.
+reset_scenario
+export FAKE_TF_PROVIDERS_RC=1
+export FAKE_TF_PROVIDERS_ERR="Error: error configuring S3 Backend: no valid credential sources for S3 Backend found."
+mkdir -p "${WITH_KEY}/.terraform"
+run_preflight --cloud aws --dir "$WITH_KEY"
+if grep -q "is initialised" <<< "$OUT" && ! grep -q "not initialised" <<< "$OUT"; then
+    ok "an initialised directory that still refuses is not blamed on init"
+else
+    bad "an initialised directory that still refuses is not blamed on init" \
+        "the message sent a whole session to run init, which was not the problem"
+fi
+if grep -q "no valid credential sources" <<< "$OUT"; then
+    ok "and it quotes what terraform actually said"
+else
+    bad "and it quotes what terraform actually said" \
+        "the exit status alone cannot say which failure this is"
+fi
+if grep -q "expired credentials arrive here too" <<< "$OUT"; then
+    ok "naming the cause that has actually caused it"
+else
+    bad "naming the cause that has actually caused it" "$OUT"
+fi
+rmdir "${WITH_KEY}/.terraform"
 
 reset_scenario
 export FAKE_TF_PLAN_RC=1

@@ -66,7 +66,7 @@ log()  { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 die()  { log "ERROR: $*"; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 
@@ -86,6 +86,14 @@ curl_opts=(-fsSL)
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
+# Before the positional, not after it: the URL is $1, so `--help` was taken
+# as the URL to download and the loop below never saw it. The run then died
+# about --nodes being required, which is true and answers a question nobody
+# asked.
+case "${1:-}" in
+    -h|--help) usage ;;
+esac
+
 [[ $# -lt 1 ]] && usage
 
 DOWNLOAD_URL="$1"

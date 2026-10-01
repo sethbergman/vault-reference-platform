@@ -61,6 +61,10 @@ reset_scenario() {
     export FAKE_NODE_SANS=""
     export FAKE_DEFAULT_SANS="DNS:localhost|IP:127.0.0.1"
     export FAKE_ROLE_REFUSES=""
+    # The serial real Vault returns from an issue, and whether revoking it
+    # works. An empty serial is a response the driver cannot undo.
+    export FAKE_ISSUE_SERIAL="3f:9c:12:aa:7b:04:e1:55"
+    export FAKE_REVOKE_RC=0
     export FAKE_ACTIVE_ADDR="127.0.0.1:8200"
     export FAKE_DEFAULT_HEALTH=429
     export VAULT_ADDR=https://127.0.0.1:8200
@@ -82,15 +86,23 @@ run_migrate() {
     OUT="$(FAKE_LOG="$logfile" ISSUE_LOG="${WORK}/issue-calls.log" \
         PATH="${FAKE_BIN}:${WORK}/bin:${PATH}" \
         "$MIGRATE" --nodes "$NODES" --tls-dir "${WORK}/tls"         --issue-script "$ISSUE_STUB" --health-retries 2 "$@" 2>&1)" || RC=$?
-    # shellcheck disable=SC2034  # kept for debugging a failing run
     LOG="$(cat "$logfile")"
     ISSUE_LOG="$(cat "${WORK}/issue-calls.log" 2>/dev/null || true)"
 }
 
 assert_rc()   { if [[ "$RC" == "$2" ]]; then ok "$1"; else bad "$1" "expected ${2}, got ${RC}: ${OUT}"; fi; }
 assert_says() { if [[ "$OUT" == *"$2"* ]]; then ok "$1"; else bad "$1" "output lacked: ${2}"; fi; }
+assert_lacks() { if [[ "$OUT" != *"$2"* ]]; then ok "$1"; else bad "$1" "output contained: ${2}"; fi; }
 issue_has()   { if [[ "$ISSUE_LOG" == *"$2"* ]]; then ok "$1"; else bad "$1" "no issue call matching: ${2}"; fi; }
 issue_lacks() { if [[ "$ISSUE_LOG" != *"$2"* ]]; then ok "$1"; else bad "$1" "unexpected issue call: ${2}"; fi; }
+log_has()     { if [[ "$LOG" == *"$2"* ]]; then ok "$1"; else bad "$1" "no vault call matching: ${2}"; fi; }
+# Pinned by count, not by presence: "a revoke happened" passes against a
+# driver that revokes one of three test certificates and leaks the rest.
+log_count()   {
+    local n
+    n="$(grep -cF -- "$3" <<< "$LOG" || true)"
+    if [[ "$n" == "$2" ]]; then ok "$1"; else bad "$1" "expected ${2} vault calls matching '${3}', got ${n}"; fi
+}
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -447,15 +459,43 @@ NODE_EXEC_SCRIPT="${REPO_ROOT}/scripts/pki-node-exec.sh"
 INV="${WORK}/inv.ini"
 printf '[vault_nodes]\nvault-0\nvault-1\n' > "$INV"
 
-# The shims stand in for ansible: this suite's requirements are bash, jq,
-# python3 and openssl, and CI's runner for it has no ansible at all. What
-# is under test is the wrapper's own logic -- which nodes it accepts, and
-# how it quotes -- not ansible.
+# The shim stands in for ansible: this suite's requirements are bash, jq,
+# python3 and openssl, and CI's runner for it has no ansible at all. It runs
+# the -a payload in a shell, which is what `-m shell` does on the node, so
+# the wrapper's own logic -- which nodes it accepts, how it quotes, and the
+# prerequisite checks that now live inside that payload -- is exercised
+# rather than agreed with.
 export FAKE_INVENTORY_HOSTS="vault-0 vault-1"
 
+# What a prepared node has. The shim runs the remote script here, so these
+# are what its `test -r` and `test -x` actually answer about.
+NODE_ENV="${WORK}/pki.env"
+printf 'VAULT_ADDR=https://127.0.0.1:8200\nVAULT_CACERT=/etc/vault.d/tls/ca.crt\n' > "$NODE_ENV"
+# Only has to exist, be executable, and say it ran. The driver's own stub
+# reads ISSUE_LOG, which the driver exports and the wrapper has no business
+# knowing about.
+NODE_CMD="${WORK}/bin/remote-cmd.sh"
+cat > "$NODE_CMD" <<'RSTUB'
+#!/usr/bin/env sh
+echo "remote-cmd ran: $*"
+RSTUB
+chmod +x "$NODE_CMD"
+
+WLOG=""
 wrapper() {
     RC=0
-    OUT="$(PATH="${FAKE_BIN}:${WORK}/bin:${PATH}"         "$NODE_EXEC_SCRIPT" --inventory "$INV" "$@" 2>&1)" || RC=$?
+    : > "${WORK}/wrapper.log"
+    OUT="$(FAKE_LOG="${WORK}/wrapper.log" PATH="${FAKE_BIN}:${WORK}/bin:${PATH}" "$NODE_EXEC_SCRIPT" --inventory "$INV" "$@" 2>&1)" || RC=$?
+    WLOG="$(cat "${WORK}/wrapper.log")"
+}
+# Round trips, which is the whole point of the shape below: each ansible
+# invocation is an SSH connection and an inventory resolution, and against
+# aws_ec2 that is an EC2 API call. The driver calls this eight times for a
+# three-node cluster.
+trips() {
+    local n
+    n="$(grep -cF -- "ansible [" <<< "$WLOG" || true)"
+    if [[ "$n" == "$2" ]]; then ok "$1"; else bad "$1" "expected ${2} ansible invocations, got ${n}"; fi
 }
 
 wrapper --node vault-0 --dry-run -- /usr/local/bin/vault-issue-node-cert.sh --ca-only
@@ -463,11 +503,7 @@ assert_rc   "a known node is accepted" 0
 assert_says "and the remote script sources the env file first" \
             "set -a; . /etc/vault.d/pki.env; set +a; exec"
 assert_says "before running the command"  "vault-issue-node-cert.sh --ca-only"
-
-wrapper --node vault-9 --dry-run -- /bin/true
-assert_rc   "a node the inventory does not know is refused" 1
-assert_says "and it names the cause that has actually caused it" \
-            "empty inventory and exits 0"
+trips       "a dry run connects to nothing" 0
 
 wrapper --node vault-0 --dry-run -- /bin/echo "two words"
 assert_says "an argument containing a space stays one argument" \
@@ -482,6 +518,81 @@ assert_rc   "no --node is refused" 1
 
 wrapper --node vault-0 --env-file /etc/vault.d/other.env --dry-run -- /bin/true
 assert_says "--env-file changes what is sourced" ". /etc/vault.d/other.env"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The wrapper spends one connection, not three ===\n'
+# ---------------------------------------------------------------------------
+# It used to run ansible-inventory to check the node exists, then ansible to
+# probe for the prerequisites, then ansible again to do the work. Most of a
+# seventeen-minute migration was ansible starting up to ask questions.
+wrapper --node vault-0 --env-file "$NODE_ENV" -- "$NODE_CMD" --ca-only
+assert_rc   "a prepared node runs the command" 0
+trips       "in a single ansible invocation" 1
+# The wrapper buffers ansible's stdout now, to scan it for markers, so the
+# node's output coming back stopped being something it gets for free.
+assert_says "and the node's own output reaches the operator" \
+            "remote-cmd ran: --ca-only"
+
+# The markers are the wrapper's own protocol with the remote script. Leaking
+# them would put them in front of the operator and into the driver's log.
+assert_lacks "and the protocol markers do not reach the operator" \
+             "__pki_node_exec__"
+
+# A node the inventory does not know. Real ansible warns, runs nowhere and
+# exits 0, so the only evidence is the absence of the marker -- which is a
+# stronger check than asking ansible-inventory, because it also catches a
+# host that resolves and still is not targeted.
+wrapper --node vault-9 --env-file "$NODE_ENV" -- "$NODE_CMD"
+assert_rc   "a command that ran nowhere is a failure" 1
+assert_says "and it names the cause that has actually caused it" \
+            "empty inventory and exits 0"
+
+# Unreachable is ansible's own failure. Diagnosing it as a missing SDK would
+# send the reader to the wrong half of the problem -- and both cases arrive
+# here as "no marker came back".
+export FAKE_ANSIBLE_UNREACHABLE=true
+wrapper --node vault-0 --env-file "$NODE_ENV" -- "$NODE_CMD"
+assert_rc    "a host ansible cannot reach fails" 4
+assert_lacks "and is not diagnosed as an empty inventory" \
+             "empty inventory and exits 0"
+assert_says  "it is reported as what it is" "UNREACHABLE"
+unset FAKE_ANSIBLE_UNREACHABLE
+
+# ---------------------------------------------------------------------------
+printf '\n=== And still refuses a node that was never prepared ===\n'
+# ---------------------------------------------------------------------------
+# ansible/roles/vault_pki installs the issue script and writes the env file;
+# it is off by default, and the documented enable step for a cloud cluster
+# turns on snapshots and audit, not PKI. The raw failure is a remote shell
+# reporting a missing file from inside a phase that is otherwise going fine.
+wrapper --node vault-0 --env-file "${WORK}/nonexistent.env" -- "$NODE_CMD"
+assert_rc   "a node with no env file is refused" 1
+assert_says "and the refusal names the file" "nonexistent.env"
+assert_says "and the role that puts it there" "vault_pki_enabled=true"
+trips       "still in one connection" 1
+
+wrapper --node vault-0 --env-file "$NODE_ENV" -- "${WORK}/not-installed.sh"
+assert_rc   "a node without the issue script is refused" 1
+assert_says "and the refusal names the script, not the env file" \
+            "no executable ${WORK}/not-installed.sh"
+assert_says "and the role that puts it there" "vault_pki_enabled=true"
+
+# There and not executable is a separate case: the role installs it with a
+# mode, and `test -f` would hand this to a remote shell to report as
+# "permission denied" from inside a phase that is otherwise going fine.
+NOT_EXEC="${WORK}/bin/not-executable.sh"
+printf '#!/usr/bin/env sh\nexit 0\n' > "$NOT_EXEC"
+chmod 644 "$NOT_EXEC"
+wrapper --node vault-0 --env-file "$NODE_ENV" -- "$NOT_EXEC"
+assert_rc   "a script that is present but not executable is refused too" 1
+assert_says "and the refusal says which half is wrong" "no executable ${NOT_EXEC}"
+
+# A command that fails on the node is not a command that ran nowhere. Both
+# arrive as a non-zero ansible status; only one of them has a marker.
+wrapper --node vault-0 --env-file "$NODE_ENV" -- /bin/false
+assert_rc    "a command that fails on the node propagates its failure" 2
+assert_lacks "rather than being diagnosed as an empty inventory" \
+             "empty inventory and exits 0"
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +721,63 @@ printf 'this is not a certificate\n' > "$BAD_CA"
 VAULT_CACERT="$BAD_CA" run_migrate --dry-run
 assert_rc   "a trust bundle that does not parse stops the run" 1
 assert_says "naming the file rather than blaming the cluster" "does not parse as PEM"
+
+# ---------------------------------------------------------------------------
+printf '\n=== The test issue does not leave certificates behind ===\n'
+# ---------------------------------------------------------------------------
+# Vault has no dry-run issue, so asking the role whether it will sign what
+# a node serves mints a real certificate. The role bootstrap-pki.sh creates
+# sets no no_store, so one that is not revoked stays in storage for its
+# whole TTL -- three per run of a check that wanted nothing but the answer,
+# accumulating over every retry of a migration that did not work first time.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc  "the pre-flight test-issue runs on a dry run" 0
+log_count  "one test certificate is issued per node" 3 "pki/issue/vault-node"
+log_count  "and each one is revoked again" 3 "write pki/revoke serial_number="
+log_has    "by the serial the issue response carried" \
+           "write pki/revoke serial_number=3f:9c:12:aa:7b:04:e1:55"
+
+# A node whose SANs the role refuses was never issued anything, so there is
+# no serial to revoke. Revoking one anyway would fail, and the failure
+# would read as the cleanup being broken rather than as nothing to clean.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_NODE_SANS="127.0.0.1:8200=DNS:i-0abc|DNS:localhost|IP:127.0.0.1"
+export FAKE_ROLE_REFUSES="i-0abc"
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc    "a refused SAN still stops the run" 1
+log_count    "and only the certificates that were issued are revoked" 2 \
+             "write pki/revoke serial_number="
+# A refusal means nothing was issued, so nothing is in storage. Reporting
+# otherwise sends the operator looking for a certificate that is not there.
+assert_lacks "and it is not reported as leaving a certificate behind" \
+             "carried no serial"
+
+# Cleanup that fails is a warning, not an abort: the check it belongs to
+# has already answered, and the answer is the thing the operator came for.
+# Silence would be the wrong half to pick -- a certificate is in storage.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_REVOKE_RC=2
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "a revoke that fails does not stop the run" 0
+assert_says "but it says which certificate was left behind" \
+            "could not revoke test certificate 3f:9c:12:aa:7b:04:e1:55"
+
+# And a response with no serial in it at all, which is the case where the
+# driver cannot clean up even in principle. It has to say so: this is the
+# only way the operator learns there is something in storage to find.
+reset_scenario
+export FAKE_DEFAULT_ISSUER=bootstrap
+export FAKE_ISSUE_SERIAL=""
+run_migrate --node-exec "$NODE_EXEC_STUB" --dry-run
+assert_rc   "an issue response with no serial does not stop the run" 0
+assert_says "but it says the certificate could not be revoked" \
+            "carried no serial"
+log_count   "and nothing is revoked by an empty serial" 0 \
+            "write pki/revoke serial_number="
 
 # ---------------------------------------------------------------------------
 printf '\n=== Results ===\n'

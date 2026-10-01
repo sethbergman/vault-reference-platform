@@ -243,9 +243,17 @@ All of `scripts/*.sh` follow one shape. Match it when adding a script:
 - A header comment block giving usage, examples, what it does step by
   step, requirements — and, where it matters, a "deliberate behaviours"
   section naming the failure each choice prevents.
-- `usage()` prints the header back by `grep '^#' "$0" | sed ...`, so the
-  header *is* the help text. Keep them in sync by keeping them the same
-  thing.
+- `usage()` prints the header back with
+  `sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"`, so the header
+  *is* the help text. Keep them in sync by keeping them the same thing.
+  The `/^#/!q` is load-bearing: it quits at the first line that is not a
+  comment, blank lines included.
+  This was `grep '^#' "$0"` for a long time, which also matched every
+  section divider and standalone comment in the body — 1284 lines of
+  internal commentary across the 34 scripts' `--help` output, and the
+  reason a header nobody could read looked like a header nobody had
+  written. `tests/lint` now runs every script's `--help` and compares it
+  to the header.
 - `log()` / `die()` helpers; `log` writes to stderr wherever the script
   has a real stdout value (a token, a secret_id) to emit.
 - Long-form `--flag value` argument parsing in a `while`/`case` loop,

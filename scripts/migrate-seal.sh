@@ -98,15 +98,13 @@ CONFIG="/vault/config/vault.hcl"
 SKIP_SNAPSHOT=false
 ACKNOWLEDGED=false
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 log()  { printf '[migrate-seal] %s\n' "$*" >&2; }
 warn() { printf '\033[33m[migrate-seal] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m[migrate-seal] ERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 2
 }
 
@@ -122,6 +120,12 @@ while [[ $# -gt 0 ]]; do
         *) die "Unknown argument: $1" ;;
     esac
 done
+
+# Below the argument loop, not above it: usage() ends in `exit 1`, and an
+# EXIT trap armed above it runs on that exit -- so `--help` made a
+# directory and removed it again.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 [[ "$TARGET" == "shamir" || "$TARGET" == "transit" ]] \
     || die "--to must be shamir or transit"

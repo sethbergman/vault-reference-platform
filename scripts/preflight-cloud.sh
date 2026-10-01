@@ -102,7 +102,7 @@ bad()  { FAIL=$((FAIL + 1)); red   "  FAIL  $1"; [[ -n "${2:-}" ]] && printf '  
 die() { red "ERROR: $*"; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 1
 }
 
@@ -702,12 +702,24 @@ info ""
 info "=== Does it plan? ==="
 # ---------------------------------------------------------------------------
 if command -v terraform >/dev/null 2>&1; then
-    if ! tf providers >/dev/null 2>&1; then
-        # A warning, but the one that most needs reading: everything above
-        # passing says nothing about whether the profile plans, and a
-        # reader skimming for FAIL will take this run as the whole check.
-        warn "terraform is not initialised in ${TF_DIR}, so whether it plans was not checked" \
-            "initialise it (after the bootstrap module, for the backend), then run this pre-flight again"
+    # A warning either way, but the one that most needs reading: everything
+    # above passing says nothing about whether the profile plans, and a
+    # reader skimming for FAIL will take this run as the whole check.
+    #
+    # Which of the two it is matters, because they ask for opposite things.
+    # `terraform providers` resolves the backend, so an expired token fails
+    # it -- and this used to report that as "terraform is not initialised",
+    # naming the one thing that was fine and sending a whole session to run
+    # init. So: ask whether it is initialised before saying it is not, and
+    # quote what terraform said rather than guessing from the exit status.
+    if ! PROVIDERS_ERR="$(tf providers 2>&1)"; then
+        if [[ ! -d "${TF_DIR}/.terraform" ]]; then
+            warn "terraform is not initialised in ${TF_DIR}, so whether it plans was not checked" \
+                "initialise it (after the bootstrap module, for the backend), then run this pre-flight again"
+        else
+            warn "terraform is initialised in ${TF_DIR} but would not answer, so whether it plans was not checked" \
+                "it resolves the backend, so expired credentials arrive here too — terraform said: $(head -2 <<< "$PROVIDERS_ERR" | tr '\n' ' ')"
+        fi
     else
         info "        running terraform plan (no changes are made)..."
         if tf plan -no-color -input=false >/dev/null 2>&1; then

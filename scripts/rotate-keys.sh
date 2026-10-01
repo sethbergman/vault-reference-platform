@@ -131,7 +131,7 @@ warn() { printf '\033[33m[rotate-keys] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m[rotate-keys] ERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-    grep '^#' "$0" | sed -e '1d' -e 's/^# \{0,1\}//'
+    sed -n '2,${ /^#/!q; s/^# \{0,1\}//p; }' "$0"
     exit 2
 }
 
