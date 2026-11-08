@@ -313,8 +313,12 @@ path "${MOUNT}/creds/${role}" {
 }
 
 # So a consumer can hand back a credential it has finished with rather
-# than leaving it to expire.
-path "sys/leases/revoke" {
+# than leaving it to expire. Scoped to this role's leases: the CLI sends
+# the lease id in the path (sys/leases/revoke/<lease id>), so a bare
+# "sys/leases/revoke" grant refused every vault lease revoke with a 403,
+# while still letting the body form revoke ANY lease in Vault whose id the
+# consumer knew. This grants exactly the first and none of the second.
+path "sys/leases/revoke/${MOUNT}/creds/${role}/*" {
   capabilities = ["update"]
 }
 
