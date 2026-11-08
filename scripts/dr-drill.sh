@@ -151,7 +151,7 @@ export VAULT_TRANSIT_TOKEN="$TRANSIT_TOKEN"
 compose up -d "$NODE" >&2 || die "Failed to start a replacement ${NODE}"
 
 for i in $(seq 1 30); do
-    if curl --cacert "${TLS_DIR}/ca.crt" -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/seal-status"; then
+    if curl --cacert "${TLS_DIR}/ca.crt" -fsS -o /dev/null "https://127.0.0.1:8200/v1/sys/seal-status" 2>/dev/null; then
         log "Replacement node is responding."
         break
     fi
