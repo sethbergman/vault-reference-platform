@@ -907,6 +907,42 @@ fi
 
 # ---------------------------------------------------------------------------
 info ""
+info "=== A consumer can hand back its own credential ==="
+# ---------------------------------------------------------------------------
+# The revocation above runs as root, which proves revocation works but not
+# that the consumer policy allows it. That gap hid a policy whose comment
+# promised consumers could revoke while every `vault lease revoke` they
+# sent was refused with a 403. These run as the consumer.
+APP_TOKEN="$(vault token create -policy=appdata-readonly -field=token 2>/dev/null || true)"
+CREDS_C="$(VAULT_TOKEN="$APP_TOKEN" vault read -format=json database/creds/appdata-readonly 2>/dev/null || true)"
+USER_C="$(jq -r '.data.username // empty' <<< "${CREDS_C:-{\}}" 2>/dev/null || true)"
+LEASE_C="$(jq -r '.lease_id // empty' <<< "${CREDS_C:-{\}}" 2>/dev/null || true)"
+
+if [[ -n "$LEASE_C" ]] && VAULT_TOKEN="$APP_TOKEN" vault lease revoke "$LEASE_C" >/dev/null 2>&1; then
+    ok "a readonly consumer revokes its own lease"
+else
+    bad "a readonly consumer revokes its own lease" "lease id was '${LEASE_C}'"
+fi
+
+sleep 2
+ROLE_C_LEFT="$(psql_as "$USER_B" "$PASS_B" "SELECT count(*) FROM pg_roles WHERE rolname = '${USER_C}';")"
+if [[ -n "$USER_C" && "$ROLE_C_LEFT" == "0" ]]; then
+    ok "and its role is dropped from Postgres"
+else
+    bad "and its role is dropped from Postgres" "pg_roles count=${ROLE_C_LEFT} for '${USER_C}'"
+fi
+
+# Scoped, not merely allowed: the readonly consumer must not be able to end
+# someone else's credential just because it can see a lease id.
+LEASE_RW="$(jq -r '.lease_id // empty' <<< "${CREDS_RW:-{\}}" 2>/dev/null || true)"
+if [[ -n "$LEASE_RW" ]] && ! VAULT_TOKEN="$APP_TOKEN" vault lease revoke "$LEASE_RW" >/dev/null 2>&1; then
+    ok "but cannot revoke a readwrite lease"
+else
+    bad "but cannot revoke a readwrite lease" "lease id was '${LEASE_RW}'"
+fi
+
+# ---------------------------------------------------------------------------
+info ""
 info "=== Root rotation ==="
 # ---------------------------------------------------------------------------
 # After bootstrap, nobody knows the password to the account Vault connects

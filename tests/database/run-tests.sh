@@ -219,6 +219,22 @@ else
     bad "and no access to the other role's credentials"
 fi
 
+# Handing a credential back must work the way the CLI does it, which puts
+# the lease id in the path. A bare sys/leases/revoke grant matches only the
+# body form: every `vault lease revoke` was refused, and the body form it
+# did allow would revoke any lease in Vault, not just this role's.
+if [[ "$RO_POLICY" == *'path "sys/leases/revoke/database/creds/appdata-readonly/*"'* ]]; then
+    ok "it can revoke its own role's leases"
+else
+    bad "it can revoke its own role's leases" "no sys/leases/revoke/database/creds/appdata-readonly/* stanza"
+fi
+
+if [[ "$RO_POLICY" != *'path "sys/leases/revoke" '* ]]; then
+    ok "and has no unscoped revoke grant"
+else
+    bad "and has no unscoped revoke grant" "the policy grants bare sys/leases/revoke"
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n=== Root rotation ===\n'
 # ---------------------------------------------------------------------------
