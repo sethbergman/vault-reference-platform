@@ -291,10 +291,9 @@ plugin needs `boto3` in the same Python that runs Ansible.
 
 ### What is still unproven
 
-- Any identity narrower than an administrator, on either profile.
-- Any identity narrower than an administrator — which is now the whole
-  of what item 8 leaves open, since the migration itself was observed on
-  2026-09-29.
+- Any identity narrower than an administrator, on either profile. That
+  is now the whole of what item 8 leaves open, since the migration itself
+  was observed on 2026-09-29.
 - Whether `vault operator raft autopilot state -format=json` arrives bare
   or wrapped in `.data`: this session read that command in text form
   only. The script accepts both and says so; settle it next time.
@@ -491,10 +490,8 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 - Nothing on the checklist. Items 1 through 8 were all observed by
   2026-09-29; 9 and 10 on 2026-09-24. What is left is not a checklist
-  item: no identity narrower than an administrator has driven any of it.
-- Any identity narrower than an administrator, on either profile.
-- Whether any identity narrower than an administrator can drive any of
-  this. Both profiles have only ever been applied and operated as one.
+  item: no identity narrower than an administrator has driven any of it,
+  on either profile. Both have only ever been applied and operated as one.
 - VNet flow logs. Azure blocked creating NSG flow logs on 2025-06-30 and
   `azurerm` 3.x cannot create the replacement, so `enable_flow_logs`
   defaults to false. That is a real reduction in posture, recorded as
