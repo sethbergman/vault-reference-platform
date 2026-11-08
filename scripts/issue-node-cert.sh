@@ -191,7 +191,7 @@ fi
 umask 077
 STAGE="$(mktemp -d)"
 
-# shellcheck disable=SC2317  # invoked through the trap below
+# shellcheck disable=SC2317,SC2329  # invoked through the trap below
 cleanup() {
     local rc=$?
     rm -rf "$STAGE"
