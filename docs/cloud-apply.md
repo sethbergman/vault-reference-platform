@@ -1,15 +1,17 @@
 # The cloud apply
 
-**`terraform/aws` has been applied to a real account once, on
-2026-09-17. `terraform/azure` never has.**
+**`terraform/aws` has been applied to a real account four times, on
+2026-09-17, 09-24 and twice on 09-29. `terraform/azure` has been applied
+twice, on 2026-09-28 and 09-29.**
 
-That session is recorded under [what the first apply
-settled](#what-the-first-apply-settled): six of the ten items below were
-observed, one was observed failing, three were not reached, and the ten
-defects found on the way are in the [roadmap](roadmap.md). The document
-still reads as instructions rather than a report, because the next real
-apply is Azure's, and because AWS's remaining items need a cluster
-standing again.
+Between them those sessions observed every item on the [verification
+checklist](#the-verification-checklist), on both clouds, and found
+roughly thirty defects on the way: ten in the first AWS apply, nineteen
+in the first Azure one. Each session is recorded below, starting with
+[what the first apply settled](#what-the-first-apply-settled), and the
+defects are in the [roadmap](roadmap.md). What none of them settled is
+the same thing on both clouds: no identity narrower than an
+administrator has driven any of it.
 
 Everything outside the cloud profiles is tested — 80 assertions against a
 real three-node cluster, promtool unit tests on the alert rules,
@@ -37,12 +39,12 @@ runtime, which is exactly what an emulator does not have. Azure has no
 equivalent run at all, for the reasons
 [below](#why-azure-has-no-emulated-apply).
 
-The first person to apply the Azure profile is spending money to find out
-what is wrong. On AWS that session has happened, and it was: ten defects
-between an apply and a working cluster, five of them found before Vault
-started at all. This is about making that session produce the maximum
-amount of evidence, rather than discovering a missing SSH key twenty
-minutes in and starting again tomorrow.
+That is why the real applies happened, and why the document still reads
+as instructions rather than a report: the next apply should produce the
+maximum amount of evidence, rather than discovering a missing SSH key
+twenty minutes in and starting again tomorrow. The first one on each
+cloud found its defects the expensive way; the sections below are so the
+next one does not have to.
 
 Three parts:
 
