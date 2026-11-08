@@ -73,6 +73,11 @@
 # again after `init`, before the apply.
 #
 # Requirements: terraform, and the CLI for the chosen cloud.
+#
+# On AWS it also asks IAM whether the calling identity is allowed every
+# action in examples/policies/aws-terraform-apply.json, which needs
+# iam:SimulatePrincipalPolicy. Without that permission the section warns
+# rather than failing: being unable to ask is not being unable to apply.
 
 set -euo pipefail
 
@@ -249,6 +254,94 @@ elif [[ "$CLOUD" == "azure" ]] && command -v az >/dev/null 2>&1; then
     else
         bad "the az bastion extension is missing" \
             "run: az extension add --name bastion — ansible/inventory/azure_rm.yml reaches every node through 'az network bastion tunnel', which lives in it"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== Can this identity apply the profile? ==="
+# ---------------------------------------------------------------------------
+# Six real applies, every one of them as an administrator, so nobody had ever
+# asked. IAM will answer without performing anything: simulate-principal-policy
+# evaluates the caller's own policies against a list of actions, and the list
+# is examples/policies/aws-terraform-apply.json -- the same file an operator
+# attaches and the same file tests/least-privilege-apply drives an emulated
+# apply with. One artifact, three consumers, so none can drift from another.
+#
+# AWS only. Azure expresses this as role assignments over scopes rather than
+# as a list of actions, and has no equivalent single call.
+if [[ "$CLOUD" == "aws" ]] && command -v aws >/dev/null 2>&1; then
+    POLICY_FILE="${REPO_ROOT}/examples/policies/aws-terraform-apply.json"
+    if [[ ! -r "$POLICY_FILE" ]]; then
+        warn "no action list at ${POLICY_FILE}, so what this identity can do was not checked" \
+            "that file is what an operator attaches; without it this section has nothing to ask about"
+    elif [[ -z "${ARN:-}" ]]; then
+        warn "no caller identity, so what this identity can do was not checked" \
+            "the credentials section above says why"
+    else
+        # The policy source has to be the role, not the session. An assumed
+        # role answers get-caller-identity as
+        # arn:aws:sts::123:assumed-role/Role/session-name, and
+        # simulate-principal-policy refuses that -- it wants the role itself.
+        # Getting this wrong produces "Invalid Entity Arn", which reads like a
+        # broken pre-flight rather than like an ARN that needs translating.
+        SOURCE_ARN="$ARN"
+        case "$ARN" in
+            arn:*:sts::*:assumed-role/*)
+                SOURCE_ARN="$(sed -e 's|:sts::|:iam::|' \
+                                  -e 's|:assumed-role/\([^/]*\)/.*|:role/\1|' <<< "$ARN")"
+                info "        simulating against ${SOURCE_ARN} (the role, not the session)"
+                ;;
+        esac
+
+        # No jq: this script runs with the cloud CLI and nothing else. The
+        # actions are the only quoted service:Action strings in the file, and
+        # tests/cloud-preflight pins this extraction against a real JSON parse
+        # so a reformat of that file cannot silently empty it.
+        mapfile -t WANT < <(grep -oE '"[a-z0-9-]+:[A-Za-z0-9*]+"' "$POLICY_FILE" \
+            | tr -d '"' | sort -u)
+
+        if [[ "${#WANT[@]}" -eq 0 ]]; then
+            warn "no actions could be read out of ${POLICY_FILE}" \
+                "it may have been reformatted; tests/cloud-preflight checks this extraction"
+        else
+            # Chunked because the request carries every action name and AWS
+            # limits its size. 40 keeps it well clear.
+            DENIED=""
+            SIM_FAILED=false
+            for ((i = 0; i < ${#WANT[@]}; i += 40)); do
+                CHUNK=("${WANT[@]:i:40}")
+                # Both fields, filtered here rather than in --query. A
+                # JMESPath comparison needs backticks around its string
+                # literal, which shellcheck reads as a shell expansion that
+                # will not expand: right about the syntax, wrong about the
+                # intent. Asking for the decision and filtering it is plainer.
+                SIM_OUT="$(aws iam simulate-principal-policy \
+                        --policy-source-arn "$SOURCE_ARN" \
+                        --action-names "${CHUNK[@]}" \
+                        --query 'EvaluationResults[].[EvalActionName,EvalDecision]' \
+                        --output text 2>&1)" || { SIM_FAILED=true; break; }
+                REFUSED="$(awk '$2 != "allowed" { print $1 }' <<< "$SIM_OUT")"
+                [[ -n "$REFUSED" ]] && DENIED="${DENIED} ${REFUSED}"
+            done
+
+            if [[ "$SIM_FAILED" == true ]]; then
+                # Being unable to ask is not being unable to apply, so this is
+                # a warning. It is also the likeliest outcome for a narrow
+                # identity, which is the irony worth printing: the permission
+                # to find out what you are missing is itself a permission.
+                warn "IAM would not simulate this identity, so what it can do was not checked" \
+                    "needs iam:SimulatePrincipalPolicy on ${SOURCE_ARN} — $(head -1 <<< "$SIM_OUT")"
+            elif [[ -n "${DENIED// /}" ]]; then
+                MISSING="$(wc -w <<< "$DENIED" | tr -d ' ')"
+                bad "this identity is missing ${MISSING} of the ${#WANT[@]} actions the profile needs" \
+                    "attach examples/policies/aws-terraform-apply.json — missing:$(tr '\t' ' ' <<< "$DENIED")"
+            else
+                ok "this identity is allowed all ${#WANT[@]} actions the profile asks for"
+                info "        IAM simulation covers identity policies, not SCPs or"
+                info "        permission boundaries, and says nothing about resource policies"
+            fi
+        fi
     fi
 fi
 

@@ -358,7 +358,7 @@ checks, upgrades, capacity planning, and common incident response steps.
 
 ## CI/CD
 
-GitHub Actions runs 41 checks on every PR. Eight are static:
+GitHub Actions runs 42 checks on every PR. Eight are static:
 `terraform fmt`/`validate`/`test`, `ansible-lint`, `shellcheck`,
 `markdownlint`, a shell-invariants check for patterns shellcheck has no
 opinion about, a docs-index check that fails when
@@ -414,16 +414,20 @@ ones worth knowing about:
   call carries the CA, and that a restore which silently did nothing is
   caught by a token minted after the snapshot still working.
 
-Four sit between the two. `tests/cloud-apply-emulated` runs a real
+Five sit between the two. `tests/cloud-apply-emulated` runs a real
 `terraform apply` of the AWS profile, through the real AWS provider,
 against an implementation of the AWS API — so the configuration is
 applied rather than planned, and destroyed again, without an account or a
 bill. An emulator is not AWS: nothing boots and no health check runs, so
 it is evidence the profile is applyable and not that the cluster works.
 It shortens no claim in [`docs/cloud-apply.md`](docs/cloud-apply.md); it
-removes the ones that never belonged there. The other three drive the
-state backend, the audit-anchor bucket, and a snapshot read back out of
-object storage the same way.
+removes the ones that never belonged there. `tests/least-privilege-apply`
+runs the same apply again as an IAM user holding only
+[`examples/policies/aws-terraform-apply.json`](examples/policies/aws-terraform-apply.json),
+and removes one action at a time to check that passing means something —
+see [`docs/least-privilege.md`](docs/least-privilege.md). The other three
+drive the state backend, the audit-anchor bucket, and a snapshot read back
+out of object storage the same way.
 
 The remaining twelve bring up the Docker Compose cluster and exercise it
 for real:
@@ -509,9 +513,15 @@ What stands between here and v1.0, in order:
    silent narrowings and features that had never worked — a `--force`
    flag that could not reconfigure anything, a migration that asked its
    own PKI role for a name the role refuses, a health check that trusted
-   one CA during the phase whose purpose is trusting two. Still never
-   reached: any identity narrower than an administrator. See
-   [`docs/cloud-apply.md`](docs/cloud-apply.md).
+   one CA during the phase whose purpose is trusting two.
+
+   Still never reached by a real apply: any identity narrower than an
+   administrator. What exists is a derived answer to what one would need —
+   137 actions read off the 565 requests an emulated apply and destroy
+   actually make, with a suite that applies the profile holding only those.
+   Sufficient against the emulator, unproven against AWS. See
+   [`docs/cloud-apply.md`](docs/cloud-apply.md) and
+   [`docs/least-privilege.md`](docs/least-privilege.md).
 2. **A real Azure apply.** Done twice, 2026-09-28 and 09-29, and
    **closed**.
    Settled: **auto-unseal through Key Vault**, **a replacement node
@@ -537,8 +547,10 @@ What stands between here and v1.0, in order:
    audit log, and `ProtectHome=true` stops the Vault CLI before it
    contacts Vault, because it opens `$HOME/.vault` ahead of any
    subcommand. Still never reached: the PKI migration on Azure, and any
-   identity narrower than an administrator. See
-   [`docs/cloud-apply.md`](docs/cloud-apply.md).
+   identity narrower than an administrator — Azure has no equivalent of the
+   AWS policy, because it expresses this as role assignments over scopes
+   rather than as a list of actions, and has no emulator here to derive
+   against. See [`docs/cloud-apply.md`](docs/cloud-apply.md).
 3. **Off-host audit shipping.** The audit trail now outlives the node,
    an edit to it is detectable, and the anchors that make it detectable
    now leave the machine. `scripts/ship-anchors.sh` writes each one to an

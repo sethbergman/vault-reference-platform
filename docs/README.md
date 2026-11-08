@@ -25,6 +25,7 @@ tested.
 | [Disaster Recovery](disaster-recovery.md) | Backups · Restore procedure · Loss-of-quorum scenario · The snapshot is only half of a backup · Reading the backup back out · Testing |
 | [Dynamic Secrets](dynamic-secrets.md) | Try it · What the bootstrap script sets up · Three details that matter more than they look · Choosing an engine · Root rotation · TLS to the database · What is tested · What this does not cover |
 | [Human authentication (OIDC)](human-authentication.md) | Trying it locally · Groups do not map themselves · Where the policies show up · Why /etc/hosts · Logging in through the web UI · Pointing at a real identity provider · CI coverage · Troubleshooting |
+| [Least privilege](least-privilege.md) | Use it · How the list was built, which is the reason to trust it · What keeps it true · What this does not claim · The order to do this in |
 | [Monitoring and Alerting](monitoring.md) | Why the alerts are about absence · The trap these rules exist to avoid · The alerts · Where the numbers come from · Two things had to be added before absence was observable · Routing · What is tested · What is not covered |
 | [Operations Runbooks](operations.md) | Health checks · Upgrades · Secret rotation · Capacity planning · Scheduled timers · Responding to alerts · Common incidents |
 | [Rate limiting](rate-limiting.md) | The endpoint replaces, it does not merge · The list is a list · A quota rate limits the endpoint that removes it · 429 does not mean what you think · Choosing a rate · What is tested · What is not |

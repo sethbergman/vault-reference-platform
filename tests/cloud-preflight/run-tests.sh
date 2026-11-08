@@ -128,6 +128,7 @@ reset_scenario() {
     # The pre-flight reads these now, so one leaking out of a case -- or
     # out of the shell of whoever runs the suite, who may well be mid-apply
     # -- would decide cases that never set it.
+    unset FAKE_AWS_SIMULATE_DENIED FAKE_AWS_SIMULATE_RC FAKE_AWS_ARN
     unset TF_VAR_ssh_key_name TF_VAR_az_count TF_VAR_node_count \
           TF_VAR_vm_size TF_VAR_os_disk_size_gb TF_VAR_location \
           TF_VAR_internal_lb TF_VAR_availability_zones
@@ -1107,6 +1108,98 @@ if ! logged "Microsoft.Compute/skus" && ! logged "list-usage"; then
     ok "the AWS profile asks Azure nothing"
 else
     bad "the AWS profile asks Azure nothing" "$(grep '^az' "$FAKE_LOG" || true)"
+fi
+
+printf '\n=== Pre-flight: can this identity apply the profile? ===\n'
+
+# Six real applies, every one as an administrator, so this question had never
+# been asked of anything. It is asked of IAM rather than of the apply, which
+# finds the answer one permission at a time over forty minutes.
+reset_scenario
+run_preflight --cloud aws
+if grep -q "allowed all" <<< "$OUT"; then
+    ok "an identity allowed everything is reported as such"
+else
+    bad "an identity allowed everything is reported as such" "$OUT"
+fi
+
+# The count has to come from the policy file rather than from a constant, or
+# the section goes stale the first time the policy gains an action.
+POLICY_ACTIONS="$(python3 - "${REPO_ROOT}/examples/policies/aws-terraform-apply.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+print(len({a for s in doc["Statement"] for a in s["Action"]}))
+PY
+)"
+if grep -q "allowed all ${POLICY_ACTIONS} actions" <<< "$OUT"; then
+    ok "and the number it checked is the number in the policy file (${POLICY_ACTIONS})"
+else
+    bad "and the number it checked is the number in the policy file (${POLICY_ACTIONS})" \
+        "the pre-flight reads the policy with grep rather than jq; a reformat would empty that list"
+fi
+
+# A missing permission is a FAIL, not a warning: the apply will stop on it.
+reset_scenario
+export FAKE_AWS_SIMULATE_DENIED="ec2:CreateVpc kms:CreateKey"
+run_preflight --cloud aws
+if grep -q "is missing 2 of the" <<< "$OUT" && [[ "$RC" != "0" ]]; then
+    ok "a missing permission fails the pre-flight"
+else
+    bad "a missing permission fails the pre-flight" "exit ${RC}"
+fi
+if grep -q "ec2:CreateVpc" <<< "$OUT" && grep -q "kms:CreateKey" <<< "$OUT"; then
+    ok "and it names which ones, rather than only counting them"
+else
+    bad "and it names which ones, rather than only counting them" "$OUT"
+fi
+if grep -q "aws-terraform-apply.json" <<< "$OUT"; then
+    ok "and names the file to attach"
+else
+    bad "and names the file to attach" "a count with no remedy is a riddle"
+fi
+
+# Being unable to ask is not being unable to apply. A narrow identity is the
+# likeliest one to lack iam:SimulatePrincipalPolicy, which is the irony worth
+# reporting rather than failing on.
+reset_scenario
+export FAKE_AWS_SIMULATE_RC=254
+run_preflight --cloud aws
+if grep -q "would not simulate" <<< "$OUT"; then
+    ok "an identity that cannot run the simulation is a warning, not a failure"
+else
+    bad "an identity that cannot run the simulation is a warning, not a failure" "$OUT"
+fi
+if grep -q "iam:SimulatePrincipalPolicy" <<< "$OUT"; then
+    ok "and it names the permission that would let it answer"
+else
+    bad "and it names the permission that would let it answer" "$OUT"
+fi
+
+# An assumed role answers get-caller-identity with a session ARN, and
+# simulate-principal-policy refuses that outright -- "Invalid Entity Arn",
+# which reads as a broken pre-flight rather than an ARN needing translation.
+reset_scenario
+export FAKE_AWS_ARN="arn:aws:sts::123456789012:assumed-role/VaultDeployer/botocore-session-17"
+run_preflight --cloud aws
+if grep -q "arn:aws:iam::123456789012:role/VaultDeployer" <<< "$OUT"; then
+    ok "a session ARN is translated to the role ARN before simulating"
+else
+    bad "a session ARN is translated to the role ARN before simulating" "$OUT"
+fi
+if ! grep -q "assumed-role/VaultDeployer/botocore-session" <<< "$OUT" \
+   || grep -q "the role, not the session" <<< "$OUT"; then
+    ok "and it says it did so, since the two ARNs differ by more than spelling"
+else
+    bad "and it says it did so, since the two ARNs differ by more than spelling" "$OUT"
+fi
+
+# Azure has no equivalent single call, so it must not pretend to make one.
+reset_scenario
+run_preflight --cloud azure
+if ! grep -q "actions the profile" <<< "$OUT"; then
+    ok "the Azure profile is not asked an AWS question"
+else
+    bad "the Azure profile is not asked an AWS question" "$OUT"
 fi
 
 printf '\n=== Pre-flight: plan ===\n'

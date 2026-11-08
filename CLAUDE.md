@@ -58,8 +58,9 @@ docker/
   monitoring/     Prometheus, rules, Alertmanager, blackbox, Grafana
   mysql/          init SQL creating the account Vault connects as
 scripts/          All operational scripts (see "Scripts" below)
-tests/            31 suites; each is a self-contained run-tests.sh
-examples/policies/  Least-privilege HCL policies used by scripts and CI
+tests/            32 suites; each is a self-contained run-tests.sh
+examples/policies/  Least-privilege policies used by scripts and CI: Vault
+                    HCL, plus the AWS IAM JSON for the apply identity
 docs/             Runbooks and design notes — the operational half;
                   README.md is generated, see "Docs" below
 diagrams/         architecture.md
@@ -165,8 +166,17 @@ restore checked four ways, audit devices, the PKI migration, and the
 backup chain end to end — the object the timer wrote, downloaded,
 decrypted through KMS and restored. Across all four sessions **almost no
 defect was a crash**; they were silent narrowings and features that had
-never worked. Expect that shape. What remains unreached is any identity
-narrower than an administrator.
+never worked. Expect that shape.
+
+No real apply has used an identity narrower than an administrator, and
+that is still true. What exists now is a derived answer to what one would
+need: `examples/policies/aws-terraform-apply.json`, 137 actions read off
+the 565 requests an emulated apply and destroy actually make, with
+`tests/least-privilege-apply` applying and destroying the profile as a
+user holding only that. It is sufficient against the emulator and
+unproven against AWS — the S3 statement has never been evaluated by
+anything, because moto names S3 actions from botocore operation names
+rather than IAM ones. See `docs/least-privilege.md`.
 
 **The Azure apply found nineteen defects, and the profile could not have
 applied as written** — not on that subscription, not on any. None was
@@ -389,6 +399,7 @@ Per-suite requirements:
 | upgrade | bash, curl, unzip, jq, sha256sum, python3 |
 | integration | docker compose, vault CLI, jq, openssl, curl |
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
+| least-privilege-apply | terraform, python3 with `moto[server]` and boto3, curl |
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
 | audit-anchor-worm | terraform, python3 with `moto[server]`, curl, aws, sha256sum |
 | autopilot | bash, jq |
@@ -403,12 +414,14 @@ Per-suite requirements:
 
 ## CI
 
-`.github/workflows/ci.yml` runs 40 jobs on every PR and on pushes to
+`.github/workflows/ci.yml` runs 42 jobs on every PR and on pushes to
 `main`. Eight are static (`terraform` fmt/validate/test, `ansible-lint`
 plus `--syntax-check`, `shellcheck`, `lint-invariants`,
 `preflight-static`, `markdownlint`, `docs-index`, and `security-scan`
-with gitleaks and Trivy); three run Terraform against an emulated AWS API
-(`emulated-apply` applies the whole profile, `state-backend` applies the
+with gitleaks and Trivy); four run Terraform against an emulated AWS API
+(`emulated-apply` applies the whole profile, `least-privilege-apply`
+applies it again as an identity holding only
+`examples/policies/aws-terraform-apply.json`, `state-backend` applies the
 bootstrap module and points the profile's backend at it, and
 `audit-anchor-worm` applies the audit-anchor bucket and then attacks the
 anchors it ships there); the rest each

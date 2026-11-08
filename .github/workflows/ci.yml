@@ -242,6 +242,37 @@ jobs:
       - name: Apply the AWS profile against the emulator
         run: ./tests/cloud-apply-emulated/run-tests.sh
 
+  least-privilege-apply:
+    name: Cloud apply (as a non-administrator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: "1.15.9"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the AWS API emulator
+        run: pip install 'moto[server]' boto3
+
+      # Every real apply of these profiles ran as an administrator, so the
+      # question "what does this actually need?" had no answer. This applies
+      # and destroys the profile as an IAM user holding only
+      # examples/policies/aws-terraform-apply.json, against an emulator that
+      # enforces IAM, and removes one action at a time to check that its own
+      # positive result means something.
+      #
+      # The emulator is not IAM: no SCPs, no permission boundaries, and it
+      # names S3 actions from botocore operation names rather than IAM ones,
+      # so S3 is excluded from what this proves. See docs/least-privilege.md.
+      - name: Apply the AWS profile as a narrow identity
+        run: ./tests/least-privilege-apply/run-tests.sh
+
   state-backend:
     name: State backend + bootstrap ordering (emulated AWS API)
     runs-on: ubuntu-latest

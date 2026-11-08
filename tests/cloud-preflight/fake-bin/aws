@@ -18,9 +18,39 @@ if [[ "$ARGS" == *"get-caller-identity"* ]]; then
 {
     "UserId": "AIDAEXAMPLE",
     "Account": "${FAKE_AWS_ACCOUNT:-123456789012}",
-    "Arn": "arn:aws:iam::${FAKE_AWS_ACCOUNT:-123456789012}:user/preflight"
+    "Arn": "${FAKE_AWS_ARN:-arn:aws:iam::${FAKE_AWS_ACCOUNT:-123456789012}:user/preflight}"
 }
 JSON
+    exit 0
+fi
+
+# --- iam ------------------------------------------------------------------
+# simulate-principal-policy with --output text prints one line per action
+# with the decision in the second field. Modelled that way rather than as a
+# boolean, because which actions were refused is the whole value of the
+# section under test -- and because the real CLI reports an implicitDeny
+# alongside the allowed ones rather than omitting them.
+#
+# FAKE_AWS_SIMULATE_DENIED is a space-separated list of actions to refuse.
+# FAKE_AWS_SIMULATE_RC refuses the simulation itself, which is what an
+# identity without iam:SimulatePrincipalPolicy actually gets.
+if [[ "$ARGS" == *"simulate-principal-policy"* ]]; then
+    if [[ "${FAKE_AWS_SIMULATE_RC:-0}" != "0" ]]; then
+        echo "An error occurred (AccessDenied) when calling the SimulatePrincipalPolicy operation: User is not authorized to perform: iam:SimulatePrincipalPolicy" >&2
+        exit "${FAKE_AWS_SIMULATE_RC}"
+    fi
+    # Everything after --action-names, up to the next flag, is an action.
+    COLLECT=false
+    for a in "$@"; do
+        if [[ "$a" == "--action-names" ]]; then COLLECT=true; continue; fi
+        if [[ "$a" == --* ]]; then COLLECT=false; continue; fi
+        [[ "$COLLECT" == true ]] || continue
+        DECISION="allowed"
+        for d in ${FAKE_AWS_SIMULATE_DENIED:-}; do
+            [[ "$a" == "$d" ]] && DECISION="implicitDeny"
+        done
+        printf '%s\t%s\n' "$a" "$DECISION"
+    done
     exit 0
 fi
 
