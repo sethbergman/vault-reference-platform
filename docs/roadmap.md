@@ -492,10 +492,18 @@ The blockers are, in order:
    built around, so an upstream change breaks a test rather than the
    argument.
 
-   What remains is a real refresh. No ASG has ever run against this
-   configuration, and a dead voter has never been watched being pruned:
-   that needs a fourth voter, which the local profile cannot produce.
-   So this closes with blocker 1, not before it.
+   Both have now happened. The 2026-09-24 refresh replaced all three
+   nodes with `configure-autopilot.sh` applied, and at no sample did the
+   live count fall below the quorum the voter count demanded — though
+   the voter count does reach four for about fifty seconds, because the
+   promotion happens before the prune rather than after; see
+   [cloud-apply.md](cloud-apply.md#item-9-quorum-held-and-the-trigger-did-not-fire).
+   And `tests/autopilot-prune` watches a dead voter actually pruned on
+   every PR, by doing locally what a refresh does on AWS. What is left is
+   one line: that refresh was started by hand, because the documented
+   trigger — bump `vault_version` and apply — replaced nothing, and the
+   fix for that has not been watched. It sits on the next AWS session's
+   checklist.
 
 Both are additions to this list rather than discoveries about the
 existing three, and when they were added this paragraph said neither was
