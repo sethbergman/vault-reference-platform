@@ -31,6 +31,7 @@ and which parts are a plausible-looking configuration nobody has run.
 | v0.19 | The path from a running cluster to a configured one, which had three breaks in it: three nodes arriving as one Ansible host, no way to reach any of them, and a certificate check no correct certificate could pass |
 | v0.20 | The first real AWS apply: ten defects between an apply and a cluster, four of them in code no test here could reach — and the replacement node that cannot get a certificate, which kept blocker 1 open until the second apply closed it on 2026-09-24 |
 | v0.21 | Both clouds applied for real and the AWS checklist finished: nineteen Azure defects in a profile that could not have applied as written, blocker 1 closed by a replacement node signing its own certificate, and the PKI migration sequenced across a live cluster — six more defects, and not one of them a crash |
+| v0.22 | The IAM policy the AWS profile needs, read off the 565 requests an emulated apply and destroy actually make rather than written from the configuration, and the profile applied and destroyed holding only that — against the emulator, which leaves the S3 statement the one part of it nothing has evaluated |
 
 ## The honest gap
 
