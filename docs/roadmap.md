@@ -83,6 +83,134 @@ The local profile is different: `tests/integration` runs the operational
 scripts against a real three-node Raft cluster on every PR, so the
 snapshot, PKI and renewal paths are genuinely exercised.
 
+## The plan to v1.0
+
+Revised 2026-11-14, and revisited every two weeks until v1.0 is cut.
+The section above says what is proven; this one says what is done about
+the rest, in what order, and which of it costs money.
+
+Every one of the five items under "Toward v1.0" now ends in the same
+sentence: no identity narrower than an administrator has driven a real
+apply. Items 1 and 4 have nothing else left. Item 2 has one more thing,
+the PKI migration on Azure, which has been a cluster away rather than a
+tool away since 2026-09-29. Item 3's remainder is a different shape, the
+collector on a host that is not a Vault node. Item 5 is closed: the
+2026-09-24 refresh replaced all three nodes without the live count
+falling below quorum, and `tests/autopilot-prune` watches the prune on
+every PR. Item 5's own text said otherwise until this revision.
+
+So v1.0 is cut when all of the following have been observed, as opposed
+to configured:
+
+| Observation | Settles | Needs |
+|---|---|---|
+| `terraform/aws` applied and destroyed by an identity holding only `examples/policies/aws-terraform-apply.json` and a state statement derived the same way | Items 1 and 4, and the S3 statement, which nothing has evaluated | An AWS session |
+| `migrate-to-vault-pki.sh --node-exec` across a live Azure cluster | The first half of item 2 | An Azure session |
+| `terraform/azure` applied by a role assignment narrower than Owner | The second half of item 2 | A role definition that does not exist yet, then an Azure session |
+| The audit collector on a host that is not a Vault node, with the chain and anchors intact after a Vault node is lost | Item 3 | Terraform for the host, then a cloud session |
+| An instance refresh started the documented way, by bumping `vault_version` | The one line item 9 of the checklist left open | The AWS session above |
+
+Two kinds of work, and the split decides who does what. Anything that
+needs no account — a policy derived against the emulator, a role
+definition and the static check that keeps it covering the profile, the
+Terraform for a collector host, a checklist — lands as a pull request
+with the test that fails if it breaks, and is what the fortnightly
+revision of this section produces. Anything that needs an account is a
+session an operator runs, and the fortnight before it goes on making
+sure the session answers every question it can in one sitting, because
+[cloud-apply.md](cloud-apply.md) records what run-by-hand costs when it
+does not.
+
+### To 2026-11-28
+
+- **The state backend, as the narrow identity.** The derived policy
+  deliberately carries nothing for the state bucket, and
+  `tests/least-privilege-apply` uses a local backend to keep a failure
+  unambiguous. Derive the second file the same way — record what `init`,
+  `plan`, `apply` and the lock make the bucket from
+  `terraform/aws/bootstrap` answer under moto — and have
+  `tests/state-backend` run the profile as an identity holding only the
+  two. That closes the emulator half of item 4's remainder; the account
+  half folds into the AWS session.
+- **The fifth AWS session's checklist**, in `cloud-apply.md`, written
+  before the session rather than reconstructed after it: the pre-flight's
+  `simulate-principal-policy` as the narrow identity, the apply, the
+  `BucketNotEmpty` teardown path as the narrow identity, the refresh by
+  version bump, and whether `autopilot state -format=json` arrives bare
+  or under `.data`.
+- **This revision**: item 5 corrected, and v0.22's row.
+
+### To 2026-12-12
+
+- **An Azure role definition.** Azure has no emulator here to derive
+  against and no `simulate-principal-policy`, so the honest version is a
+  custom role written from the resource types `terraform/azure` declares,
+  plus the data-plane roles the Key Vault and the two storage accounts
+  need — stated, because Owner is a control-plane role that reaches
+  neither. What keeps it from rotting is a static check in the
+  `preflight-static` family: every `azurerm_` resource type in the
+  profile maps to a provider namespace the role names, so a new resource
+  fails the test rather than the apply. That is a weaker guarantee than
+  the AWS file's, and the file should say so in the same words.
+- **The Azure session's checklist**: the PKI migration with
+  `--node-exec`, the role above, and the storage account's
+  encryption-key fight, which is still being settled by hand. The Key
+  Vault soft-deleted on 2026-09-28 purges on 2026-12-27; the name's
+  suffix is random so a new apply does not collide with it, but it counts
+  against the subscription until then.
+- **Pruning the AWS policy**, if the fortnight has room. The file is
+  sufficient and not minimal, and finding out which of its 137 actions
+  the apply survives without is six hours of emulated applies that run
+  unattended. The result is a table in `least-privilege.md`, not
+  removals: a refusal the provider tolerates from the emulator is not one
+  it is known to tolerate from AWS, whose error is shaped differently.
+
+### To 2026-12-26: the fifth AWS session
+
+An operator's fortnight. Attach the policy, run the pre-flight, apply,
+run the checklist, destroy. Expect the S3 statement to be short: it was
+mapped by hand from request shapes rather than derived, and it is the
+one part of the file nothing has evaluated. Each refusal names the
+action; the file gains it, with the request that needed it recorded
+beside it.
+
+If the session does not happen, the next revision says so and moves the
+date, rather than letting it slide.
+
+### To 2027-01-09: the collector host, and the Azure session
+
+- **A collector that is not a Vault node.** `ship-anchors.sh` moves the
+  evidence out of reach; it does not move the collection, and an entry
+  never collected is never anchored. The one-line `--second-address`
+  change has had nowhere to point. Give it somewhere: a small instance in
+  `terraform/aws`, off by default like every role that changes a
+  cluster's trust characteristics, carrying the collector and the anchor
+  service, reachable from the nodes on the socket port and from nothing
+  else. The emulated apply proves it applies; the session after proves
+  the chain survives losing a Vault node while the collector is
+  elsewhere.
+- **The Azure session**, against the checklist above.
+
+### After that
+
+The Azure counterpart of the collector host, and whichever observation
+in the table a session failed to reach. When every row has been
+observed, v1.0 is cut, and the "After v1.0" list below becomes this
+section.
+
+### What the fortnightly revision does
+
+1. Reads what merged since the last one, and any session
+   `cloud-apply.md` gained.
+2. Moves what landed out of the cycles above, re-dates what did not, and
+   says why it did not.
+3. Lands the next item that needs no account, as a pull request with the
+   test that fails if it breaks.
+4. Prepares the next session's checklist if one is due.
+5. Marks nothing observed that was only configured. The table has a
+   column for what each row needs, and wanting a row closed does not
+   change that column.
+
 ## Next
 
 ### Off-host audit collection
