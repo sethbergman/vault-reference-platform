@@ -481,7 +481,7 @@ See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Roadmap
 
-Everything through v0.21 has shipped — see
+Everything through v0.22 has shipped — see
 [Releases](https://github.com/sethbergman/vault-reference-platform/releases)
 for the log. "Shipped" here means there is a test that fails if the
 feature breaks, not that the code exists.
@@ -593,8 +593,11 @@ What stands between here and v1.0, in order:
    node, and `min_healthy_percentage` cannot prevent it: the scaling
    group counts instances it can see, Raft counts voters it cannot.
    `scripts/configure-autopilot.sh` fixes it, with `min_quorum` as the
-   safety rather than the threshold. What is still unproven is a real
-   refresh against that configuration.
+   safety rather than the threshold. A real refresh against that
+   configuration was watched on 2026-09-24: all three nodes replaced,
+   and the live count never below quorum. What is still unproven is the
+   documented trigger — a version bump replaced nothing that day, and
+   the fix has not been watched.
 
 Items 4 and 5 are about operating a cluster over time rather than
 standing one up. That is why the emulated apply reaches item 5 not at
