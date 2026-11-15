@@ -297,6 +297,11 @@ jobs:
       # terraform/aws/bootstrap against an emulated AWS API and then points
       # the real profile's backend at what that created.
       #
+      # It then runs the round trip as an IAM user holding only the
+      # state_policy the bootstrap module emits, with the emulator
+      # evaluating every request, and re-derives that policy's S3 actions
+      # from a recording of what the backend asked.
+      #
       # AWS only, and deliberately so: moto implements an AWS API, so the
       # Azure half of the suite is static reads of the configuration and is
       # labelled that way. terraform/azure/bootstrap has never been applied

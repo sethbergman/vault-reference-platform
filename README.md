@@ -574,10 +574,13 @@ What stands between here and v1.0, in order:
    The AWS half then held up in an account: the bootstrap module built
    the bucket and its key, the profile's backend initialised against it,
    and every apply and destroy of the 2026-09-17 session kept its state
-   there. Still unproven: two machines actually racing for the lock,
-   whether a least-privilege identity can reach the bucket — that session
-   ran as an administrator — and the whole Azure side, which has no
-   emulator. See [`docs/terraform-state.md`](docs/terraform-state.md).
+   there. The bootstrap module now also emits the policy an identity
+   needs to reach that state, and the suite runs the round trip holding
+   nothing else. Still unproven: two machines actually racing for the
+   lock, whether AWS evaluates that policy the way the emulator does —
+   every session ran as an administrator — and the whole Azure side,
+   which has no emulator. See
+   [`docs/terraform-state.md`](docs/terraform-state.md).
 5. **An upgrade path that matches how the profiles deploy.** Which
    model is canonical is now decided per profile — instance refresh on
    AWS, where the version comes from user-data and there is no binary to

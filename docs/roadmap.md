@@ -123,15 +123,16 @@ does not.
 
 ### To 2026-11-28
 
-- **The state backend, as the narrow identity.** The derived policy
-  deliberately carries nothing for the state bucket, and
-  `tests/least-privilege-apply` uses a local backend to keep a failure
-  unambiguous. Derive the second file the same way — record what `init`,
-  `plan`, `apply` and the lock make the bucket from
-  `terraform/aws/bootstrap` answer under moto — and have
-  `tests/state-backend` run the profile as an identity holding only the
-  two. That closes the emulator half of item 4's remainder; the account
-  half folds into the AWS session.
+- **The state backend, as the narrow identity.** Landed. The derived
+  policy deliberately carries nothing for the state bucket, so the
+  bootstrap module now emits a `state_policy` output beside
+  `backend_config`: four S3 actions read off a recording of the 39
+  requests Terraform's backend makes, scoped to one cluster's prefix,
+  plus the KMS pair no recording can see. `tests/state-backend` runs the
+  round trip holding only that, takes it apart one action at a time, and
+  re-derives the set on every run. That closes the emulator half of item
+  4's remainder; the account half folds into the AWS session. See
+  [terraform-state.md](terraform-state.md#who-may-reach-the-state).
 - **The fifth AWS session's checklist**, in `cloud-apply.md`, written
   before the session rather than reconstructed after it: the pre-flight's
   `simulate-principal-policy` as the narrow identity, the apply, the
@@ -572,11 +573,13 @@ The blockers are, in order:
 
    What is left is narrower again, and is the same on both sides.
    Nothing shows that two applies from two machines race the way one
-   process planting a lock file does. Nothing shows that a
-   least-privilege identity can reach either backend at all — all three
-   sessions ran as an administrator, which answers the question in the
-   easiest possible way. And the Entra role assignment has never been
-   granted to a second person.
+   process planting a lock file does. Whether a least-privilege identity
+   can reach the AWS backend is answered by the emulator and only by it:
+   the bootstrap module emits the policy, `tests/state-backend` runs the
+   round trip holding nothing else, and all three real sessions ran as an
+   administrator, which answers the question in the easiest possible way.
+   The Azure side has no such answer, and the Entra role assignment has
+   never been granted to a second person.
 
    So this item is most of the way proven, and what remains of it is the
    same sentence as the remainder of blockers 1 and 2: no identity

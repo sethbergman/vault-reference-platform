@@ -128,8 +128,14 @@ the state bucket, and reading and writing state is a different identity
 question from creating infrastructure — who may see the state is not who may
 build the cluster. Mixing them would make a failure ambiguous, so
 `tests/least-privilege-apply` uses a local backend and this policy carries no
-`s3:GetObject` or `s3:PutObject` on the state bucket. If the same identity
-runs `init`, it needs those as well.
+`s3:GetObject` or `s3:PutObject` on the state bucket. That answer is the
+bootstrap module's `state_policy` output: derived the same way, scoped to one
+cluster's prefix, and, unlike this file's S3 statement, evaluated by the
+emulator: for the five request shapes Terraform's backend makes, moto's S3
+action names coincide with IAM's, and for the provider's twenty-five they
+do not. See
+[terraform-state.md](terraform-state.md#who-may-reach-the-state). An
+identity that runs `init` as well as `apply` attaches both.
 
 **No real AWS account has seen it.** Every result above comes from an
 emulator. moto's evaluator is an approximation of IAM's: no service control
