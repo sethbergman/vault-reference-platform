@@ -30,13 +30,23 @@
 #   - state written by the profile lands in the bucket, not on disk
 #   - a second apply is refused while the lock is held, and succeeds once
 #     it is not
+#   - the same round trip works as an IAM user holding only the
+#     `state_policy` the bootstrap module emits, with the emulator
+#     evaluating every request against it; stops working when one action
+#     is removed or the object prefix is another cluster's; and needed
+#     exactly the S3 actions the policy grants, re-derived from a recording
+#     of the requests on every run
 #
 # WHAT A GREEN RUN DOES NOT MEAN
 #
 # An emulator implements the API, not the service. Nothing here proves S3
-# behaves this way in an account, that the IAM permissions to reach the
-# bucket are the ones granted, or that a real concurrent apply from two
-# machines races the way one process planting a lock file does.
+# behaves this way in an account; that AWS's IAM evaluates the state policy
+# the way moto's does (no SCPs, no permission boundaries, no resource
+# policies, and no signature check -- moto_server.py says why that one is
+# off); that the KMS statement is right, since the
+# emulator's S3 never calls KMS and no recording can see what it needs; or
+# that a real concurrent apply from two machines races the way one process
+# planting a lock file does.
 #
 # And Azure gets no emulator at all: moto is an AWS API, and the Azure
 # emulator that does exist needs a licence (docs/cloud-apply.md, "Why
@@ -212,7 +222,15 @@ if curl -s -o /dev/null "$ENDPOINT" 2>/dev/null; then
     exit 1
 fi
 
-python3 -m moto.server -p 5000 >"${WORK}/moto.log" 2>&1 &
+# The recorder is armed here and switched on only for the last section,
+# which compares what the backend asked the bucket with what the state
+# policy grants.
+RECORDING="${WORK}/recording.jsonl"
+# Not `python3 -m moto.server`: the launcher beside this file turns moto's
+# signature comparison off and leaves authorization on, because the
+# comparison cannot pass for Terraform's workspace listing. The header of
+# moto_server.py has the whole story.
+MOTO_RECORDER_FILEPATH="$RECORDING" python3 "${SCRIPT_DIR}/moto_server.py" -p 5000 >"${WORK}/moto.log" 2>&1 &
 MOTO_PID=$!
 
 for _ in $(seq 1 30); do
@@ -554,6 +572,197 @@ else
     else
         bad "destroying the bootstrap module is refused by prevent_destroy" \
             "it failed for some other reason: $(grep -iE 'error' "${WORK}/bs-destroy.log" | head -4)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+info ""
+info "=== The state, as an identity holding only the state policy ==="
+# ---------------------------------------------------------------------------
+# Everything above ran with a made-up access key the emulator does not
+# check. This runs the operator's everyday round trip -- list, lock, read,
+# write, unlock -- as an IAM user whose only permission is the
+# `state_policy` output of the bootstrap module, with the emulator
+# evaluating every request against it, resource ARN included. Who may read
+# and write the state is a different question from who may build the
+# cluster (tests/least-privilege-apply answers that one with a local
+# backend, so that a failure stays unambiguous), and until this section
+# nothing answered it at all.
+#
+# Last, deliberately: once authorization is switched on, the "emulated" key
+# every earlier section used stops working, and there is no switching it
+# back off.
+terraform -chdir="$AWS_BOOTSTRAP" output -raw state_policy >"${WORK}/state-policy.json" 2>/dev/null
+
+# The document itself, before anything is tried with it. A wildcard or a
+# `Resource: "*"` would make the round trip below pass while proving much
+# less, and the KMS statement is the one part no run here can exercise, so
+# the most that can be asked of it is that it names the right key.
+if python3 - "${WORK}/state-policy.json" "$BUCKET" "$KMS_ARN" "$STATE_KEY" >"${WORK}/state-policy.txt" 2>&1 <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+bucket_arn = f"arn:aws:s3:::{sys.argv[2]}"
+# The prefix of this cluster's state key, pinned rather than rebuilt from
+# var.cluster_name: the other-cluster identity below rewrites the prefix
+# before testing, so a policy widened to the whole bucket would pass that
+# check. This is what catches the widening.
+objects_arn = f"{bucket_arn}/{sys.argv[4].rsplit('/', 1)[0]}/*"
+actions = [a for s in doc["Statement"] for a in s["Action"]]
+resources = [s["Resource"] for s in doc["Statement"]]
+problems = []
+if any("*" in a for a in actions):
+    problems.append("an action contains a *")
+if len(actions) != len(set(actions)):
+    problems.append("an action is listed twice")
+if "*" in resources:
+    problems.append("a statement is on Resource *")
+if bucket_arn not in resources:
+    problems.append(f"nothing is granted on the bucket itself ({bucket_arn})")
+if sys.argv[3] not in resources:
+    problems.append("the KMS statement does not name the key this module created")
+if objects_arn not in resources:
+    problems.append(f"the object statement is not scoped to this cluster's prefix ({objects_arn})")
+if objects_arn not in resources:
+    problems.append(f"the object statement is not scoped to this cluster's prefix ({objects_arn})")
+print("\n".join(problems) if problems else "ok")
+sys.exit(1 if problems else 0)
+PY
+then
+    ok "the state policy names every action, this cluster's prefix, and the module's own key"
+else
+    bad "the state policy names every action, this cluster's prefix, and the module's own key" \
+        "$(cat "${WORK}/state-policy.txt")"
+fi
+
+# Every identity first, then enforcement, because the setup calls stop
+# working the moment it is on. Four of them: the policy as emitted, the
+# policy minus one action twice over, and the policy written for a
+# different cluster in the same bucket.
+IDENTITY="${SCRIPT_DIR}/state_identity.py"
+make_identity() {
+    python3 "$IDENTITY" create "$ENDPOINT" "${WORK}/state-policy.json" "$@" 2>>"${WORK}/identity.log"
+}
+CREDS_FULL="$(make_identity state-full)"
+CREDS_NO_PUT="$(make_identity state-without-put --without s3:PutObject)"
+CREDS_NO_DELETE="$(make_identity state-without-delete --without s3:DeleteObject)"
+CREDS_OTHER="$(make_identity state-for-another-cluster --object-prefix some-other-cluster)"
+
+IDENTITIES_OK=false
+if [[ -n "$CREDS_FULL" && -n "$CREDS_NO_PUT" && -n "$CREDS_NO_DELETE" && -n "$CREDS_OTHER" ]] &&
+   python3 "$IDENTITY" enforce "$ENDPOINT" 2>>"${WORK}/identity.log"; then
+    ok "four identities exist, and the emulator now evaluates IAM on every request"
+    IDENTITIES_OK=true
+else
+    bad "four identities exist, and the emulator now evaluates IAM on every request" \
+        "$(tail -5 "${WORK}/identity.log")"
+fi
+
+# run_as "<key> <secret>" <label> <terraform args...>
+run_as() {
+    local creds="$1" label="$2" k s
+    shift 2
+    read -r k s <<<"$creds"
+    AWS_ACCESS_KEY_ID="$k" AWS_SECRET_ACCESS_KEY="$s" AWS_DEFAULT_REGION=us-east-1 \
+        terraform -chdir="$AWS_DIR" "$@" >"${WORK}/${label}.log" 2>&1
+}
+
+denied() { grep -qiE 'AccessDenied|not authorized' "${WORK}/$1.log"; }
+
+if [[ "$IDENTITIES_OK" == true ]]; then
+    # The same emulator plumbing as before, minus the key: the backend reads
+    # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment, which
+    # is how the identity changes per case without touching the file.
+    {
+        cat "${WORK}/backend-generated.hcl"
+        printf '%s\n' "$EMULATOR_BACKEND_LINES" | grep -vE '^(access_key|secret_key)'
+    } >"${AWS_DIR}/backend.hcl"
+
+    # Recording from here. The state is already in the bucket from the
+    # sections above, so what follows is the everyday round trip: list the
+    # workspaces, take the lock, read the state, write it back, release.
+    curl -s -X POST "${ENDPOINT}/moto-api/recorder/reset-recording" >/dev/null
+    curl -s -X POST "${ENDPOINT}/moto-api/recorder/start-recording" >/dev/null
+
+    # The backend config changed (no key in it), so init has to be told to
+    # reconfigure rather than offer to migrate.
+    if run_as "$CREDS_FULL" narrow-init init -input=false -reconfigure -backend-config=backend.hcl &&
+       run_as "$CREDS_FULL" narrow-apply apply -auto-approve -input=false -lock-timeout=5s \
+           -target=random_id.bucket_suffix; then
+        ok "the profile lists, locks, reads, writes and unlocks its state holding only the state policy"
+    else
+        bad "the profile lists, locks, reads, writes and unlocks its state holding only the state policy" \
+            "$(grep -ihE 'AccessDenied|not authorized|Error' "${WORK}/narrow-init.log" "${WORK}/narrow-apply.log" | head -6)"
+    fi
+    curl -s -X POST "${ENDPOINT}/moto-api/recorder/stop-recording" >/dev/null
+
+    # The set of S3 actions the round trip needed, read off the recording,
+    # has to be exactly the set the policy grants. Both directions matter:
+    # a granted action the backend never used is a grant nobody can
+    # justify, and a request shape `derive` cannot name is Terraform doing
+    # something new.
+    GRANTED="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+print("\n".join(sorted({a for s in doc["Statement"] for a in s["Action"] if a.startswith("s3:")})))
+' "${WORK}/state-policy.json")"
+    if python3 "$IDENTITY" derive "$RECORDING" "$BUCKET" >"${WORK}/needed.txt" 2>"${WORK}/derive.err"; then
+        if [[ "$(cat "${WORK}/needed.txt")" == "$GRANTED" ]]; then
+            ok "the S3 actions the round trip needed are exactly the ones the policy grants ($(tr '\n' ' ' <"${WORK}/needed.txt"| sed 's/ $//'))"
+        else
+            bad "the S3 actions the round trip needed are exactly the ones the policy grants" \
+                "needed: $(tr '\n' ' ' <"${WORK}/needed.txt")/ granted: $(tr '\n' ' ' <<<"$GRANTED")"
+        fi
+    else
+        bad "every request the backend made can be named as an IAM action" \
+            "$(cat "${WORK}/derive.err")"
+    fi
+
+    # Removing one S3 action, in the two shapes that matter: the one that
+    # fails first, and the one that fails last.
+    #
+    #   s3:PutObject     nothing happens. The lock is a conditional PUT, so
+    #                    the apply cannot begin, and the error names the lock.
+    #   s3:DeleteObject  everything happens -- the state is read and written
+    #                    -- and then the lock cannot be released. Terraform
+    #                    exits non-zero and the lock stays behind. An
+    #                    identity with this gap looks like it works until the
+    #                    next person tries, which is why it runs last here.
+    if run_as "$CREDS_NO_PUT" without-put apply -auto-approve -input=false -lock-timeout=5s \
+           -target=random_id.bucket_suffix; then
+        bad "without s3:PutObject, the apply cannot take the lock" \
+            "it applied anyway, so the policy says more than this suite proves"
+    elif grep -q "acquiring the state lock" "${WORK}/without-put.log" && denied without-put; then
+        ok "without s3:PutObject, the apply cannot take the lock"
+    else
+        bad "without s3:PutObject, the apply cannot take the lock" \
+            "it failed for another reason: $(grep -iE 'error' "${WORK}/without-put.log" | head -4)"
+    fi
+
+    # The scoping. An identity written for another cluster in the same
+    # bucket -- same actions, prefix some-other-cluster/ -- must not reach
+    # this one's state. The emulator evaluates the resource ARN, so this is
+    # a check of the policy rather than a reading of it, and it is the one
+    # property the apply policy's `Resource: "*"` cannot have.
+    if run_as "$CREDS_OTHER" other-cluster apply -auto-approve -input=false -lock-timeout=5s \
+           -target=random_id.bucket_suffix; then
+        bad "an identity scoped to another cluster's prefix cannot touch this one's state" \
+            "it applied anyway; the object ARNs are not doing anything"
+    elif denied other-cluster; then
+        ok "an identity scoped to another cluster's prefix cannot touch this one's state"
+    else
+        bad "an identity scoped to another cluster's prefix cannot touch this one's state" \
+            "it failed for another reason: $(grep -iE 'error' "${WORK}/other-cluster.log" | head -4)"
+    fi
+
+    if run_as "$CREDS_NO_DELETE" without-delete apply -auto-approve -input=false -lock-timeout=5s \
+           -target=random_id.bucket_suffix; then
+        bad "without s3:DeleteObject, the apply succeeds and then cannot release the lock" \
+            "it applied and unlocked, so the policy says more than this suite proves"
+    elif grep -q "releasing the state lock" "${WORK}/without-delete.log" && denied without-delete; then
+        ok "without s3:DeleteObject, the apply succeeds and then cannot release the lock"
+    else
+        bad "without s3:DeleteObject, the apply succeeds and then cannot release the lock" \
+            "it failed for another reason: $(grep -iE 'error' "${WORK}/without-delete.log" | head -4)"
     fi
 fi
 

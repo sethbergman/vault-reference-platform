@@ -33,6 +33,6 @@ tested.
 | [Rolling upgrades](rolling-upgrades.md) | What it does · Usage · Prerequisites · Which model is canonical, per profile · Why an instance refresh was unsafe, and what fixes it · What is proven, and what is not · Rollback |
 | [Secret rotation](secret-rotation.md) | Why rotate `secret_id`s · One-time setup: `bootstrap-approle.sh` · Recurring rotation: `rotate-secret-id.sh` · Prerequisites · Rollback / troubleshooting |
 | [Security Model](security.md) | Transport · Unsealing · Authentication & policy · The root token · Rotating the keys · Secret rotation · Audit · Hardening baseline (applied via Ansible) · Automated scanning |
-| [Terraform state](terraform-state.md) | The ordering problem · Standing it up · Why the backend blocks are empty · Locking, and why the providers differ · What the bootstrap modules create · Destroying · What this does not prove |
+| [Terraform state](terraform-state.md) | The ordering problem · Standing it up · Why the backend blocks are empty · Locking, and why the providers differ · What the bootstrap modules create · Who may reach the state · Destroying · What this does not prove |
 | [Troubleshooting](troubleshooting.md) | — |
 | [Vault Agent](vault-agent.md) | Why the credentials are piped in · Why this is worth the moving part · What Agent does not solve · Two Agent defaults this config deliberately overrides · `remove_secret_id_file_after_reading` is on by default · What is tested · What this does not cover |

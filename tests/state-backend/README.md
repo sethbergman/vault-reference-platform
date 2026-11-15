@@ -38,6 +38,18 @@ properties that make the arrangement worth having:
 - the bucket versions its objects, encrypts under the key the bootstrap
   module created rather than an account default, blocks public access on
   all four settings, and refuses `terraform destroy`.
+- the same round trip runs as an IAM user holding only the
+  `state_policy` the bootstrap module emits, with the emulator evaluating
+  every request against it, resource ARN included. Three identities with
+  a piece missing are refused: no `s3:PutObject`, no `s3:DeleteObject`,
+  and the object prefix of another cluster. And the S3 actions the round
+  trip needed are re-derived from a recording on every run and have to
+  equal the ones granted, in both directions. It could be done here and
+  not for the apply policy because, for these five request shapes, moto's
+  S3 action names coincide with IAM's; for the provider's twenty-five they
+  do not. The emulator runs with its signature check off and authorization
+  on, because its re-signing decodes the workspace prefix Terraform
+  signed; [`moto_server.py`](moto_server.py) explains.
 
 The lock is exercised by one process planting the `.tflock` object
 rather than two applies racing. A race is not reproducible on demand;
@@ -52,9 +64,11 @@ question, and it answers it thoroughly.
 ## What it does not prove
 
 An emulator implements the API, not the service. Nothing here shows that
-S3 behaves this way in an account, that the IAM permissions to reach the
-bucket are the ones actually granted, or that two applies from two
-machines race the way one process planting a lock file does.
+S3 behaves this way in an account, that AWS's IAM evaluates the state
+policy the way moto's does, that the policy's KMS statement is right (the
+emulator's S3 never calls KMS, so no recording can see what it needs), or
+that two applies from two machines race the way one process planting a
+lock file does.
 
 **Azure gets no emulator at all.** moto is an AWS API, and the Azure
 emulator that does exist needs a licence and implements too little of
@@ -87,7 +101,10 @@ the assertion does not name. Where an assertion reads a committed example
 file, the mutation changes the *generated* output instead, so passing
 requires the property rather than the spelling.
 
-Baseline is 24 passed, 0 failed.
+Baseline was 24 passed, 0 failed when the rows below were watched. The
+state-policy section added seven assertions after them, so the baseline
+is now 31 and a rerun of any of these would report seven more passes
+where the suite reaches that far; the rows record what was observed.
 
 | Deliberate break | Caught by | Result |
 |---|---|---|
@@ -106,7 +123,34 @@ Baseline is 24 passed, 0 failed.
 | `.gitignore` no longer covers `backend.hcl` | a generated backend.hcl is ignored by git in both profiles | 22 / 1 |
 | the state key template drops `cluster_name`, becoming a constant | the state key is namespaced by cluster, so one bucket holds many | 23 / 1 |
 
+The state-policy rows were watched at a baseline of 31 passed, 0 failed.
+Each mutates the `state_policy` output the bootstrap module emits, never
+the suite's own helper:
+
+| Deliberate break | Caught by | Result |
+|---|---|---|
+| the object statement loses `s3:DeleteObject` | four identities exist, and the emulator now evaluates IAM on every request | 25 / 1 |
+| the object ARN widened from `<cluster_name>/*` to the whole bucket | the state policy names every action, this cluster's prefix, and the module's own key | 30 / 1 |
+| the KMS statement names the key's alias instead of the key | the state policy names every action, this cluster's prefix, and the module's own key | 30 / 1 |
+| the object statement gains `s3:GetObjectVersion`, which the backend never asks for | the S3 actions the round trip needed are exactly the ones the policy grants | 30 / 1 |
+
 Two of these are worth reading twice.
+
+The first row failed earlier than expected, and the reason is worth
+keeping. The helper that builds the "without `s3:DeleteObject`" identity
+refuses when the action is not in the policy to remove, since removing
+nothing proves nothing, so the suite stopped at identity creation and
+named the missing action. The round-trip and derived-set assertions
+were never reached in that run; the fourth row is what shows the
+derived-set check can fail on its own, with every identity built and
+the round trip green.
+
+The widening row is the reason the policy-document check pins the object
+ARN to this cluster's prefix. The other-cluster identity rewrites the
+prefix before testing, so a policy granted on the whole bucket would still
+be refused for `some-other-cluster/*` and that assertion would stay green
+through the break. Pinning the emitted ARN is what makes the widening
+visible.
 
 The locking row mutates what the module **emits**, not
 `backend.hcl.example` — which a static assertion does name. That
@@ -144,6 +188,11 @@ fail:
 - no local `terraform.tfstate` was written
 - the state object is in the bucket at the expected key
 - and the same apply succeeds once the lock is released
+- the profile lists, locks, reads, writes and unlocks its state holding
+  only the state policy
+- every request the backend made can be named as an IAM action
+- the three refusals: without `s3:PutObject`, without `s3:DeleteObject`,
+  and as another cluster's identity
 
 The per-cluster key row above came out of this list, and finding a
 mutation for it is what showed why the rest are hard.
@@ -162,3 +211,15 @@ static check or by `init`, so it never reaches them. Breaking them needs
 either a Terraform change or a harness change, and neither is a mutation
 of this repository's configuration. They are better read as guards
 against a future edit to the suite than as claims about the profile.
+
+The state-policy ones are the same again, one step on. The round trip as
+the narrow identity would fail if the emitted policy lost `s3:ListBucket`
+or `s3:GetObject`, which is a mutation nobody has run; the two watched
+rows that remove or add an action are caught before it, by the identity
+helper and by the derived set. The three refusals assert what the
+emulator does to an identity the suite itself narrowed, so no change to
+the emitted policy reaches them: widen the policy and the helper still
+narrows what it tests. That is why the prefix pin exists, and why these
+are guards on the harness rather than claims about the module. The
+unknown-shape assertion fails only when Terraform's backend starts asking
+the bucket something new, which no edit here can provoke.

@@ -144,6 +144,104 @@ runs from is known and stable; a foot-gun where it is not, because being
 locked out of the state of a running cluster is the failure this whole
 arrangement exists to prevent.
 
+## Who may reach the state
+
+The bootstrap module emits a second output beside `backend_config`:
+`state_policy`, the IAM policy for an identity that runs `terraform`
+against this cluster's state and nothing else.
+
+```bash
+terraform -chdir=terraform/aws/bootstrap output -raw state_policy \
+  > state-policy.json
+aws iam create-policy --policy-name vault-reference-terraform-state \
+  --policy-document file://state-policy.json
+```
+
+It is not the policy that builds the cluster. That one is
+[`aws-terraform-apply.json`](../examples/policies/aws-terraform-apply.json),
+and it carries nothing for the state bucket on purpose: who may read and
+write the state is a different question from who may create the
+infrastructure, and keeping the two apart keeps a failure unambiguous. An
+identity that does both attaches both.
+
+### Where the actions come from
+
+Not from the Terraform documentation. moto records every request it is
+sent, so a recording was taken of everything Terraform 1.15.9's S3
+backend asked the bucket across `init`, `plan`, two applies, a contested
+lock, `destroy` and `state list`: 39 requests, in five shapes.
+
+| Request | What it is for | IAM action |
+|---|---|---|
+| `GET /bucket?list-type=2&prefix=env:/` | enumerating workspaces, on every command | `s3:ListBucket`, on the bucket |
+| `HEAD /bucket/<key>` | checking the state object exists | `s3:GetObject` |
+| `GET /bucket/<key>` | reading the state, and reading the lock to say who holds it | `s3:GetObject` |
+| `PUT /bucket/<key>.tflock` with `If-None-Match: *`, then `PUT /bucket/<key>` | taking the lock, then writing the state | `s3:PutObject` |
+| `DELETE /bucket/<key>.tflock` | releasing the lock | `s3:DeleteObject` |
+
+Nothing else. No bucket `HEAD`, no versioning or location read, and not
+one request to KMS, which is the part no recording can produce. Terraform
+sends the key id in a header and S3 calls KMS on the caller's behalf, so
+an emulator whose S3 performs no cryptography never sees it. On AWS,
+writing an object under SSE-KMS needs `kms:GenerateDataKey` and reading
+one needs `kms:Decrypt`, so the policy carries both on the module's own
+key, by hand, and the suite can check only that it names the right key.
+
+The object actions are granted on `<cluster_name>/*`, not on the bucket.
+One bucket serves many clusters, one key each, and an identity entitled
+to run `terraform` against one of them has no business reading the
+others'. The listing has to be on the bucket itself: S3 has no narrower
+resource for it.
+
+### What keeps it true
+
+[`tests/state-backend`](../tests/state-backend/run-tests.sh) runs the
+round trip as an IAM user holding only that document, with the emulator
+evaluating every request against it, resource ARN included, which is the
+one thing the apply policy's `Resource: "*"` cannot be checked for. Then
+it takes the policy apart:
+
+- without `s3:PutObject` the apply cannot take the lock, and says so;
+- without `s3:DeleteObject` the apply succeeds, writes the state, and
+  then cannot release the lock. Terraform exits non-zero and the lock
+  stays behind, so an identity with that gap looks like it works until
+  the next person tries;
+- an identity written for another cluster in the same bucket, same
+  actions and a different prefix, is refused.
+
+And it re-derives the set from a fresh recording on every run: the S3
+actions the round trip needed have to be exactly the ones the policy
+grants, in both directions, and a request shape the suite cannot name is
+a failure. A Terraform release that starts asking the bucket something
+new fails there and names the action.
+
+The reason this could be done here and not for the apply policy is the
+size of the request set. moto authorizes S3 against names of its own, and
+for much of S3 they are not IAM's (a bucket `HEAD` is checked as
+`s3:HeadBucket`), so the apply suite hands the emulator `s3:*` and leaves
+its 22 S3 actions unverified. For the five shapes the backend makes,
+moto's names and IAM's coincide, so the policy reaches the emulator
+exactly as the module emits it, and the derivation in
+[`state_identity.py`](../tests/state-backend/state_identity.py) names
+requests by shape, no wider than the five, so that a sixth fails rather
+than being quietly covered.
+
+One concession was needed. The emulator's signature check cannot pass for
+Terraform's workspace listing: it re-signs a URL that werkzeug has already
+decoded, so the `env%3A%2F` Terraform signed becomes `env:/`, and every
+listing fails with `SignatureDoesNotMatch` while the object operations
+pass. The suite starts moto with that comparison off and authorization
+on. The key still has to exist and still identifies the user whose policy
+is evaluated; what is given up is proof that the caller holds the secret
+half of a key the suite minted a moment earlier, which no assertion needs.
+[`moto_server.py`](../tests/state-backend/moto_server.py) says the same at
+length, beside the one line that does it.
+
+No AWS account has evaluated this policy. moto's IAM has no service
+control policies, permission boundaries or resource policies. A green
+suite says the document is not obviously short; the fifth AWS session in
+[roadmap.md](roadmap.md#the-plan-to-v10) is where AWS gets to disagree.
+
 ## Destroying
 
 `prevent_destroy` is set on both state containers, so `terraform
@@ -167,9 +265,10 @@ the bucket rather than on disk, and that a held lock refuses a second
 apply.
 
 An emulator implements the API, not the service. Nothing there shows
-that S3 behaves this way in an account, that the IAM permissions to
-reach the bucket are the ones actually granted, or that two applies from
-two machines race the way one process planting a lock file does.
+that S3 behaves this way in an account, that AWS's IAM evaluates the
+state policy the way moto's does, that the KMS half of that policy is
+right, or that two applies from two machines race the way one process
+planting a lock file does.
 
 **Azure gets no emulator at all.** moto is an AWS API, and the Azure
 emulator that does exist needs a licence and implements too little of
@@ -185,6 +284,7 @@ key, the generated `backend.hcl` initialised the profile against it, and
 every plan, apply and destroy in that session kept its state there. What
 that does not answer is whether two machines race for the lock the way
 one process planting a lock file does, or whether a least-privilege
-identity can reach the bucket — the session ran as an administrator.
+identity can reach the bucket: the session ran as an administrator, and
+the state policy that exists now has been evaluated only by the emulator.
 The Azure backend remains configured and never exercised. See
 [roadmap.md](roadmap.md) and [cloud-apply.md](cloud-apply.md).
