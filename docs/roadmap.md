@@ -85,7 +85,7 @@ snapshot, PKI and renewal paths are genuinely exercised.
 
 ## The plan to v1.0
 
-Revised 2026-11-14, and revisited every two weeks until v1.0 is cut.
+Revised 2026-11-27, and revisited every two weeks until v1.0 is cut.
 The section above says what is proven; this one says what is done about
 the rest, in what order, and which of it costs money.
 
@@ -97,7 +97,8 @@ tool away since 2026-09-29. Item 3's remainder is a different shape, the
 collector on a host that is not a Vault node. Item 5 is closed: the
 2026-09-24 refresh replaced all three nodes without the live count
 falling below quorum, and `tests/autopilot-prune` watches the prune on
-every PR. Item 5's own text said otherwise until this revision.
+every PR. Item 5's own text said otherwise until the 2026-11-14
+revision.
 
 So v1.0 is cut when all of the following have been observed, as opposed
 to configured:
@@ -108,7 +109,7 @@ to configured:
 | `migrate-to-vault-pki.sh --node-exec` across a live Azure cluster | The first half of item 2 | An Azure session |
 | `terraform/azure` applied by a role assignment narrower than Owner | The second half of item 2 | A role definition that does not exist yet, then an Azure session |
 | The audit collector on a host that is not a Vault node, with the chain and anchors intact after a Vault node is lost | Item 3 | Terraform for the host, then a cloud session |
-| An instance refresh started the documented way, by bumping `vault_version` | The one line item 9 of the checklist left open | The AWS session above |
+| An instance refresh started the documented way, by bumping `vault_version`, as the narrow identity | The one line item 9 of the checklist left open, and the three instance-refresh actions nothing has evaluated | The AWS session above |
 
 Two kinds of work, and the split decides who does what. Anything that
 needs no account — a policy derived against the emulator, a role
@@ -121,28 +122,52 @@ sure the session answers every question it can in one sitting, because
 [cloud-apply.md](cloud-apply.md) records what run-by-hand costs when it
 does not.
 
-### To 2026-11-28
+### Landed since the plan was written
 
-- **The state backend, as the narrow identity.** Landed. The derived
-  policy deliberately carries nothing for the state bucket, so the
-  bootstrap module now emits a `state_policy` output beside
-  `backend_config`: four S3 actions read off a recording of the 39
-  requests Terraform's backend makes, scoped to one cluster's prefix,
-  plus the KMS pair no recording can see. `tests/state-backend` runs the
-  round trip holding only that, takes it apart one action at a time, and
-  re-derives the set on every run. That closes the emulator half of item
-  4's remainder; the account half folds into the AWS session. See
+- **The state backend, as the narrow identity**, on 2026-11-14 (#134).
+  The bootstrap module emits a `state_policy` output beside
+  `backend_config`, and `tests/state-backend` runs the round trip holding
+  only that, takes it apart one action at a time, and re-derives the set
+  on every run. That closes the emulator half of item 4's remainder; the
+  account half folds into the AWS session. See
   [terraform-state.md](terraform-state.md#who-may-reach-the-state).
-- **The fifth AWS session's checklist**, in `cloud-apply.md`, written
-  before the session rather than reconstructed after it: the pre-flight's
-  `simulate-principal-policy` as the narrow identity, the apply, the
-  `BucketNotEmpty` teardown path as the narrow identity, the refresh by
-  version bump, and whether `autopilot state -format=json` arrives bare
-  or under `.data`.
-- **This revision**: item 5 corrected, and v0.22's row.
+- **Item 5 corrected, and v0.22's row**, on 2026-11-14 (#133).
+- **The fifth AWS session's checklist**, in this revision rather than the
+  fortnight it was planned for: nothing was written for it between
+  2026-11-14 and 2026-11-28, so it is
+  [in cloud-apply.md](cloud-apply.md#the-fifth-aws-session-as-a-narrower-identity)
+  now, as items N1 to N6. Writing it is what found the next two
+  entries, which is the argument for writing it before the session.
+- **The version bump, as the narrow identity**, in #135, opened beside
+  this revision. The policy was read off an apply and a destroy,
+  and the documented upgrade is neither: the emulator refused the bump at
+  `ec2:CreateLaunchTemplateVersion`, which the session's item 9 would
+  have met with a cluster already built. That action is now derived and
+  evaluated on every PR by `tests/least-privilege-apply`, which bumps
+  between the apply and the destroy and requires the template version to
+  move. The refresh it triggers needs three autoscaling actions read off
+  provider source, because moto does not implement instance refresh; the
+  suite can only pin that they are in the file. See
+  [least-privilege.md](least-privilege.md#the-upgrade-which-is-neither-an-apply-nor-a-destroy).
+  Until #135 merges, this entry is a claim about a branch.
 
 ### To 2026-12-12
 
+- **The teardown, as the narrow identity.** Found writing the checklist,
+  and read off the script and the policy rather than observed:
+  `teardown-cloud.sh` empties the snapshot bucket with
+  `list-object-versions` and `delete-objects`, the policy carries none of
+  `s3:ListBucketVersions`, `s3:DeleteObject` or `s3:DeleteObjectVersion`,
+  and the script treats a refused listing as an empty bucket, breaking
+  out of its loop without a word. The destroy then stops on
+  `BucketNotEmpty` with half the profile gone, which is the quiet failure
+  this repository exists to prevent. The fix is the script saying so
+  when its listing is refused, pinned by a case in
+  `tests/cloud-preflight`, whose `aws` shim already models the listing;
+  and the three actions put where a teardown identity gets them: in the
+  apply policy, or in a statement of their own an operator attaches only
+  to whoever tears down. That choice is Seth's. First in the fortnight,
+  because the AWS session after it runs this script as the role.
 - **An Azure role definition.** Azure has no emulator here to derive
   against and no `simulate-principal-policy`, so the honest version is a
   custom role written from the resource types `terraform/azure` declares,
@@ -160,7 +185,7 @@ does not.
   suffix is random so a new apply does not collide with it, but it counts
   against the subscription until then.
 - **Pruning the AWS policy**, if the fortnight has room. The file is
-  sufficient and not minimal, and finding out which of its 137 actions
+  sufficient and not minimal, and finding out which of its 141 actions
   the apply survives without is six hours of emulated applies that run
   unattended. The result is a table in `least-privilege.md`, not
   removals: a refusal the provider tolerates from the emulator is not one
@@ -168,8 +193,10 @@ does not.
 
 ### To 2026-12-26: the fifth AWS session
 
-An operator's fortnight. Attach the policy, run the pre-flight, apply,
-run the checklist, destroy. Expect the S3 statement to be short: it was
+An operator's fortnight, and waiting on Seth. The checklist is
+[written](cloud-apply.md#the-fifth-aws-session-as-a-narrower-identity):
+attach the two policies, run the pre-flight as the role, apply, bump the
+version, tear down. Expect the S3 statement to be short: it was
 mapped by hand from request shapes rather than derived, and it is the
 one part of the file nothing has evaluated. Each refusal names the
 action; the file gains it, with the request that needed it recorded
