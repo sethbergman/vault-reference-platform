@@ -437,9 +437,13 @@ rather than an enumerated list, so new harnesses are linted
 automatically.
 
 Versions are pinned on purpose (Terraform 1.15.9, Vault CLI 1.17.2,
-Prometheus/promtool 2.54.1, Alertmanager 0.27.0, and the compose image
-tags): a floating version makes failures hard to attribute and lets an
-upstream outage redden `main`. Keep the CLI version in a job matching
+Prometheus/promtool 2.54.1, Alertmanager 0.27.0, moto 5.2.5, and the
+compose image tags): a floating version makes failures hard to attribute
+and lets an upstream outage redden `main`. moto was floating until
+2026-11-27, when 5.2.6 began refusing `HeadObject` to an identity
+holding `s3:GetObject`, which AWS allows, and reddened
+`tests/state-backend` on every PR without a line of this repository
+changing. Keep the CLI version in a job matching
 the image version the compose profile runs.
 
 CI enforces several invariants worth knowing before you push:
