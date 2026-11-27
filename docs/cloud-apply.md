@@ -509,6 +509,167 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 ---
 
+## The fifth AWS session, as a narrower identity
+
+Written on 2026-11-27, before the session rather than after it. Every
+session so far ran as an administrator, so this one changes one thing
+and keeps the rest: the same profile and the same checklist, with
+Terraform driven by a role holding only what this repository says it
+needs. The plan in [roadmap.md](roadmap.md#the-plan-to-v10) schedules it
+for the fortnight to 2026-12-26.
+
+It settles one table row there and part of another: `terraform/aws`
+applied and destroyed by that identity, which is items 1 and 4 of the
+road to v1.0, and the refresh started the documented way, which is the
+line item 9 below left open on 2026-09-24.
+
+**Which identity does what.** Only Terraform runs as the narrow role:
+`init`, `plan`, `apply`, `destroy`, and the `terraform output` that
+`terraform-to-ansible.sh` reads. Creating the role, the operational
+scripts and the `vault` commands stay with whoever ran them before. Mixing
+the two questions would make a refusal ambiguous, which is the same
+reason the two policies are separate files.
+
+### N1. The role, and nothing else, made by an administrator
+
+```bash
+terraform -chdir=terraform/aws/bootstrap output -raw state_policy \
+    > state-policy.json
+# Three policies on one role: the apply, the state, and the one-line
+# permission that lets the pre-flight ask IAM about the role itself.
+aws iam create-policy --policy-name vault-reference-terraform-apply \
+    --policy-document file://examples/policies/aws-terraform-apply.json
+aws iam create-policy --policy-name vault-reference-terraform-state \
+    --policy-document file://state-policy.json
+```
+
+Attach both to a role with no other policy, plus an inline statement
+allowing `iam:SimulatePrincipalPolicy` on that role's own ARN. The third
+is a session aid, not something the profile needs, and it is the only
+way the pre-flight's simulation runs as the role rather than warning;
+record that it was there.
+
+The state bucket from 2026-09-17 survives teardown by design, so the
+bootstrap is not re-applied. Its `state_policy` output is newer than the
+bucket: run `terraform -chdir=terraform/aws/bootstrap apply` as an
+administrator first if `output` does not have it, and expect that apply
+to change outputs only.
+
+### N2. The pre-flight, as the role
+
+```bash
+export TF_VAR_az_count=2 TF_VAR_ssh_key_name=your-key
+./scripts/preflight-cloud.sh --cloud aws
+```
+
+**Expect:** `this identity is allowed all 141 actions the profile asks
+for`. That number assumes the version-bump actions have merged (see
+[least-privilege.md](least-privilege.md)); 137 means they have not, and
+N5 will be refused.
+
+**What it does not say:** anything about the state policy, which it does
+not simulate, or about the S3 statement in practice. Simulation
+evaluates names against `Resource: "*"`; whether the provider's 25 bucket
+requests map onto those 22 names is what N3 finds out.
+
+### N3. Init and apply, as the role
+
+```bash
+terraform -chdir=terraform/aws init -backend-config=backend.hcl
+terraform -chdir=terraform/aws apply
+```
+
+**Expect a refusal, probably in S3.** The S3 statement was mapped by hand
+from request shapes rather than derived, and it is the one part of the
+file nothing has evaluated. Each refusal names an action: record the
+action, the resource and the request beside it, add it to the file, and
+apply again. A refusal here costs a re-apply, not a rebuild, because
+everything before it is already in state.
+
+**Failure that is not the policy:** `AccessDenied` on the state object or
+its `.tflock` is the state policy, not the apply policy — the key is
+`<cluster_name>/…`, and an identity scoped to another cluster's prefix
+fails here by design. `KMS.AccessDeniedException` on the state is the
+`kms:GenerateDataKey`/`kms:Decrypt` pair, the part of that policy no
+recording could see.
+
+Then the rest of [the apply sequence](#aws), as before and as an
+administrator, **including the step for items 6, 7 and 8**. N6 needs a
+snapshot in the bucket, and the bucket is empty until the timer writes
+one.
+
+### N4. The autopilot state's shape, on a cloud node
+
+*Claimed by:* `scripts/configure-autopilot.sh`, which accepts both
+*Never verified:* which one a cloud node's CLI emits
+
+```bash
+vault operator raft autopilot state -format=json | jq -c 'keys'
+```
+
+**Expect** a bare object whose keys are capitalised and include
+`Servers`, which is what the script's comment records the 1.17.2 CLI
+printing on 2026-09-25. `["data"]`, or lowercase keys, means the CLI on
+the node differs from the one that comment describes. The script reads
+both, so neither is a failure; the item exists so the comment can stop
+saying "both" about a question one command answers.
+
+### N5. Item 9 the documented way, as the role
+
+```bash
+export TF_VAR_vault_version=<newer>
+terraform -chdir=terraform/aws apply
+aws autoscaling describe-instance-refreshes \
+    --auto-scaling-group-name <asg> --query 'InstanceRefreshes[0].Status'
+```
+
+Exported rather than `-var`, so N6's destroy plans against the version
+the cluster runs.
+
+**Expect:** the plan changes the launch template and the group and
+nothing else, `describe-instance-refreshes` is no longer empty, and
+[item 9](#9-an-instance-refresh-keeps-quorum-aws)'s samples hold: live
+count never below the quorum the voter count demands.
+
+**Failure looks like:** a refusal naming
+`autoscaling:StartInstanceRefresh`, `CancelInstanceRefresh` or
+`DescribeInstanceRefreshes`. Those three were read off provider source,
+not a recording, because the emulator does not implement instance
+refresh; this is the first thing to evaluate them. A plan offering to
+update security group rules is also a finding: the emulator does that and
+the 2026-09-24 account did not.
+
+### N6. Teardown, as the role
+
+```bash
+./scripts/teardown-cloud.sh --cloud aws
+```
+
+**Expect it to fail, and record how.** The apply policy carries none of
+`s3:ListBucketVersions`, `s3:DeleteObject` or `s3:DeleteObjectVersion`,
+because nothing in an emulated apply and destroy writes a snapshot, so
+nothing read off one empties a bucket. As the role, the script's
+`list-object-versions` is refused, and the script treats a refused
+listing as an empty one: it breaks out of the loop without logging. The
+destroy that follows stops on `BucketNotEmpty`, after removing whatever
+it reached first.
+
+That prediction is read off the script and the policy, not observed.
+Record the refusal and what the destroy left, then empty the bucket as an
+administrator and run the teardown again as the role. The fix is a
+no-account item for the fortnight after: the script says when its
+listing is refused, and the three actions go where a teardown identity
+gets them.
+
+### Recording it
+
+One more record in the shape of the four above, and in the roadmap's
+table the first row moves to observed only for what was watched. A
+refusal fixed by adding an action is a finding, not a failure of the
+session: it is the file gaining what only AWS could tell it.
+
+---
+
 ## Before you apply
 
 ```bash
