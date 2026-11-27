@@ -5,10 +5,13 @@
       "Sid": "AutoScalingGroupForTheVaultNodes",
       "Effect": "Allow",
       "Action": [
+        "autoscaling:CancelInstanceRefresh",
         "autoscaling:CreateAutoScalingGroup",
         "autoscaling:DeleteAutoScalingGroup",
         "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeInstanceRefreshes",
         "autoscaling:DescribeScalingActivities",
+        "autoscaling:StartInstanceRefresh",
         "autoscaling:UpdateAutoScalingGroup"
       ],
       "Resource": "*"
@@ -25,6 +28,7 @@
         "ec2:CreateFlowLogs",
         "ec2:CreateInternetGateway",
         "ec2:CreateLaunchTemplate",
+        "ec2:CreateLaunchTemplateVersion",
         "ec2:CreateNatGateway",
         "ec2:CreateRoute",
         "ec2:CreateRouteTable",
