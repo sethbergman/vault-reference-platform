@@ -229,7 +229,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the AWS API emulator
-        run: pip install 'moto[server]'
+        run: pip install 'moto[server]==5.2.5'
 
       # A real terraform apply, through the real AWS provider, against an
       # implementation of the AWS API. Settles what mocked providers
@@ -258,7 +258,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the AWS API emulator
-        run: pip install 'moto[server]' boto3
+        run: pip install 'moto[server]==5.2.5' boto3
 
       # Every real apply of these profiles ran as an administrator, so the
       # question "what does this actually need?" had no answer. This applies
@@ -289,7 +289,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the AWS API emulator
-        run: pip install 'moto[server]'
+        run: pip install 'moto[server]==5.2.5'
 
       # The backend block is the small half of remote state; the ordering
       # is the rest. A configuration cannot assert that the bucket holding
@@ -325,7 +325,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the AWS API emulator
-        run: pip install 'moto[server]'
+        run: pip install 'moto[server]==5.2.5'
 
       # Pinned like every other tool here. The runner image ships an AWS
       # CLI already, but which one moves without notice, and a shipper
@@ -437,7 +437,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the AWS API emulator
-        run: pip install 'moto[server]'
+        run: pip install 'moto[server]==5.2.5'
 
       - name: Install the Vault CLI
         run: |
