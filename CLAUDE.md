@@ -171,12 +171,14 @@ never worked. Expect that shape.
 No real apply has used an identity narrower than an administrator, and
 that is still true. What exists now is a derived answer to what one would
 need: `examples/policies/aws-terraform-apply.json`, 137 actions read off
-the 565 requests an emulated apply and destroy actually make, with
-`tests/least-privilege-apply` applying and destroying the profile as a
-user holding only that. It is sufficient against the emulator and
-unproven against AWS — the S3 statement has never been evaluated by
-anything, because moto names S3 actions from botocore operation names
-rather than IAM ones. See `docs/least-privilege.md`.
+the 565 requests an emulated apply and destroy actually make plus four for
+the `vault_version` bump, with `tests/least-privilege-apply` applying,
+bumping and destroying the profile as a user holding only that. Three of
+the four, the instance-refresh actions, come from provider source and
+nothing evaluates them: moto does not implement instance refresh. It is
+sufficient against the emulator and unproven against AWS — the S3
+statement has never been evaluated by anything, because moto names S3
+actions from botocore operation names rather than IAM ones. See `docs/least-privilege.md`.
 
 **The Azure apply found nineteen defects, and the profile could not have
 applied as written** — not on that subscription, not on any. None was
@@ -399,7 +401,7 @@ Per-suite requirements:
 | upgrade | bash, curl, unzip, jq, sha256sum, python3 |
 | integration | docker compose, vault CLI, jq, openssl, curl |
 | cloud-apply-emulated | terraform, python3 with `moto[server]`, curl |
-| least-privilege-apply | terraform, python3 with `moto[server]` and boto3, curl |
+| least-privilege-apply | terraform, python3 with `moto[server]` and boto3, curl, jq |
 | state-backend | terraform, python3 with `moto[server]` (brings boto3), curl |
 | audit-anchor-worm | terraform, python3 with `moto[server]`, curl, aws, sha256sum |
 | autopilot | bash, jq |
@@ -435,9 +437,13 @@ rather than an enumerated list, so new harnesses are linted
 automatically.
 
 Versions are pinned on purpose (Terraform 1.15.9, Vault CLI 1.17.2,
-Prometheus/promtool 2.54.1, Alertmanager 0.27.0, and the compose image
-tags): a floating version makes failures hard to attribute and lets an
-upstream outage redden `main`. Keep the CLI version in a job matching
+Prometheus/promtool 2.54.1, Alertmanager 0.27.0, moto 5.2.5, and the
+compose image tags): a floating version makes failures hard to attribute
+and lets an upstream outage redden `main`. moto was floating until
+2026-11-27, when 5.2.6 began refusing `HeadObject` to an identity
+holding `s3:GetObject`, which AWS allows, and reddened
+`tests/state-backend` on every PR without a line of this repository
+changing. Keep the CLI version in a job matching
 the image version the compose profile runs.
 
 CI enforces several invariants worth knowing before you push:

@@ -518,7 +518,8 @@ What stands between here and v1.0, in order:
    Still never reached by a real apply: any identity narrower than an
    administrator. What exists is a derived answer to what one would need —
    137 actions read off the 565 requests an emulated apply and destroy
-   actually make, with a suite that applies the profile holding only those.
+   actually make, four more for the documented version bump, and a suite
+   that applies, bumps and destroys the profile holding only those.
    Sufficient against the emulator, unproven against AWS. See
    [`docs/cloud-apply.md`](docs/cloud-apply.md) and
    [`docs/least-privilege.md`](docs/least-privilege.md).

@@ -56,6 +56,33 @@
 #
 # docs/least-privilege.md states all of that in the same words.
 #
+# WHY THERE IS A THIRD RUN BETWEEN THE APPLY AND THE DESTROY
+#
+# An apply and a destroy are not everything an operator does with this
+# identity. The documented upgrade on AWS is to bump `vault_version` and
+# apply again (docs/rolling-upgrades.md), and that is an UPDATE: a new launch
+# template version, then an instance refresh. A policy read off a create and
+# a destroy cannot contain either, and until 2026-11-27 this one did not --
+# the bump was refused at `ec2:CreateLaunchTemplateVersion`, which is what
+# the fifth AWS session would have found on its ninth checklist item.
+#
+# The bump here is targeted at the launch template, for two reasons that are
+# both about the emulator rather than the profile:
+#
+#   - moto does not implement StartInstanceRefresh. The provider retries a
+#     500 until its timeout, so an untargeted bump hangs rather than failing.
+#   - moto reports a referenced security group as `<account>/<sg-id>` and
+#     drops rule descriptions, so a second plan offers to "fix" six rules
+#     AWS would leave alone. The 2026-09-24 bump against a real account
+#     reported one change, not seven.
+#
+# So the template half of the upgrade is evaluated here, and the refresh
+# half is not. The three autoscaling actions for it -- StartInstanceRefresh
+# always, CancelInstanceRefresh and DescribeInstanceRefreshes when a refresh
+# is already running -- were read off terraform-provider-aws 5.100.0's
+# startInstanceRefresh, not off a recording. The suite pins that they are in
+# the file, which is all it can do; nothing has evaluated them.
+#
 # WHY THE NEGATIVE CASES ARE HERE
 #
 # A positive result alone cannot distinguish "the policy is sufficient" from
@@ -64,7 +91,7 @@
 # a create nothing works without, a read nobody would think to grant, and a
 # read of something the profile itself created.
 #
-# Requirements: terraform, python3 with moto[server] and boto3, curl
+# Requirements: terraform, python3 with moto[server] and boto3, curl, jq
 
 set -uo pipefail
 
@@ -125,7 +152,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
-for dep in terraform python3 curl; do
+for dep in terraform python3 curl jq; do
     command -v "$dep" >/dev/null 2>&1 || { red "ERROR: ${dep} not found on PATH"; exit 1; }
 done
 python3 -c "import moto, boto3" 2>/dev/null \
@@ -191,6 +218,33 @@ apply_as() {
         >"${WORK}/${label}-apply.log" 2>&1
 }
 
+# A version the profile does not default to, so the bump changes the
+# rendered user data. Any value would do; the emulator installs nothing.
+BUMP_VERSION="1.17.3"
+
+# bump_as <label> — the documented upgrade, as the identity apply_as just
+# created, against the state apply_as just wrote. Targeted at the launch
+# template: see WHY THERE IS A THIRD RUN above.
+bump_as() {
+    local label="$1"
+    AWS_ACCESS_KEY_ID="$KEY_ID" AWS_SECRET_ACCESS_KEY="$SECRET" \
+    AWS_DEFAULT_REGION=us-east-1 TF_IN_AUTOMATION=1 \
+    TF_VAR_vault_version="$BUMP_VERSION" \
+        terraform -chdir="$TF_DIR" apply -auto-approve -input=false -no-color \
+        -target=aws_launch_template.vault \
+        >"${WORK}/${label}-bump.log" 2>&1
+}
+
+# The launch template's latest_version, read from state. The refresh fires on
+# this number moving (terraform/aws/compute.tf), so it is the value that says
+# whether a bump did anything.
+template_version() {
+    terraform -chdir="$TF_DIR" show -json 2>/dev/null | jq -r '
+        [.values.root_module.resources[]
+         | select(.address == "aws_launch_template.vault")
+         | .values.latest_version][0] // "none"'
+}
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== The profile applies as an identity holding only the policy ==="
@@ -215,6 +269,28 @@ if [[ "$APPLY_RC" == "0" ]]; then
 else
     bad "the AWS profile applies with no permission it was not granted" \
         "$(grep -iE 'not authorized|AccessDenied|Error:' "${WORK}/positive-apply.log" | head -8)"
+fi
+
+# The upgrade, between the two. The version has to move as well as the apply
+# succeeding: a bump that changes nothing also succeeds, with every
+# permission or none, and is what the "$Latest" defect looked like from the
+# outside on 2026-09-24.
+if [[ "$APPLY_RC" == "0" ]]; then
+    BEFORE="$(template_version)"
+    if bump_as positive; then
+        AFTER="$(template_version)"
+        if [[ "$BEFORE" =~ ^[0-9]+$ && "$AFTER" == "$((BEFORE + 1))" ]]; then
+            ok "a vault_version bump writes a new launch template version (${BEFORE} -> ${AFTER})"
+        else
+            bad "a vault_version bump writes a new launch template version" \
+                "latest_version went from ${BEFORE} to ${AFTER}; the bump applied and changed nothing"
+        fi
+    else
+        bad "a vault_version bump writes a new launch template version" \
+            "$(grep -iE 'not authorized|AccessDenied|Error:' "${WORK}/positive-bump.log" | head -8)"
+    fi
+else
+    bad "a vault_version bump writes a new launch template version" "the apply did not finish"
 fi
 
 # The destroy runs as the same identity, on the same running emulator, so the
@@ -269,6 +345,26 @@ for victim in ec2:CreateVpc ec2:DescribeImages iam:GetRole; do
     stop_moto
 done
 
+# The same for the upgrade. The apply has to succeed first -- the action is
+# not needed to create the template -- so a failure here is the bump's.
+apply_as without-bump-permission --without ec2:CreateLaunchTemplateVersion
+rc=$?
+if [[ "$rc" == "0" ]]; then
+    if bump_as without-bump-permission; then
+        bad "without ec2:CreateLaunchTemplateVersion, the bump fails" \
+            "it bumped anyway, so the positive bump above proves nothing"
+    elif grep -q 'ec2:CreateLaunchTemplateVersion' "${WORK}/without-bump-permission-bump.log"; then
+        ok "without ec2:CreateLaunchTemplateVersion, the apply succeeds and the bump fails naming it"
+    else
+        bad "without ec2:CreateLaunchTemplateVersion, the bump fails naming it" \
+            "$(grep -iE 'Error:' "${WORK}/without-bump-permission-bump.log" | head -4)"
+    fi
+elif [[ "$rc" != "99" ]]; then
+    bad "without ec2:CreateLaunchTemplateVersion, the apply still succeeds" \
+        "$(grep -iE 'not authorized|AccessDenied|Error:' "${WORK}/without-bump-permission-apply.log" | head -4)"
+fi
+stop_moto
+
 # ---------------------------------------------------------------------------
 info ""
 info "=== The policy file itself ==="
@@ -304,6 +400,23 @@ if [[ "${P_wildcards:-1}" == "0" ]]; then
 else
     bad "and names every action, with no wildcard standing in for a list" \
         "${P_wildcards} action(s) contain a *"
+fi
+
+# The refresh half of the upgrade. Nothing above evaluates these, because the
+# emulator does not implement instance refresh, so the most this suite can do
+# is notice one going missing. Pinned by name, all three: dropping Cancel and
+# Describe would pass every bump except one started while a refresh runs.
+REFRESH_MISSING=""
+for action in autoscaling:StartInstanceRefresh autoscaling:CancelInstanceRefresh \
+              autoscaling:DescribeInstanceRefreshes; do
+    jq -e --arg a "$action" '[.Statement[].Action[]] | index($a)' "$POLICY" >/dev/null \
+        || REFRESH_MISSING="${REFRESH_MISSING} ${action}"
+done
+if [[ -z "$REFRESH_MISSING" ]]; then
+    ok "and carries the three instance-refresh actions nothing here can evaluate"
+else
+    bad "and carries the three instance-refresh actions nothing here can evaluate" \
+        "missing:${REFRESH_MISSING} -- the bump's refresh would be refused on AWS"
 fi
 
 if [[ "${P_actions:-0}" == "${P_unique:-1}" ]]; then
