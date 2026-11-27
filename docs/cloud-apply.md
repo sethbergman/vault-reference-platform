@@ -5,9 +5,10 @@
 twice, on 2026-09-28 and 09-29.**
 
 Between them those sessions observed every item on the [verification
-checklist](#the-verification-checklist), on both clouds, and found
-roughly thirty defects on the way: ten in the first AWS apply, nineteen
-in the first Azure one. Each session is recorded below, starting with
+checklist](#the-verification-checklist) on AWS, and on Azure every item
+that applies there except the PKI migration, and found roughly thirty
+defects on the way: ten in the first AWS apply, nineteen in the first
+Azure one. Each session is recorded below, starting with
 [what the first apply settled](#what-the-first-apply-settled), and the
 defects are in the [roadmap](roadmap.md). What none of them settled is
 the same thing on both clouds: no identity narrower than an
@@ -488,10 +489,15 @@ Sweep the subscription after a teardown; do not read the resource group.
 
 ### What Azure has still not proven
 
-- Nothing on the checklist. Items 1 through 8 were all observed by
-  2026-09-29; 9 and 10 on 2026-09-24. What is left is not a checklist
-  item: no identity narrower than an administrator has driven any of it,
-  on either profile. Both have only ever been applied and operated as one.
+- The PKI half of item 8. Audit devices were observed on 2026-09-29;
+  `migrate-to-vault-pki.sh --node-exec` across a live Azure cluster has
+  not been, and the [roadmap](roadmap.md#the-plan-to-v10) lists it as the
+  first half of item 2. Items 1 to 7 were observed, item 10's replacement
+  arrived on its own through `automatic_instance_repair`, and item 9 has
+  nothing to run on Azure. This entry said "nothing on the checklist"
+  until 2026-11-27, with AWS's dates for items 9 and 10.
+- Any identity narrower than an administrator, on either profile. Both
+  have only ever been applied and operated as one.
 - VNet flow logs. Azure blocked creating NSG flow logs on 2025-06-30 and
   `azurerm` 3.x cannot create the replacement, so `enable_flow_logs`
   defaults to false. That is a real reduction in posture, recorded as
